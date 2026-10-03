@@ -25,3 +25,13 @@ services:
       LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-}
       MAX_REPLIES_PER_USER_PER_HOUR: ${MAX_REPLIES_PER_USER_PER_HOUR:-30}
       STAFF_ALERT_WEBHOOK_URL: ${STAFF_ALERT_WEBHOOK_URL:-}
+
+  # Temporary public tunnel — lets Facebook reach this container
+  # until the company domain is ready. Delete this service afterwards.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: restaurant-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://restaurant-agent:3000
+    depends_on:
+      - restaurant-agent
