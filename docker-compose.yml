@@ -1,0 +1,27 @@
+# Usage: docker compose up -d --build
+# The container restarts automatically on crash or host reboot.
+#
+# Configuration: the ${VARS} below are filled from either —
+#   • a local .env file next to this file (docker compose reads it automatically), or
+#   • Portainer's stack "Environment variables" box (paste the .env content there).
+services:
+  restaurant-agent:
+    build: .
+    container_name: restaurant-page-agent
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: ${PORT:-3000}
+      WEBHOOK_VERIFY_TOKEN: ${WEBHOOK_VERIFY_TOKEN}
+      FB_APP_ID: ${FB_APP_ID}
+      FB_APP_SECRET: ${FB_APP_SECRET}
+      FB_GRAPH_VERSION: ${FB_GRAPH_VERSION:-v21.0}
+      FB_PAGE_ID: ${FB_PAGE_ID}
+      FB_PAGE_ACCESS_TOKEN: ${FB_PAGE_ACCESS_TOKEN}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-gemini-3.8-flash}
+      LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-}
+      MAX_REPLIES_PER_USER_PER_HOUR: ${MAX_REPLIES_PER_USER_PER_HOUR:-30}
+      STAFF_ALERT_WEBHOOK_URL: ${STAFF_ALERT_WEBHOOK_URL:-}

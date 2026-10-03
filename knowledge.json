@@ -1,0 +1,30 @@
+{
+  "restaurantName": "Taste Palace | تيست بالاس",
+  "cuisine": "Middle Eastern grills, burgers & pizza",
+  "address": "12 Nile Street, Downtown Cairo",
+  "googleMapsUrl": "https://maps.google.com/?q=Taste+Palace+Cairo",
+  "phone": "+20 100 000 0000",
+  "whatsapp": "+20 100 000 0000",
+  "hours": {
+    "sunday_thursday": "12:00 PM - 12:00 AM",
+    "friday_saturday": "12:00 PM - 2:00 AM"
+  },
+  "delivery": {
+    "areas": "Downtown, Zamalek, Maadi, Nasr City",
+    "apps": "Talabat, Elmenus",
+    "averageTime": "30-45 minutes"
+  },
+  "menuHighlights": [
+    { "name": "Mixed Grill Platter", "price": "320 EGP", "note": "Our #1 bestseller" },
+    { "name": "Double Cheese Smash Burger", "price": "180 EGP", "note": "New item" },
+    { "name": "Truffle Pizza", "price": "240 EGP" },
+    { "name": "Kunafa with Nutella", "price": "95 EGP" }
+  ],
+  "offers": [
+    "20% off all burgers every Monday",
+    "Free delivery for orders above 500 EGP",
+    "Buy 2 pizzas, get 1 free every Thursday"
+  ],
+  "reservations": "Walk-ins welcome. Phone reservations for groups up to 8 people. Larger groups and private events are handled personally by our staff.",
+  "policies": "All dishes are halal. Vegetarian options available. Allergen info on request."
+}

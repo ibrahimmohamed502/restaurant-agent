@@ -1,0 +1,20 @@
+{
+  "name": "restaurant-page-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AI Agent that auto-replies to EVERY Facebook Page comment, in the commenter's language, with AI identity disclosure.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "franc-min": "^6.2.0"
+  }
+}
