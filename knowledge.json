@@ -1,30 +1,197 @@
 {
-  "restaurantName": "Taste Palace | تيست بالاس",
-  "cuisine": "Middle Eastern grills, burgers & pizza",
-  "address": "12 Nile Street, Downtown Cairo",
-  "googleMapsUrl": "https://maps.google.com/?q=Taste+Palace+Cairo",
-  "phone": "+20 100 000 0000",
-  "whatsapp": "+20 100 000 0000",
-  "hours": {
-    "sunday_thursday": "12:00 PM - 12:00 AM",
-    "friday_saturday": "12:00 PM - 2:00 AM"
+  "restaurantName": "Life with Cacao | لايف وذ كاكاو",
+  "about": "Café & dessert restaurant in Kuwait — famous for signature cacao desserts, specialty coffee, breakfast, lunch & dinner.",
+  "currency": "Kuwaiti Dinar (KD) — write prices like 3.500 KD (٣٫٥ د.ك)",
+  "halal": "All food is 100% halal (كل الأكل حلال)",
+  "location": "TBD — staff will confirm",
+  "hours": "TBD — staff will confirm",
+  "delivery": "TBD — staff will confirm",
+  "phone": "TBD — staff will confirm",
+  "reservations": "Walk-ins welcome. Large groups & special occasions are handled personally by our staff (escalate these).",
+  "menus": {
+    "Breakfast Menu": {
+      "Breakfast & Beyond": [
+        { "name": "Chocolate Pancakes", "price": "4.000", "desc": "lemon-infused pancakes, berries & chocolate" },
+        { "name": "Señorita Pancake", "price": "3.500", "desc": "icing sugar, caramelized bananas" },
+        { "name": "Berries Pancakes", "price": "4.000", "desc": "crispy pancake, fresh berries" },
+        { "name": "Berry Waffle", "price": "4.000", "desc": "crispy waffle, fresh berries" },
+        { "name": "Senorita Waffle", "price": "3.500", "desc": "caramelized banana, vanilla ice cream, chocolate" },
+        { "name": "Chocolate Waffle", "price": "4.000", "desc": "vanilla ice cream & chocolate" },
+        { "name": "Acai Bowl", "price": "3.500", "desc": "fresh mixed berries & banana" },
+        { "name": "Overnight Oats Bowl", "price": "3.500", "desc": "granola, berries, cinnamon" },
+        { "name": "Granola Yoghurt Bowl", "price": "3.500", "desc": "Greek yogurt, berries, crunchy granola" },
+        { "name": "Turkey & Cheese Egg Croissant", "price": "3.950", "desc": "turkey, egg, avocado, cheese" },
+        { "name": "Four-Cheese Croissant", "price": "3.950", "desc": "cheddar, mozzarella, Emmental" },
+        { "name": "Croissant Benedict", "price": "3.950", "desc": "arugula, avocado, eggs, Hollandaise" },
+        { "name": "Mushroom Egg Croissant", "price": "3.500", "desc": "rich mushroom sauce" },
+        { "name": "Turkish Egg", "price": "4.100", "desc": "creamy yogurt & sour cream, caramelized" },
+        { "name": "Egg Avocado & Beet Toast", "price": "3.900", "desc": "sourdough, beetroot hummus, smashed avocado" },
+        { "name": "Classic Scrambled Eggs", "price": "4.100", "desc": "creamy scrambled eggs" },
+        { "name": "Arabesque Platter", "price": "8.500", "desc": "sharing platter: falafel, hummus, honeycomb, foul, batata harra" },
+        { "name": "Croissant Scrambled Egg", "price": "3.250", "desc": "scrambled eggs & cheese" },
+        { "name": "Avocado Toast", "price": "4.100", "desc": "sourdough, smashed avocado" },
+        { "name": "American Breakfast", "price": "4.750", "desc": "classic full American breakfast" },
+        { "name": "Shakshuka", "price": "4.100", "desc": "Mediterranean eggs in tomato sauce" },
+        { "name": "Homemade Cranberry Sausage", "price": "2.250", "desc": "premium wagyu sausages with cranberry" },
+        { "name": "Veggie Benedict", "price": "4.100", "desc": "two poached eggs, vegetarian" },
+        { "name": "Mushroom Medley Omelet", "price": "4.250", "desc": "mozzarella & mixed mushrooms" }
+      ]
+    },
+    "Lunch & Dinner Menu": {
+      "Most Liked": [
+        { "name": "Cacao Club Sandwich", "price": "4.750", "desc": "⭐ grilled chicken, mozzarella, beet bacon, brioche, fries" },
+        { "name": "Roast Beet Salad", "price": "4.250", "desc": "roasted beets, pear, spinach, goat cheese, pine nuts" },
+        { "name": "Penne Pink Pasta", "price": "5.500", "desc": "⭐ tomato-cream sauce, grilled chicken, parmesan" },
+        { "name": "Burger Taco", "price": "3.900", "desc": "smashed beef patty, chipotle aioli, cheddar" },
+        { "name": "Quinoa Salad", "price": null, "desc": "quinoa, kidney beans, feta, pomegranate, avocado" }
+      ],
+      "Soups & Salad": [
+        { "name": "Creamy Mushroom Soup", "price": null, "desc": "olive oil, croutons" },
+        { "name": "Burrata Caprese", "price": "8.500", "desc": "burrata, ripe tomatoes, basil, sourdough, balsamic" },
+        { "name": "Roasted Sweet Potato & Pumpkin Salad", "price": "4.500", "desc": "goat cheese, caramelized pecan, cranberries" },
+        { "name": "Grilled Chicken Caesar Salad", "price": "4.500", "desc": "romaine, Caesar dressing, croutons, parmesan" },
+        { "name": "Asian Tangy Salad", "price": null, "desc": "cabbage, edamame, cashew, peanut-sesame dressing" }
+      ],
+      "Craving Bites": [
+        { "name": "Commando Fries", "price": "3.000", "desc": "skin-on fries, Cajun, cheese, beef sauce, sriracha" },
+        { "name": "Grilled Corn", "price": "2.750", "desc": "smoky sweet corn, paprika, ranch" },
+        { "name": "Korean Fusion Fries", "price": null, "desc": "braised short rib, parmesan, kimchi aioli" },
+        { "name": "Dynamite Shrimp", "price": "4.100", "desc": "crispy shrimp, dynamite sauce, ranch" },
+        { "name": "Ribs Bao", "price": "4.500", "desc": "pulled short ribs, mixed veggies, chipotle" },
+        { "name": "Crispy Chicken Bao", "price": "3.650", "desc": "crispy chicken, coleslaw, chipotle" }
+      ],
+      "Sandwiches & Burgers": [
+        { "name": "Steak Sandwich", "price": "3.750", "desc": "tender steak, caramelized onions, mushrooms, mustard mayo" },
+        { "name": "Crispy Chicken Burger", "price": null, "desc": "buttermilk crispy chicken, brioche bun, fries" },
+        { "name": "Beef Slider", "price": "4.100", "desc": "smashed beef, cheddar, brioche, fries" },
+        { "name": "Chicken Slider", "price": "4.300", "desc": "crispy chicken tenders, cheddar, brioche" },
+        { "name": "Cacao Burger", "price": "4.100", "desc": "homemade smashed burger, mushroom sauce, Emmental" },
+        { "name": "Cacao Club Sandwich", "price": "4.750", "desc": "⭐ our most loved sandwich" },
+        { "name": "Cacao Chicken Wrap", "price": "4.500", "desc": "roasted chicken, avocado, bell peppers, tartar, fries" },
+        { "name": "Grilled Halloumi Panini", "price": "4.100", "desc": "halloumi, tapenade, tomato, panini bread, fries" }
+      ],
+      "Pizzas & Pastas": [
+        { "name": "Chicken Ranch Pizza", "price": "5.000", "desc": "ranch sauce, grilled chicken, mushrooms, peppers" },
+        { "name": "Pizza Rustica", "price": "5.750", "desc": "buffalo mozzarella, mushrooms, pepperoni, basil" },
+        { "name": "Truffle Pizza", "price": "5.000", "desc": "creamy truffle sauce, mushrooms, arugula, parmesan" },
+        { "name": "Pizza Caprese", "price": "5.750", "desc": "buffalo mozzarella, juicy tomatoes, arugula" },
+        { "name": "Chicken Mushroom Pasta", "price": "5.650", "desc": "rigatoni, cream sauce, grilled chicken, parmesan" },
+        { "name": "Penne Arrabbiata", "price": "4.250", "desc": "homemade spicy tomato-basil sauce" },
+        { "name": "Penne Pink Pasta", "price": "5.500", "desc": "⭐ tomato-cream, grilled chicken" }
+      ],
+      "The Main": [
+        { "name": "Milanese Chicken Linguine", "price": "5.500", "desc": "crispy chicken, creamy pink sauce, mozzarella, basil" },
+        { "name": "Mushroom Risotto", "price": "5.350", "desc": "enoki & shimeji mushrooms, basil oil, parmesan" },
+        { "name": "Chicken Marsala", "price": "5.500", "desc": "pan-fried chicken, mushrooms, green beans, Marsala sauce" }
+      ],
+      "On the Side": [
+        { "name": "Smashed Potato", "price": "1.500", "desc": "homemade mashed potato, cream & butter" },
+        { "name": "Broccoli", "price": null, "desc": "sautéed & seasoned" },
+        { "name": "Green Beans", "price": "1.950", "desc": "tossed in butter & garlic" },
+        { "name": "Classic French Fries", "price": "2.000", "desc": "ketchup, mayonnaise, Cajun spice" }
+      ]
+    },
+    "Drinks & Dessert Menu": {
+      "Cacao Signature Dessert": [
+        { "name": "Milk Fondant", "price": "5.000", "desc": "⭐ milk chocolate fondant, vanilla ice cream" },
+        { "name": "Banana Split", "price": "4.500", "desc": "vanilla, chocolate & strawberry ice cream" },
+        { "name": "Cacao Bomb", "price": "4.650", "desc": "⭐ chocolate mousse, caramelized pecan — signature!" },
+        { "name": "Chocolate Pudding", "price": "4.250", "desc": "brioche, English cream, milk ganache" },
+        { "name": "Pistachio Kunafa Brownie", "price": "4.750", "desc": "⭐ brownie + crunchy kunafa + pistachio" },
+        { "name": "Caramel Apple Bomb", "price": "4.250", "desc": "warm crispy dough, spiced apple, salted caramel" },
+        { "name": "The Famous Cookie", "price": "4.250", "desc": "cookie fondant, milk ganache, vanilla ice cream" },
+        { "name": "The Brownie", "price": "4.500", "desc": "chocolate brownie, milk ganache, dark chocolate" },
+        { "name": "Classic Tiramisu", "price": "4.500", "desc": "coffee-soaked Italian layers" },
+        { "name": "The Fondue", "price": "6.500", "desc": "sharing: fudgy brownie, chocolate fondue" },
+        { "name": "Chocolate Bird's Nest", "price": "4.500", "desc": "ice cream eggs, chocolate sponge, Nutella" },
+        { "name": "Cotton Pain Perdu", "price": "4.750", "desc": "biscotti French toast, biscotti cream" },
+        { "name": "Classic Cheesecake", "price": "4.100", "desc": "vanilla cheesecake, strawberry coulis" },
+        { "name": "Cacao Chocolate Cake", "price": "6.250", "desc": "layers of chocolate sponge" },
+        { "name": "Sticky Toffee Pudding", "price": "4.100", "desc": "with vanilla ice cream" },
+        { "name": "Chocolate Babka", "price": "4.100", "desc": "with vanilla ice cream" },
+        { "name": "Vanilla Ice Cream", "price": "1.000", "desc": "homemade" },
+        { "name": "Raspberry Sorbet", "price": "1.000", "desc": "homemade" },
+        { "name": "Mango Ice Cream", "price": "1.000", "desc": "homemade" },
+        { "name": "Strawberry Ice Cream", "price": "1.000", "desc": "homemade" }
+      ],
+      "Cold Beverages": [
+        { "name": "Lemon Popsicle Splash", "price": "2.950", "desc": "citrus popsicle lemonade, blue curacao, mint" },
+        { "name": "Strawberry Daiquiri", "price": "2.250", "desc": "strawberries & lime" },
+        { "name": "Honeycomb Iced Latte", "price": "2.500", "desc": "⭐ espresso, milk, honeycomb sweetness" },
+        { "name": "Guava Mojito", "price": "3.000", "desc": "guava, mint, lime" },
+        { "name": "Dubai Chocolate-Pistachio Latte", "price": "3.500", "desc": "⭐ kunafa, pistachio, chocolate, espresso" },
+        { "name": "Mango Tango Mojito", "price": "3.000", "desc": "fresh mango, mint, lime" },
+        { "name": "Mango Brazilian Lemonade", "price": "2.500", "desc": "mango, lime, touch of milk cream" },
+        { "name": "Amazing Grace", "price": "2.950", "desc": "dragonfruit, lychee, lime, sparkling water" },
+        { "name": "Coconut Pineapple Mojito", "price": "2.750", "desc": "pineapple, coconut, mint, lime" },
+        { "name": "Red Berry Spritzer", "price": "2.500", "desc": "red berries, elderflower, basil" },
+        { "name": "Minted Lemonade", "price": "2.500", "desc": "classic" },
+        { "name": "Blueberry Lemonade", "price": "3.000", "desc": "blueberry, butterfly pea, edible flowers" },
+        { "name": "Brazilian Lemonade", "price": "2.500", "desc": "our twist on classic lemonade" },
+        { "name": "Orange Juice", "price": "2.500", "desc": "fresh" },
+        { "name": "Peach Iced Tea", "price": "2.600", "desc": "peach, passion fruit, mint, strawberries" },
+        { "name": "Acai Mojito", "price": "2.500", "desc": "açaí berries, mint, lime, ginger ale" },
+        { "name": "Passion Fruit Mojito", "price": "3.000", "desc": "passion fruit, mint, ginger ale" },
+        { "name": "Strawberry Mojito", "price": "3.000", "desc": "strawberries, mint, lime, ginger ale" },
+        { "name": "Espresso Martini", "price": "2.300", "desc": "100% Arabica espresso, vanilla gelato" },
+        { "name": "Iced Coconut Spanish Latte", "price": "2.500", "desc": "coconut milk, cinnamon, toasted flakes" },
+        { "name": "Iced Spanish Latte", "price": "2.750", "desc": "espresso, condensed milk, crushed ice" },
+        { "name": "Iced Mocha", "price": "2.750", "desc": "espresso, chocolate ganache, whipped cream" },
+        { "name": "Iced Americano", "price": "2.100", "desc": "100% Arabica" },
+        { "name": "Sparkling Water", "price": "1.750" },
+        { "name": "Still Water 500ml", "price": "1.250" },
+        { "name": "Soft Drinks", "price": "1.000", "desc": "Coca-Cola, Coca-Cola Light, Sprite, Fanta Orange, Fanta Strawberry" }
+      ],
+      "Hot Beverages": [
+        { "name": "Pistachio Perk", "price": "2.750", "desc": "⭐ pistachio ice cream drenched in hot espresso" },
+        { "name": "Café Bombon", "price": "2.250", "desc": "espresso layered over sweet cream" },
+        { "name": "Coconut Spanish Latte", "price": "2.500", "desc": "coconut milk, cinnamon, toasted flakes" },
+        { "name": "Espresso Macchiato", "price": "2.100", "desc": "double shot, milk foam, white chocolate" },
+        { "name": "Affogato", "price": "2.750", "desc": "vanilla gelato + double shot espresso" },
+        { "name": "Flat White", "price": "2.100", "desc": "double shot, steamed milk" },
+        { "name": "Hot Café Mocha", "price": "2.750", "desc": "ganache, whipped cream, dark chocolate" },
+        { "name": "Hot Spanish Latte", "price": "2.750", "desc": "condensed milk, cinnamon" },
+        { "name": "Cappuccino", "price": "2.750" },
+        { "name": "Dark Hot Chocolate", "price": "3.000", "desc": "dark chocolate, milk, cacao" },
+        { "name": "Milk Hot Chocolate", "price": null, "desc": "milk chocolate, milk, cacao" },
+        { "name": "Single Espresso", "price": "1.750" },
+        { "name": "Double Espresso", "price": "2.000" },
+        { "name": "Hot Americano", "price": "2.000" },
+        { "name": "Café Latte", "price": "2.750" },
+        { "name": "Turkish Coffee", "price": "2.000", "desc": "choice of sweetness" },
+        { "name": "French Coffee", "price": "2.300", "desc": "choice of sweetness" },
+        { "name": "Arabic Coffee", "price": "5.000", "desc": "traditional" }
+      ],
+      "Smoothies & Shakes": [
+        { "name": "Acai Smoothie", "price": "3.000", "desc": "açaí, banana, yogurt, honey" },
+        { "name": "Tropical Sunrise", "price": "3.150", "desc": "daiquiri + piña colada swirl" },
+        { "name": "Coco Loco", "price": "3.150", "desc": "coconut & fresh mango" },
+        { "name": "Brownie Shake", "price": "3.650", "desc": "vanilla ice cream, brownie, chocolate" },
+        { "name": "Cacao Shake", "price": "3.500", "desc": "chocolate & vanilla ice cream, ganache" },
+        { "name": "The Lady Shake", "price": "3.000", "desc": "mango ice cream, strawberries, banana" },
+        { "name": "Avocado Kale Smoothie", "price": "3.000", "desc": "avocado, banana, kale, almond milk" }
+      ]
+    }
   },
-  "delivery": {
-    "areas": "Downtown, Zamalek, Maadi, Nasr City",
-    "apps": "Talabat, Elmenus",
-    "averageTime": "30-45 minutes"
+  "meatSources": {
+    "note": "For customers asking about food sourcing/quality — answer transparently from this list (مصادر اللحوم):",
+    "Chicken Breast": "Chilled Kuwait (Mutahida - Wara) & Frozen Sadia — used in: chicken mushroom pasta, wraps, sliders",
+    "Veal Meat Topside": "Frozen, Netherlands",
+    "Beef Short-Ribs": "Frozen, USA — benedict, tacos, sliders",
+    "Beef Pepperoni": "Frozen, Saudi Arabia — pizza rustica",
+    "Beef Bacon": "Frozen, USA & UAE — eggs, burrito, club sandwich",
+    "Angus Beef Chuck": "Frozen, USA & South Africa — beef sliders",
+    "Pulled Ribs": "Frozen, USA — korean fusion fries, ribs bao",
+    "Smoked Turkey": "Chilled, Saudi Arabia & UAE — turkey cheese croissant",
+    "Beef Tenderloin": "Frozen, USA — steak sandwich, tenderloin steak",
+    "Ground Beef": "Frozen, USA, South Africa & Australia — cacao burger, burger tacos, sliders",
+    "Shrimp": "Frozen, UAE & India — dynamite shrimp, salads, bao tempura"
   },
-  "menuHighlights": [
-    { "name": "Mixed Grill Platter", "price": "320 EGP", "note": "Our #1 bestseller" },
-    { "name": "Double Cheese Smash Burger", "price": "180 EGP", "note": "New item" },
-    { "name": "Truffle Pizza", "price": "240 EGP" },
-    { "name": "Kunafa with Nutella", "price": "95 EGP" }
-  ],
-  "offers": [
-    "20% off all burgers every Monday",
-    "Free delivery for orders above 500 EGP",
-    "Buy 2 pizzas, get 1 free every Thursday"
-  ],
-  "reservations": "Walk-ins welcome. Phone reservations for groups up to 8 people. Larger groups and private events are handled personally by our staff.",
-  "policies": "All dishes are halal. Vegetarian options available. Allergen info on request."
+  "agentNotes": [
+    "Prices are in Kuwaiti Dinar (KD). If an item's price is null/missing, say our staff will confirm the price shortly.",
+    "Breakfast Menu is served in the morning; Lunch & Dinner Menu the rest of the day; Drinks & Dessert are available ALL DAY with any menu.",
+    "When asked for recommendations, prefer ⭐ signature items: Cacao Bomb, Milk Fondant, Pistachio Kunafa Brownie, Cacao Club Sandwich, Penne Pink Pasta, Dubai Chocolate-Pistachio Latte, Honeycomb Iced Latte, Pistachio Perk.",
+    "Customers love the meat-source transparency — answer sourcing questions proudly from meatSources.",
+    "Never invent items, prices, offers, or branch info that are not in this file."
+  ]
 }
