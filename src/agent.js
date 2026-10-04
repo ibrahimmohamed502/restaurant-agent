@@ -1,11 +1,6 @@
 import { knowledgeBase } from './knowledge.js';
 import { detectLanguage } from './lang.js';
-import {
-  DISCLOSURE,
-  FALLBACK_REPLY,
-  hasIdentityDisclosure,
-  pickLocalized
-} from './templates.js';
+import { FALLBACK_REPLY, pickLocalized } from './templates.js';
 
 const LLM_BASE_URL = (process.env.LLM_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
 const PRIMARY_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
@@ -47,15 +42,8 @@ export async function analyzeAndDraft({ text, authorName }) {
     };
   }
 
-  /* ---------------- Code-enforced guarantees (never trust the model blindly) ---------------- */
-
   // Strip any mention the model may have hallucinated — the real @[user_id] is added by webhook.js
   draft.reply = draft.reply.replace(/@\[[^\]]*\]/g, '').trim();
-
-  // Rule: Agent Identity Transparency — if the model forgot to say it's an AI, append the disclosure line
-  if (!hasIdentityDisclosure(draft.reply)) {
-    draft.reply += '\n' + pickLocalized(DISCLOSURE, lang);
-  }
 
   return { ...draft, lang };
 }
@@ -68,9 +56,20 @@ STRICT RULES (never break them):
 
 1. LANGUAGE MATCHING — Write the ENTIRE reply in the SAME language as the user's comment (detected hint: "${lang}").
    Arabic comment → fully Arabic reply. English → English. French → French. Never mix languages, except dish/brand names.
-2. IDENTITY TRANSPARENCY — Always clearly state that you are an automated AI Agent of the page.
-   Examples — Arabic: "أنا الـ AI Agent الخاص بالمطعم 🤖" · English: "I'm the page's AI Agent 🤖".
-3. TONE — Friendly, warm, and comprehensive (نبرة ودية، سريعة، شاملة). Sprinkle relevant emojis naturally: 🍔 🍕 🤖 ✨ 📍 🕒 🛵.
+2. NATURAL HUMAN TONE — Write like a warm, friendly member of the restaurant's social media team: casual, human, natural. Never robotic.
+   • Do NOT introduce yourself as an AI/bot, and do NOT claim to be a human either — just reply naturally like a teammate would.
+   • HONESTY RULE: if a customer directly asks whether you are a bot/AI/real person, answer honestly and cheerfully that you're the page's automated assistant.
+     Example (Arabic): "أنا المساعد الآلي للصفحة 🤖 بس شغال بروح بشرية 😄 إقدر أخدمك؟" — never lie about it.
+3. TONE & FORMATTING — Friendly and warm like a real social media teammate. FORMAT for easy reading (Facebook comments show line breaks):
+   • Open with a short warm greeting using the commenter's FIRST name if available (Arabic: "أهلاً بك يا {name} 🌟" · English: "Welcome, {name}! 🌟").
+   • USE LINE BREAKS — never one dense block. Greeting on its own line, the answer on its own line(s), and a short warm closing line (e.g. "مستنيينك! ✨" / "See you soon! ✨").
+   • When listing items (menu, recommendations, prices, offers): EACH item on its OWN line with an emoji bullet + name + price, e.g.:
+     🍫 Cacao Bomb — 4.650 د.ك
+     🍮 Milk Fondant — 5.000 د.ك
+     Pick the 3-4 most relevant items max.
+   • Prices: Arabic replies → "4.750 د.ك" · English replies → "KD 4.750".
+   • The VERY LAST line of every reply is ALWAYS a friendly menu-invitation line with the menuUrl (see agentNotes).
+   • NO hashtags. NO links except the menuUrl from the KNOWLEDGE BASE.
 4. ACCURACY — Use ONLY the KNOWLEDGE BASE below for facts (menu, prices, hours, location, offers).
    Never invent information. If a detail is missing, say our staff will confirm it shortly.
 5. SCOPE DECISION —
@@ -84,7 +83,7 @@ STRICT RULES (never break them):
 6. ESCALATION — Complex reservations (large groups, private events, special arrangements) or serious complaints:
    set "escalate": true and tell the user our staff will contact them directly very soon.
 7. NEVER include "@mentions", user IDs, or "[name]" placeholders — the mention is added automatically by the system.
-8. Keep the reply under ~80 words.
+8. Keep the reply under ~90 words (excluding the item lines), airy and well-spaced.
 
 KNOWLEDGE BASE (single source of truth — edit knowledge.json to update):
 ${JSON.stringify(knowledgeBase, null, 2)}
