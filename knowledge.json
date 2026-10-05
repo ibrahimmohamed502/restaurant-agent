@@ -8,15 +8,15 @@
   "hours": "Most branches: 8:00 AM – 11:30 PM weekdays, 8:00 AM – 12:00 midnight weekends (see branches for each branch's exact timings)",
   "delivery": "TBD — staff will confirm",
   "branches": [
-    { "name": "LWC 360 (360 Mall)", "area": "360 Mall — South Surra", "phone": "97223887", "locationDetail": "Unit 030G-24A, 360 Mall", "timings": "8:00 AM – 11:30 PM weekdays · 8:00 AM – 12:00 AM weekends" },
-    { "name": "LWC Jahra", "area": "Jahra — Mutlaa", "phone": "69078783", "locationDetail": "Jahra Mutlaa, Unit #8", "timings": "8:00 AM – 11:30 PM weekdays · 8:00 AM – 12:00 AM weekends" },
-    { "name": "LWC Alkout (Alkout Mall, Fahaheel)", "area": "Alkout Mall — Fahaheel, Ahmadi", "phone": "50309609", "locationDetail": "Unit 0400G-41, Alkout Mall", "timings": "8:00 AM – 11:30 PM weekdays · 8:00 AM – 12:00 AM weekends" },
-    { "name": "LWC Assima (Assima Mall)", "area": "Assima Mall — Kuwait City", "phone": "97574726", "locationDetail": "Ground floor, Assima Mall", "timings": "8:00 AM – 11:30 PM weekdays · 8:00 AM – 12:00 AM weekends" },
-    { "name": "The Walk", "area": "The Walk — Ardiya", "phone": "60421553", "locationDetail": "7W9F+X9X Ardiya", "timings": "8:00 AM – 11:30 PM weekdays · 8:00 AM – 12:00 AM weekends" },
-    { "name": "LWC Warehouse (Warehouse Mall)", "area": "Warehouse Mall", "phone": "65672444", "locationDetail": "2nd Floor, Warehouse Mall", "timings": "8:00 AM – 11:30 PM weekdays" },
-    { "name": "LWC Gate (Gate Mall)", "area": "Gate Mall", "phone": "65988130", "locationDetail": "Unit 04-LG-03+04, Gate Mall", "timings": "8:00 AM – 11:00 PM daily" },
-    { "name": "LWC Avenues (The Avenues, Phase 3)", "area": "The Avenues — Al-Rai", "phone": "22200762", "locationDetail": "Unit D0025, Grand Avenues, Phase 3", "timings": "8:00 AM – 11:30 PM weekdays" },
-    { "name": "LWC Khiran", "area": "Khiran", "phone": "65143471", "locationDetail": "OIG-E104, Khiran", "timings": "8:00 AM – 11:30 PM (staff will confirm weekends)" }
+    { "name": "LWC 360 (360 Mall)", "area": "360 Mall — South Surra", "phone": "97223887", "locationDetail": "Unit 030G-24A, 360 Mall", "timings": "8:00 AM – 11:30 PM weekdays · 8:00 AM – 12:00 AM weekends", "maps": "https://maps.google.com/?q=360+Mall+Kuwait" },
+    { "name": "LWC Jahra", "area": "Jahra — Mutlaa", "phone": "69078783", "locationDetail": "Jahra Mutlaa, Unit #8", "timings": "8:00 AM – 11:30 PM weekdays · 8:00 AM – 12:00 AM weekends", "maps": "https://maps.google.com/?q=Life+with+Cacao+Jahra+Kuwait" },
+    { "name": "LWC Alkout (Alkout Mall, Fahaheel)", "area": "Alkout Mall — Fahaheel, Ahmadi", "phone": "50309609", "locationDetail": "Unit 0400G-41, Alkout Mall", "timings": "8:00 AM – 11:30 PM weekdays · 8:00 AM – 12:00 AM weekends", "maps": "https://maps.google.com/?q=Alkout+Mall+Fahaheel+Kuwait" },
+    { "name": "LWC Assima (Assima Mall)", "area": "Assima Mall — Kuwait City", "phone": "97574726", "locationDetail": "Ground floor, Assima Mall", "timings": "8:00 AM – 11:30 PM weekdays · 8:00 AM – 12:00 AM weekends", "maps": "https://maps.google.com/?q=Assima+Mall+Kuwait+City" },
+    { "name": "The Walk", "area": "The Walk — Ardiya", "phone": "60421553", "locationDetail": "7W9F+X9X Ardiya", "timings": "8:00 AM – 11:30 PM weekdays · 8:00 AM – 12:00 AM weekends", "maps": "https://maps.google.com/?q=The+Walk+Ardiya+Kuwait" },
+    { "name": "LWC Warehouse (Warehouse Mall)", "area": "Warehouse Mall", "phone": "65672444", "locationDetail": "2nd Floor, Warehouse Mall", "timings": "8:00 AM – 11:30 PM weekdays", "maps": "https://maps.google.com/?q=Warehouse+Mall+Kuwait" },
+    { "name": "LWC Gate (Gate Mall)", "area": "Gate Mall", "phone": "65988130", "locationDetail": "Unit 04-LG-03+04, Gate Mall", "timings": "8:00 AM – 11:00 PM daily", "maps": "https://maps.google.com/?q=Gate+Mall+Kuwait" },
+    { "name": "LWC Avenues (The Avenues, Phase 3)", "area": "The Avenues — Al-Rai", "phone": "22200762", "locationDetail": "Unit D0025, Grand Avenues, Phase 3", "timings": "8:00 AM – 11:30 PM weekdays", "maps": "https://maps.google.com/?q=The+Avenues+Mall+Kuwait" },
+    { "name": "LWC Khiran", "area": "Khiran", "phone": "65143471", "locationDetail": "OIG-E104, Khiran", "timings": "8:00 AM – 11:30 PM (staff will confirm weekends)", "maps": "https://maps.google.com/?q=Life+with+Cacao+Khiran+Kuwait" }
   ],
   "reservations": "Walk-ins welcome. Large groups & special occasions are handled personally by our staff (escalate these).",
   "menus": {
@@ -200,7 +200,7 @@
   },
   "agentNotes": [
     "ALWAYS end EVERY reply with a friendly one-line invitation to browse the full menu — on its OWN line at the very end — using menuUrl. Vary the wording naturally. Arabic examples: '📋 تصفح المنيو كامل من هنا: {menuUrl}' or '✨ كل اللي في المنيو هيسعدك: {menuUrl}' · English: '📋 Check out our full menu: {menuUrl}'.",
-    "BRANCH QUESTIONS: We have 9 branches. If a customer asks for the nearest branch, ask which area they're in (e.g. 'إنت في أنهي منطقة؟ 📍') then recommend the closest branch(es) from the branches list with its phone number. If they ask for a branch's number/timings/location, answer from the branches list directly, each branch on its own line with 📍. Kuwait phone numbers are 8 digits — write them clearly, and you can add the country code +965 if the customer writes in English.",
+    "BRANCH QUESTIONS: We have 9 branches. (a) If asked GENERALLY for the location (لوكيشن/فروع/أماكن/عناوين): list ALL branches, each on its own line in this format: '📍 Name (area) — 📞 phone'. (b) If asked for the NEAREST branch: ask which area they're in ('إنت في أنهي منطقة؟ 📍') then recommend the closest branch with its full details. (c) If asked about a SPECIFIC branch or for directions: give that branch's name, area, phone, timings, AND its maps link ('🗺️ الموقع على الخريطة: {maps}'). Kuwait phone numbers are 8 digits — write them clearly.",
     "Prices are in Kuwaiti Dinar (KD). If an item's price is null/missing, say our staff will confirm the price shortly.",
     "Breakfast Menu is served in the morning; Lunch & Dinner Menu the rest of the day; Drinks & Dessert are available ALL DAY with any menu.",
     "When asked for recommendations, prefer ⭐ signature items: Cacao Bomb, Milk Fondant, Pistachio Kunafa Brownie, Cacao Club Sandwich, Penne Pink Pasta, Dubai Chocolate-Pistachio Latte, Honeycomb Iced Latte, Pistachio Perk.",
