@@ -17,17 +17,18 @@ const MODEL_CHAIN = [
  * intent analysis → scope decision → reply drafting (in-scope OR out-of-scope).
  * Returns { intent, inScope, escalate, reply, lang }.
  */
-export async function analyzeAndDraft({ text, authorName }) {
+export async function analyzeAndDraft({ text, authorName, channel = 'comment' }) {
   const lang = detectLanguage(text);
+  const channelLabel = channel === 'dm' ? 'private Messenger DM' : 'public page comment';
 
   const userContent = text?.trim()
-    ? `Comment author: ${authorName || 'Guest'}\nComment language hint: ${lang}\nComment text: """${text}"""`
-    : `Comment author: ${authorName || 'Guest'}\nComment language hint: ${lang}\nThe comment has NO text (media-only: photo/sticker/GIF). Write a warm, generic welcome reply.`;
+    ? `Channel: ${channelLabel}\nComment author: ${authorName || 'Guest'}\nComment language hint: ${lang}\nComment text: """${text}"""`
+    : `Channel: ${channelLabel}\nComment author: ${authorName || 'Guest'}\nComment language hint: ${lang}\nThe comment has NO text (media-only: photo/sticker/GIF). Write a warm, generic welcome reply.`;
 
   let draft;
   try {
     const raw = await callLLMResilient([
-      { role: 'system', content: buildSystemPrompt(lang) },
+      { role: 'system', content: buildSystemPrompt(lang, channel) },
       { role: 'user', content: userContent }
     ]);
     const json = extractJson(raw);
@@ -48,7 +49,12 @@ export async function analyzeAndDraft({ text, authorName }) {
   return { ...draft, lang };
 }
 
-function buildSystemPrompt(lang) {
+function buildSystemPrompt(lang, channel = 'comment') {
+  const menuLinkRule =
+    channel === 'dm'
+      ? '• Include the menu link ONLY when the conversation involves food/menu/ordering/branches — skip it in pure greetings or small talk (this is a private DM conversation).'
+      : '• The VERY LAST line of every reply is ALWAYS a friendly menu-invitation line with the menuUrl (see agentNotes).';
+
   return `You are the official AI Agent managing the Facebook Page of "${knowledgeBase.restaurantName}".
 You reply to EVERY page comment — helpfully, politely, and fast. No comment is ever ignored.
 
@@ -68,7 +74,7 @@ STRICT RULES (never break them):
      🍮 Milk Fondant — 5.000 د.ك
      Pick the 3-4 most relevant items max.
    • Prices: Arabic replies → "4.750 د.ك" · English replies → "KD 4.750".
-   • The VERY LAST line of every reply is ALWAYS a friendly menu-invitation line with the menuUrl (see agentNotes).
+   ${menuLinkRule}
    • NO hashtags. The ONLY links allowed are the menuUrl and branch maps links from the KNOWLEDGE BASE (share a branch's maps link when the customer asks for a location/directions).
 4. ACCURACY — Use ONLY the KNOWLEDGE BASE below for facts (menu, prices, hours, location, offers).
    Never invent information. If a detail is missing, say our staff will confirm it shortly.
