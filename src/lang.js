@@ -22,7 +22,8 @@ const ISO3_TO_SHORT = {
  */
 export function detectLanguage(text = '') {
   const trimmed = text.trim();
-  if (!trimmed) return 'en';
+  // No text (media/emoji-only comment) → default to Arabic (our page's audience)
+  if (!trimmed) return 'ar';
 
   // Fast path: franc is unreliable on very short Arabic comments
   if (ARABIC_SCRIPT.test(trimmed) && !URDU_SPECIFIC.test(trimmed)) return 'ar';
