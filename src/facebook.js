@@ -31,3 +31,35 @@ export function replyToComment(commentId, message) {
 export function privateReplyToComment(commentId, message) {
   return graphPost(`/${commentId}/private_replies`, { message });
 }
+
+/* --------------------------- Messenger (DMs) --------------------------- */
+
+/** Send a Messenger DM reply to a user (by their PSID). Needs pages_messaging. */
+export function sendMessengerReply(psid, text) {
+  return graphPost('/me/messages', {
+    recipient: { id: psid },
+    message: { text },
+    messaging_type: 'RESPONSE'
+  });
+}
+
+/** Show "typing..." in the chat while the AI drafts — makes the bot feel alive. */
+export function sendTypingIndicator(psid) {
+  return graphPost('/me/messages', {
+    recipient: { id: psid },
+    sender_action: 'typing_on'
+  }).catch((e) => console.warn('typing indicator failed:', e.message));
+}
+
+/** Fetch the sender's first name for a warmer greeting (null if unavailable). */
+export async function getUserFirstName(psid) {
+  try {
+    const res = await fetch(
+      `${GRAPH_BASE}/${psid}?fields=first_name&access_token=${process.env.FB_PAGE_ACCESS_TOKEN}`
+    );
+    const data = await res.json();
+    return data.first_name || null;
+  } catch {
+    return null;
+  }
+}
