@@ -1,6 +1,11 @@
 import crypto from 'node:crypto';
 import express from 'express';
-import { replyToComment } from './facebook.js';
+import {
+  replyToComment,
+  sendMessengerReply,
+  sendTypingIndicator,
+  getUserFirstName
+} from './facebook.js';
 import { analyzeAndDraft } from './agent.js';
 import { alreadyReplied, markReplied, userOverLimit } from './store.js';
 
@@ -57,6 +62,7 @@ async function handlePayload(body) {
   if (body.object !== 'page') return;
 
   for (const entry of body.entry ?? []) {
+    // ---- Channel 1: page feed comments ----
     for (const change of entry.changes ?? []) {
       if (change.field !== 'feed') continue;
       const v = change.value;
@@ -67,7 +73,46 @@ async function handlePayload(body) {
         console.error(`❌ Failed on comment ${v?.comment_id}:`, err.message)
       );
     }
+
+    // ---- Channel 2: Messenger DMs ----
+    for (const event of entry.messaging ?? []) {
+      await processMessage(event).catch((err) =>
+        console.error(`❌ Failed on DM from ${event?.sender?.id}:`, err.message)
+      );
+    }
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Messenger DM flow: typing → same AI engine → reply                  */
+/* ------------------------------------------------------------------ */
+async function processMessage(event) {
+  const msg = event.message;
+  const psid = event.sender?.id;
+
+  if (!psid || psid === PAGE_ID) return;
+  // Skip our own echoed messages, delivery/read receipts, postbacks…
+  if (!msg || msg.is_echo || msg.delivery || msg.read) return;
+  if (alreadyReplied(msg.mid)) return;
+
+  const limit = Number(process.env.MAX_REPLIES_PER_USER_PER_HOUR || 30);
+  if (userOverLimit(psid, limit)) {
+    console.warn(`⚠️ DM anti-abuse cap hit for ${psid} — skipping`);
+    return;
+  }
+
+  const text = msg.text || '';
+  console.log(`💬 New DM from ${psid}: "${text || '(media only)'}"`);
+
+  await sendTypingIndicator(psid);
+  const authorName = await getUserFirstName(psid);
+  const draft = await analyzeAndDraft({ text, authorName, channel: 'dm' });
+  await sendMessengerReply(psid, draft.reply);
+  markReplied(msg.mid, psid);
+
+  console.log(
+    `✅ DM replied to ${psid} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
+  );
 }
 
 async function processComment(value) {
