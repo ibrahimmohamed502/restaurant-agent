@@ -4,7 +4,7 @@
 /* Add more languages freely; lookup falls back to English.            */
 /* ------------------------------------------------------------------ */
 export const FALLBACK_REPLY = {
-  ar: 'أهلاً وسهلاً بك! 🌟 يسعدني مساعدتك في أي استفسار عن المنيو أو المواعيد أو الموقع أو العروض 🍔✨ وسيقوم فريق الصفحة بالمتابعة معك قريباً.',
+  ar: 'هلا والله! 🌟 حياك الله، أقدر أفيدك بأي سؤال عن المنيو أو الفروع أو المواعيد 🍫✨ وفريقنا بيتابع وياك عن قريب.',
   en: "Welcome! 🌟 I'd be happy to help with any question about our menu, hours, location, or offers 🍔✨ Our page staff will also follow up with you shortly.",
   fr: "Bienvenue ! 🌟 Je serais ravi de vous aider avec notre menu, nos horaires, notre adresse ou nos offres 🍔✨ Notre équipe vous contactera également très vite.",
   es: '¡Bienvenido! 🌟 Con gusto te ayudo con el menú, horarios, ubicación u ofertas 🍔✨ Nuestro equipo también te contactará pronto.',
@@ -16,4 +16,3 @@ export const FALLBACK_REPLY = {
 export function pickLocalized(table, lang) {
   return table[lang] || table.en;
 }
-
