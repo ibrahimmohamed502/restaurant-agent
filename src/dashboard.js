@@ -63,6 +63,17 @@ dashboardRouter.post('/dashboard/login', express.urlencoded({ extended: false })
   );
   const user = rows[0];
 
+  // TEMP-DEBUG: remove after diagnosing
+  console.log('LOGIN-DEBUG', JSON.stringify({
+    email,
+    found: Boolean(user),
+    status: user?.status,
+    hashPrefix: user?.password_hash?.slice(0, 7),
+    hashLen: user?.password_hash?.length,
+    compare: user ? await verifyPassword(password, user.password_hash) : null,
+    bodyKeys: Object.keys(req.body ?? {})
+  }));
+
   if (!user || user.status !== 'active' || !(await verifyPassword(password, user.password_hash))) {
     await recordFailedLogin(email, req.ip);
     audit({ action: 'auth.login.fail', objectType: 'user', ip: req.ip, metadata: { email } });
