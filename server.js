@@ -2,6 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import { webhookRouter } from './src/webhook.js';
 import { dashboardRouter } from './src/dashboard.js';
+import { migrate } from './src/db/migrate.js';
+import { seedIfEmpty } from './src/db/seed.js';
 
 const app = express();
 
@@ -51,7 +53,16 @@ app.get('/privacy', (_req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🍽️  Restaurant Page AI Agent listening on port ${PORT}`);
   console.log(`🔗 Webhook endpoint: http://localhost:${PORT}/webhook`);
+
+  // Stage 1: database layer — runs migrations + first-time seed (never double-seeds).
+  // Skipped silently when DATABASE_URL is not set (legacy JSON mode).
+  try {
+    const migrated = await migrate();
+    if (migrated) await seedIfEmpty();
+  } catch (err) {
+    console.error('❌ DB init failed (app continues in legacy mode):', err.message);
+  }
 });
