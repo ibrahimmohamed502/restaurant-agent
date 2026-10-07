@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { webhookRouter } from './src/webhook.js';
 import { dashboardRouter } from './src/dashboard.js';
+import { usersRouter } from './src/routes/users.js';
 import { migrate } from './src/db/migrate.js';
 import { seedIfEmpty } from './src/db/seed.js';
 
@@ -18,6 +19,7 @@ app.use(
 
 app.use(webhookRouter);
 app.use(dashboardRouter);
+app.use(usersRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', ts: Date.now() });
