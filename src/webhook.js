@@ -7,6 +7,8 @@ import {
   getUserFirstName
 } from './facebook.js';
 import { analyzeAndDraft } from './agent.js';
+import { notifyStaff } from './notify.js';
+import { logEvent, addEscalation } from './db.js';
 import { alreadyReplied, markReplied, userOverLimit } from './store.js';
 
 export const webhookRouter = express.Router();
@@ -113,6 +115,36 @@ async function processMessage(event) {
   console.log(
     `✅ DM replied to ${psid} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
   );
+
+  // ---- Dashboard activity log ----
+  logEvent({
+    channel: 'messenger',
+    customerName: authorName,
+    customerId: psid,
+    message: text,
+    reply: draft.reply,
+    intent: draft.intent,
+    inScope: draft.inScope,
+    lang: draft.lang,
+    escalate: draft.escalate
+  });
+
+  // ---- Staff alert for DMs too (blogger collabs, complaints, contact data) ----
+  const reason = draft.escalate
+    ? 'تصعيد في الماسنجر (شكوى/تعاون/حجز/بيانات تواصل)'
+    : containsContactData(text)
+      ? 'العميل ترك بيانات تواصل في الماسنجر'
+      : null;
+  if (reason) {
+    addEscalation({ channel: 'messenger', customerName: authorName, customerId: psid, message: text, reply: draft.reply, reason });
+    await notifyStaff({
+      channel: 'messenger',
+      from: { id: psid, name: authorName },
+      message: text,
+      reason,
+      draft
+    });
+  }
 }
 
 async function processComment(value) {
@@ -154,19 +186,34 @@ async function processComment(value) {
     `✅ Replied to ${commentId} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
   );
 
-  // ---- Optional step from the diagram: escalate complex reservations to staff ----
-  if (draft.escalate) {
-    await notifyStaff({ commentId, from, message, draft });
+  // ---- Dashboard activity log ----
+  logEvent({
+    channel: 'comment',
+    customerName: from.name,
+    customerId: from.id,
+    message,
+    reply: draft.reply,
+    intent: draft.intent,
+    inScope: draft.inScope,
+    lang: draft.lang,
+    escalate: draft.escalate
+  });
+
+  // ---- Staff alert: escalation (complaint/collab/reservation) OR customer shared contact data ----
+  const reason = draft.escalate
+    ? 'تصعيد (شكوى/تعاون/حجز/بيانات تواصل)'
+    : containsContactData(message)
+      ? 'العميل ترك بيانات تواصل (رقم/إيميل/حساب)'
+      : null;
+  if (reason) {
+    addEscalation({ channel: 'comment', customerName: from.name, customerId: from.id, message, reply: draft.reply, reason });
+    await notifyStaff({ channel: 'comment', commentId, from, message, reason, draft });
   }
 }
 
-async function notifyStaff(info) {
-  console.warn('🚨 ESCALATION — staff follow-up needed:', JSON.stringify(info, null, 2));
-  const url = process.env.STAFF_ALERT_WEBHOOK_URL;
-  if (!url) return;
-  await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'staff_escalation', ...info })
-  }).catch((e) => console.error('Staff alert webhook failed:', e.message));
+/** Safety net: catches phone numbers / emails / social handles even if the LLM missed them. */
+function containsContactData(text = '') {
+  return /(\+?\d[\d\s-]{6,}\d)|([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/.test(text);
 }
+
+// notifyStaff lives in ./notify.js (webhook + email channels)
