@@ -55,7 +55,7 @@ export async function seedIfEmpty() {
     // ---- roles + admin user ----
     const { rows: [adminRole] } = await client.query(
       `INSERT INTO roles (tenant_id, name, permissions) VALUES ($1,$2,$3) RETURNING id`,
-      [tenant.id, 'Company Admin', ['*']]
+      [tenant.id, 'Company Admin', JSON.stringify(['*'])]
     );
     const email = process.env.SEED_ADMIN_EMAIL;
     const password = process.env.SEED_ADMIN_PASSWORD;
