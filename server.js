@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { webhookRouter } from './src/webhook.js';
+import { dashboardRouter } from './src/dashboard.js';
 
 const app = express();
 
@@ -14,6 +15,7 @@ app.use(
 );
 
 app.use(webhookRouter);
+app.use(dashboardRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', ts: Date.now() });
