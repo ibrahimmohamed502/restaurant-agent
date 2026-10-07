@@ -35,6 +35,7 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      DATA_DIR: ${DATA_DIR:-/tmp/lwc-data}
     depends_on:
       postgres:
         condition: service_healthy
