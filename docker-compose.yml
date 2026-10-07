@@ -29,3 +29,55 @@ services:
       STAFF_EMAIL_TO: ${STAFF_EMAIL_TO:-}
       STAFF_EMAIL_FROM: ${STAFF_EMAIL_FROM:-}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      # ---- Stage 1: data layer ----
+      DATABASE_URL: ${DATABASE_URL:-postgresql://lwc:${POSTGRES_PASSWORD}@postgres:5432/lwc_saas}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Stage 1: Postgres (+ pgvector for future knowledge retrieval)
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: restaurant-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lwc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-lwc_saas}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Stage 1: Redis (queue backbone for Stages 3-4)
+  redis:
+    image: redis:7-alpine
+    container_name: restaurant-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Temporary public tunnel — lets Facebook reach this container
+  # until the company domain is ready. Delete this service afterwards.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: restaurant-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://restaurant-agent:3000
+    depends_on:
+      - restaurant-agent
+
+volumes:
+  pg_data:
