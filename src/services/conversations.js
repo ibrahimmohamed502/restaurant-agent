@@ -207,6 +207,66 @@ export async function createEscalationRecord({ tenantId, conversationId, categor
   );
 }
 
+/**
+ * Stage 4.4.7 — Atomically claim a FAILED outbound AI message for retry.
+ * Only one caller can win the failed → pending transition (UPDATE … WHERE
+ * delivery_status = 'failed' acts as the DB lock). The winner is returned to
+ * the caller, which is the ONLY request allowed to perform the Meta POST.
+ * Returns null when the message is not retryable (sent/pending/missing/foreign tenant).
+ */
+export async function claimFailedOutboundForRetry({ tenantId, conversationId, messageId }) {
+  if (!tenantId || !conversationId || !messageId) {
+    const err = new Error('claimFailedOutboundForRetry: tenantId/conversationId/messageId required');
+    err.code = 'MISSING_RETRY_CONTEXT';
+    throw err;
+  }
+  const { rows } = await pool.query(
+    `UPDATE messages m
+        SET delivery_status = 'pending',
+            delivery_error = NULL,
+            retry_count = m.retry_count + 1,
+            last_retry_at = now()
+      FROM conversations c
+      WHERE m.id = $1
+        AND m.conversation_id = $2
+        AND c.id = m.conversation_id
+        AND m.tenant_id = $3
+        AND c.tenant_id = $3
+        AND m.direction = 'outbound'
+        AND m.sender_type = 'ai'
+        AND m.delivery_status = 'failed'
+      RETURNING m.id, m.conversation_id, m.tenant_id, m.text, m.retry_count, m.provider_message_id`,
+    [messageId, conversationId, tenantId]
+  );
+  return rows[0] ?? null;
+}
+
+/** Stage 4.4.7 — terminal state update for a retry attempt. */
+export async function finishMessageDelivery({ tenantId, messageId, deliveryStatus, providerMessageId = null, errorCategory = null }) {
+  const { rows } = await pool.query(
+    `UPDATE messages
+        SET delivery_status = $1,
+            delivery_error = $2,
+            provider_message_id = COALESCE($3, provider_message_id)
+      WHERE id = $4 AND tenant_id = $5 AND direction = 'outbound'
+      RETURNING id, delivery_status, provider_message_id, delivery_error, retry_count, last_retry_at`,
+    [deliveryStatus, errorCategory, providerMessageId, messageId, tenantId]
+  );
+  return rows[0] ?? null;
+}
+
+/** Stage 4.4.7 — sanitized lookup of a conversation + its channel (for retry context). */
+export async function getConversationChannelContext({ tenantId, conversationId }) {
+  const { rows } = await pool.query(
+    `SELECT c.id AS conversation_id, c.tenant_id, c.external_key, ch.id AS channel_id, ch.provider, ch.external_id, ch.status
+       FROM conversations c
+       LEFT JOIN channels ch ON ch.id = c.channel_id
+      WHERE c.id = $1 AND c.tenant_id = $2`,
+    [conversationId, tenantId]
+  );
+  return rows[0] ?? null;
+}
+
 /** Map our Arabic reason strings to stable escalation categories. */
 export function escalationCategory(reason = '') {
   if (reason.includes('شكوى')) return 'complaint';

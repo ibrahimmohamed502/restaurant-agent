@@ -8,7 +8,15 @@
  *   GET  /dashboard/api/stats · /events · /escalations · POST .../escalations/:id/resolve
  */
 import express from 'express';
-import { getStats, listEvents, listEscalations, resolveEscalation } from './db.js';
+import { getStats, listEvents, listEscalations, resolveEscalation, logEvent } from './db.js';
+import {
+  claimFailedOutboundForRetry,
+  finishMessageDelivery,
+  getConversationChannelContext,
+  deliveryErrorCategory
+} from './services/conversations.js';
+import { resolveMetaChannel } from './services/channelResolver.js';
+import { createMetaClient } from './facebook.js';
 import { enabled, pool } from './db/pg.js';
 import { requireAuth, makeLegacyToken } from './auth/middleware.js';
 import { createSession, revokeSession, sessionCookie } from './auth/sessions.js';
@@ -141,7 +149,7 @@ dashboardRouter.get('/dashboard/api/conversations/:id', requireAuth, async (req,
   );
   if (!conv) return res.status(404).json({ error: 'not found' });
   const { rows: messages } = await pool.query(
-    `SELECT direction, sender_type, text, created_at, delivery_status, delivery_error FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 200`,
+    `SELECT id, direction, sender_type, text, created_at, delivery_status, delivery_error, retry_count, last_retry_at FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 200`,
     [conv.id]
   );
   res.json({ conversation: conv, messages });
@@ -156,6 +164,69 @@ dashboardRouter.get('/dashboard-debug', (_req, res) => {
 
 dashboardRouter.get('/dashboard', requireAuth, (req, res) => {
   _renderDashboard(res, req.auth);
+});
+
+/* ---------------- Stage 4.4.7: manual delivery retry ---------------- */
+// POST /dashboard/api/conversations/:conversationId/messages/:messageId/retry
+// Atomic failed → pending claim; only the winner performs the single Meta POST.
+const retryLocks = new Map(); // messageId -> promise (in-process extra guard)
+dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:messageId/retry', requireAuth, async (req, res) => {
+  const { conversationId, messageId } = req.params;
+  const tenantId = req.auth?.tenantId;
+  if (!tenantId) return res.status(403).json({ error: 'forbidden', code: 'TENANT_REQUIRED' });
+  if (!enabled) return res.status(503).json({ error: 'unavailable', code: 'DB_DISABLED' });
+
+  // process-local concurrency guard (defense in depth; the DB claim is authoritative)
+  if (retryLocks.has(messageId)) return res.status(409).json({ error: 'retry in progress', code: 'RETRY_IN_PROGRESS' });
+  const lock = (async () => {
+    // 1) atomic claim
+    const claimed = await claimFailedOutboundForRetry({ tenantId, conversationId, messageId });
+    if (!claimed) return res.status(409).json({ error: 'not retryable', code: 'NOT_RETRYABLE' });
+
+    try {
+      // 2) re-resolve current routing + credential from the DB (no env fallback)
+      const context = await getConversationChannelContext({ tenantId, conversationId });
+      if (!context || context.tenant_id !== tenantId || !context.channel_id) {
+        await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'failed', errorCategory: 'routing_unavailable' });
+        return res.status(409).json({ error: 'not retryable', code: 'ROUTING_UNAVAILABLE' });
+      }
+      const resolved = await resolveMetaChannel(context.external_id, { includeCredential: true }).catch((e) => { throw e; });
+      if (resolved.channelId !== context.channel_id || resolved.tenantId !== tenantId || !resolved.credential) {
+        await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'failed', errorCategory: 'credential_unavailable' });
+        return res.status(409).json({ error: 'not retryable', code: 'CREDENTIAL_UNAVAILABLE' });
+      }
+      const client = createMetaClient({ accessToken: resolved.credential });
+
+      // 3) exactly ONE Meta POST for the winning request
+      let providerId = null;
+      const threadKey = context.external_key ?? null;
+      if (!threadKey) {
+        await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'failed', errorCategory: 'missing_thread_context' });
+        return res.status(409).json({ error: 'not retryable', code: 'MISSING_THREAD_CONTEXT' });
+      }
+      if (context.provider === 'meta_dm') {
+        const resp = await client.sendMessengerReply(threadKey, claimed.text); // threadKey = PSID
+        providerId = resp?.message_id ?? null;
+      } else {
+        const resp = await client.replyToComment(threadKey, claimed.text); // threadKey = comment id
+        providerId = resp?.id ?? null;
+      }
+
+      // 4) terminal state
+      const updated = await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'sent', providerMessageId: providerId });
+      logEvent({ channel: 'retry', customerName: null, customerId: null, message: `retry ${messageId} → sent`, reply: null, intent: null, inScope: true, lang: null, escalate: false });
+      return res.json({ ok: true, message: updated });
+    } catch (err) {
+      const category = deliveryErrorCategory(err);
+      await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'failed', errorCategory: category }).catch(() => {});
+      console.warn(`⚠️ retry ${messageId} failed [${category}]`);
+      return res.status(502).json({ ok: false, code: 'RETRY_FAILED', category });
+    } finally {
+      retryLocks.delete(messageId);
+    }
+  })();
+  retryLocks.set(messageId, lock);
+  return lock;
 });
 
 function _renderDashboard(res, auth) {
@@ -321,6 +392,7 @@ async function loadConversations() {
   });
 }
 async function openConv(id) {
+  conversationIdForRetry = id;
   var d = await fetch('/dashboard/api/conversations/' + id).then(function(r){return r.json();});
   if (!d || !d.conversation) return;
   $('#convList').classList.add('hidden');
@@ -337,7 +409,8 @@ async function openConv(id) {
           : m.delivery_error === 'meta_rate_limit' ? 'فشل الإرسال — تجاوز الحد'
           : m.delivery_error === 'network_error' ? 'فشل الإرسال — مشكلة شبكة'
           : 'فشل الإرسال';
-        st = ' <span class="tag" style="background:#b3261e;color:#fff">' + label + '</span>';
+        st = ' <span class="tag" style="background:#b3261e;color:#fff">' + label + '</span>'
+          + ' <button class="retrybtn" data-mid="' + m.id + '">إعادة المحاولة</button>';
       } else if (m.delivery_status === 'pending') {
         st = ' <span class="tag" style="background:#8a6d00;color:#fff">قيد الإرسال</span>';
       } else {
@@ -349,8 +422,31 @@ async function openConv(id) {
   det.innerHTML = '<button class="backbtn" onclick="closeConv()">→ رجوع للقايمة</button>'
     + '<div class="meta" style="margin:8px 0"><b>' + esc(d.conversation.customer_name || 'عميل') + '</b> · ' + esc(d.conversation.provider) + ' · <span class="tag">' + esc(d.conversation.state) + '</span></div>'
     + msgs;
+  det.querySelectorAll('.retrybtn').forEach(function(btn){
+    btn.addEventListener('click', function(){ retryMessage(conversationIdForRetry, btn.dataset.mid, btn); });
+  });
+}
+
+// Stage 4.4.7 — manual delivery retry (conversation-scoped, idempotent server-side)
+var conversationIdForRetry = null;
+async function retryMessage(convId, mid, btn) {
+  if (!convId || !mid || !btn || btn.disabled) return;
+  btn.disabled = true;
+  var old = btn.textContent;
+  btn.textContent = 'قيد إعادة المحاولة...';
+  try {
+    var r = await fetch('/dashboard/api/conversations/' + convId + '/messages/' + mid + '/retry', { method: 'POST' });
+    var d = await r.json().catch(function(){ return {}; });
+    if (r.ok && d && d.ok) { openConv(convId); return; }
+    btn.textContent = 'فشل — أعد المحاولة';
+    btn.disabled = false;
+  } catch (e) {
+    btn.textContent = 'فشل — أعد المحاولة';
+    btn.disabled = false;
+  }
 }
 function closeConv() {
+  conversationIdForRetry = null;
   $('#convDetail').classList.add('hidden');
   $('#convList').classList.remove('hidden');
 }
