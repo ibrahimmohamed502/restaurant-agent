@@ -149,15 +149,24 @@ dashboardRouter.get('/dashboard/api/conversations/:id', requireAuth, async (req,
 
 /* ------------------------------ main page ------------------------------ */
 
+// TEMP-DEBUG: public render to inspect the page (revert after diagnosing)
+dashboardRouter.get('/dashboard-debug', (_req, res) => {
+  _renderDashboard(res, { user: { id: 'debug', email: 'debug@debug', name: 'Debug' }, roles: ['Company Admin'], tenantId: 'debug' });
+});
+
 dashboardRouter.get('/dashboard', requireAuth, (req, res) => {
-  const isAdmin = req.auth.roles.includes('Company Admin');
+  _renderDashboard(res, req.auth);
+});
+
+function _renderDashboard(res, auth) {
+  const isAdmin = auth.roles.includes('Company Admin');
   res.type('html').send(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>LWC — AI Agent Dashboard</title>
 <style>${BASE_CSS}</style></head><body>
 <header>
   <div class="brand">🍫 Life with Cacao <span class="muted">· AI Agent Dashboard</span></div>
   <div class="hdr-right">
-    <span class="who">${req.auth.user.name} · ${req.auth.roles.join(', ')}</span>
+    <span class="who">${auth.user.name} · ${auth.roles.join(', ')}</span>
     <span id="live" class="dot"></span>
     <a class="muted" href="/dashboard/logout">خروج</a>
   </div>
@@ -339,7 +348,7 @@ loadConversations();
 setInterval(function(){ load(); if ($('#convDetail').classList.contains('hidden')) loadConversations(); }, 15000);
 </script>
 </body></html>`);
-});
+}
 
 const BASE_CSS = `
 * { box-sizing: border-box; margin: 0; font-family: 'Segoe UI', Tahoma, sans-serif; }
