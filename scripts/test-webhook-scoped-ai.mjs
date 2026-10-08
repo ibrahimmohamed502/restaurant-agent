@@ -98,17 +98,34 @@ console.log('\n🧪 Stage 4.4.3 — webhook scoped-AI wiring\n');
   check('R/S. valid scoped comment + DM replies still work', ctx.calls.includes('commentSend') && ctx.calls.includes('dmSend'));
 }
 
-// R2: mention-reply rejected with Graph 500 → automatic retry WITHOUT mention
+// R: exactly ONE Meta POST, no @mention, correct comment id, plain reply
 {
   const calls = [];
   const ctx = makeCtx();
-  ctx.metaClient.replyToComment = async (id, m) => {
-    calls.push(m);
-    if (m.startsWith('@[')) throw new Error('Graph API 500 (code 1): An unknown error has occurred.');
-    return { id: 'r1' };
-  };
-  await processComment({ comment_id: 'cR2', message: 'hi', from: { id: 'uX', name: 'U' } }, ctx, baseDeps());
-  check('R2. mention 500 → retried without mention, reply delivered', calls.length === 2 && !calls[1].startsWith('@['));
+  ctx.metaClient.replyToComment = async (id, m) => { calls.push({ id, m }); return { id: 'r1' }; };
+  const d = { ...baseDeps(), analyze: async () => ({ reply: '@[u1] Hello! Cacao Bomb is 4.500 KD', intent: 'menu', inScope: true, lang: 'en', escalate: false, _knowledge: { menuUrl: 'https://link.lifewithcacao.com/', currency: 'KD' } }) };
+  await processComment({ comment_id: 'cR', message: 'hi', from: { id: 'u1', name: 'U' } }, ctx, d);
+  check('R. exactly one Meta POST with correct comment id and no @mention', calls.length === 1 && calls[0].id === 'cR' && !calls[0].m.includes('@['));
+}
+
+// R3: invented URL + price → rejected by grounding guard, safe fallback sent
+{
+  const calls = [];
+  const ctx = makeCtx();
+  ctx.metaClient.replyToComment = async (id, m) => { calls.push({ id, m }); return { id: 'r1' }; };
+  const d = { ...baseDeps(), analyze: async () => ({ reply: 'Check https://evil.example.com Cacao Bomb 9.999 KD', intent: 'menu', inScope: true, lang: 'en', escalate: false, _knowledge: { menuUrl: 'https://link.lifewithcacao.com/' } }) };
+  await processComment({ comment_id: 'cR3', message: 'hi', from: { id: 'u1' } }, ctx, d);
+  check('R3. invented URL/price rejected → safe fallback reply only', calls.length === 1 && !calls[0].m.includes('evil.example') && /confirmed information/i.test(calls[0].m));
+}
+
+// R4: KB-grounded URL + hours pass through untouched
+{
+  const calls = [];
+  const ctx = makeCtx();
+  ctx.metaClient.replyToComment = async (id, m) => { calls.push({ id, m }); return { id: 'r1' }; };
+  const d = { ...baseDeps(), analyze: async () => ({ reply: 'Hours: 8:00 AM - 11:30 PM weekdays. Menu: https://link.lifewithcacao.com/', intent: 'hours', inScope: true, lang: 'en', escalate: false, _knowledge: { hours: '8:00 AM – 11:30 PM weekdays', menuUrl: 'https://link.lifewithcacao.com/' } }) };
+  await processComment({ comment_id: 'cR4', message: 'hi', from: { id: 'u1' } }, ctx, d);
+  check('R4. KB-grounded URL passes through unchanged', calls.length === 1 && calls[0].m.includes('https://link.lifewithcacao.com/'));
 }
 
 // O: ctx.pageId self-skip

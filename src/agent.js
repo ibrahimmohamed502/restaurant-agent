@@ -73,6 +73,13 @@ export async function analyzeAndDraft({ text, authorName, channel = 'comment', c
   // Strip any mention the model may have hallucinated — the real @[user_id] is added by webhook.js
   draft.reply = draft.reply.replace(/@\[[^\]]*\]/g, '').trim();
 
+  // Attach the scoped knowledge non-enumerably so the deterministic grounding
+  // guard in webhook.js can verify URLs/phones/prices without it ever appearing
+  // in JSON.stringify output (logs, dashboard activity, notifications).
+  if (promptCtx.scoped && promptCtx.knowledge) {
+    Object.defineProperty(draft, '_knowledge', { value: promptCtx.knowledge, enumerable: false, writable: true, configurable: true });
+  }
+
   return { ...draft, lang };
 }
 
@@ -137,7 +144,7 @@ STRICT RULES (never break them):
 3. TONE & FORMATTING — Friendly and warm like a real social media teammate. FORMAT for easy reading (Facebook comments show line breaks):
    • Open with a short warm greeting using the commenter's FIRST name if available.
    • USE LINE BREAKS — never one dense block.
-   • When listing items (menu, recommendations, prices, offers): EACH item on its OWN line with an emoji bullet + name + price. Pick the 3-4 most relevant items max.
+   • When listing items (menu, recommendations, prices, offers): EACH item on its OWN line with an emoji bullet + name + price. Pick the 3-4 most relevant items max — but ONLY items that actually exist in the KNOWLEDGE BASE (if the KNOWLEDGE BASE lists no items, do NOT list or invent any).
    • Prices: Arabic replies → local currency format · English replies → international format.
    ${menuLinkRule}
    • NO hashtags. The ONLY links allowed are the links found in the KNOWLEDGE BASE (e.g. branch maps links when the customer asks for a location/directions).
@@ -155,6 +162,14 @@ STRICT RULES (never break them):
 6. ESCALATION — set "escalate": true for ANY of these: complex reservations (large groups, private events, special arrangements), serious complaints, business/collaboration inquiries (bloggers, influencers, suppliers, partnerships, filming requests), or when a customer shares their contact details (phone/email/social handle) expecting a follow-up. For COMPLAINTS: apologize warmly first, then assure them our staff will follow up with them directly very soon.
 7. NEVER include "@mentions", user IDs, or "[name]" placeholders — the mention is added automatically by the system.
 8. Keep the reply under ~90 words (excluding the item lines), airy and well-spaced.
+9. ANTI-HALLUCINATION (CRITICAL, NEVER BREAK) —
+   You may ONLY state facts that appear in the KNOWLEDGE BASE below. You must NEVER invent or guess:
+   menu items, dish names, prices, opening hours, branches, locations, maps links, phone numbers,
+   URLs/links, promotions, discounts, offers, delivery options, reservation policies, or any other business fact.
+   If the customer asks for something that is NOT in the KNOWLEDGE BASE, you MUST say clearly that the
+   information is not confirmed yet and that our team will confirm it for them — do not guess, do not
+   approximate, do not fall back to general knowledge about the brand. NEVER recommend or highlight a
+   specific menu item or price, and NEVER output any URL that is not present in the KNOWLEDGE BASE.
 ${configBlock}
 KNOWLEDGE BASE (single source of truth for this brand):
 ${JSON.stringify(knowledge, null, 2)}

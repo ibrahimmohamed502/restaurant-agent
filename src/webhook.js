@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import express from 'express';
 import { buildRouteContext } from './services/routeContext.js';
 import { analyzeAndDraft } from './agent.js';
+import { enforceGrounding, localize, NOT_CONFIRMED_REPLY } from './services/grounding.js';
 import { notifyStaff } from './notify.js';
 import { logEvent, addEscalation } from './db.js';
 import { enabled } from './db/pg.js';
@@ -119,7 +120,6 @@ async function processMessage(event, ctx, deps = {}) {
     overLimit = userOverLimit,
     pgEnabled = enabled
   } = deps;
-
   const msg = event.message;
   const psid = event.sender?.id;
 
@@ -150,6 +150,17 @@ async function processMessage(event, ctx, deps = {}) {
       return;
     }
     throw err;
+  }
+  // ---- Deterministic grounding guard (Stage 4.4.5) ----
+  const dmKnowledge = draft?._knowledge ?? null;
+  if (dmKnowledge) {
+    const guarded = enforceGrounding(draft, { knowledge: dmKnowledge, lang: draft.lang });
+    if (guarded.rejected) {
+      console.warn(`⚠️ [${ctx.pageId}] grounding violation (${guarded.reasons.join(',')}) — using safe fallback reply`);
+      draft = { ...draft, reply: localize(NOT_CONFIRMED_REPLY, draft.lang), _knowledge: dmKnowledge };
+    } else {
+      draft = guarded.draft;
+    }
   }
   const sendResp = await ctx.metaClient.sendMessengerReply(psid, draft.reply);
   mark(msg.mid, psid);
@@ -251,7 +262,6 @@ async function processComment(value, ctx, deps = {}) {
 
   console.log(`💬 New comment from ${from.name ?? from.id}: "${message || '(media only)'}"`);
 
-  // ---- AI Engine: intent analysis + language detection + reply drafting ----
   // Stage 4.4.3: scoped AI path — ctx is mandatory. No legacy/global retry.
   let draft;
   try {
@@ -264,22 +274,27 @@ async function processComment(value, ctx, deps = {}) {
     throw err;
   }
 
-  // Rule: User Mention — prepend the Graph API mention tag @[user_id]
-  const finalMessage = `@[${from.id}] ${draft.reply}`;
+  // ---- Deterministic grounding guard (Stage 4.4.5) ----
+  // Reject any invented URL / phone / price not present in the scoped knowledge.
+  const knowledge = draft?._knowledge ?? null;
+  if (knowledge) {
+    const guarded = enforceGrounding(draft, { knowledge, lang: draft.lang });
+    if (guarded.rejected) {
+      console.warn(`⚠️ [${ctx.pageId}] grounding violation (${guarded.reasons.join(',')}) — using safe fallback reply`);
+      draft = { ...draft, reply: localize(NOT_CONFIRMED_REPLY, draft.lang), _knowledge: knowledge };
+    } else {
+      draft = guarded.draft;
+    }
+  }
+
+  // Rule: reply is posted PLAIN (no @[user_id] mention). Meta rejects the legacy
+  // mention syntax with "Graph API 500 (code 1)" for this app/page; a reply posted
+  // to /{comment-id}/comments is already threaded under the comment and notifies
+  // the commenter.
+  const finalMessage = draft.reply;
 
   // ---- Publish via the request-scoped routed Meta client (ctx.metaClient) ----
-  // Meta returns an opaque "Graph API 500 (code 1)" for some @[user_id] mention
-  // payloads (app connection dependent). Retry once without the mention so a
-  // real customer never loses their reply because of a formatting feature.
-  let replyResp;
-  try {
-    replyResp = await ctx.metaClient.replyToComment(commentId, finalMessage);
-  } catch (err) {
-    const isGraph500 = /Graph API 500/.test(err?.message ?? '');
-    if (!isGraph500) throw err;
-    console.warn(`⚠️ Mention reply rejected for ${commentId} — retrying without mention`);
-    replyResp = await ctx.metaClient.replyToComment(commentId, draft.reply);
-  }
+  const replyResp = await ctx.metaClient.replyToComment(commentId, finalMessage);
   mark(commentId, from.id);
 
   console.log(
