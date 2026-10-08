@@ -109,6 +109,44 @@ dashboardRouter.post('/dashboard/api/escalations/:id/resolve', requireAuth, asyn
   res.json({ ok });
 });
 
+/* --------------------------- Stage 3: Inbox API --------------------------- */
+
+dashboardRouter.get('/dashboard/api/conversations', requireAuth, async (req, res) => {
+  if (!enabled) return res.json([]);
+  const { rows } = await pool.query(
+    `SELECT c.id, c.state, c.last_message_at, c.language, c.priority,
+            cu.display_name AS customer_name, ch.provider,
+            (SELECT count(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+            (SELECT text FROM messages m WHERE m.conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_text
+     FROM conversations c
+     LEFT JOIN customers cu ON cu.id = c.customer_id
+     LEFT JOIN channels ch ON ch.id = c.channel_id
+     WHERE c.tenant_id = $1
+     ORDER BY c.last_message_at DESC NULLS LAST
+     LIMIT 100`,
+    [req.auth.tenantId]
+  );
+  res.json(rows);
+});
+
+dashboardRouter.get('/dashboard/api/conversations/:id', requireAuth, async (req, res) => {
+  if (!enabled) return res.json(null);
+  const { rows: [conv] } = await pool.query(
+    `SELECT c.*, cu.display_name AS customer_name, ch.provider, ch.display_name AS channel_name
+     FROM conversations c
+     LEFT JOIN customers cu ON cu.id = c.customer_id
+     LEFT JOIN channels ch ON ch.id = c.channel_id
+     WHERE c.id = $1 AND c.tenant_id = $2`,
+    [req.params.id, req.auth.tenantId]
+  );
+  if (!conv) return res.status(404).json({ error: 'not found' });
+  const { rows: messages } = await pool.query(
+    `SELECT direction, sender_type, text, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 200`,
+    [conv.id]
+  );
+  res.json({ conversation: conv, messages });
+});
+
 /* ------------------------------ main page ------------------------------ */
 
 dashboardRouter.get('/dashboard', requireAuth, (req, res) => {
@@ -129,12 +167,17 @@ dashboardRouter.get('/dashboard', requireAuth, (req, res) => {
   <section class="cards" id="cards"></section>
 
   <nav class="tabs">
-    <button class="tab active" data-tab="events">📜 سجل النشاط</button>
+    <button class="tab active" data-tab="inbox">📥 Inbox</button>
+    <button class="tab" data-tab="events">📜 سجل النشاط</button>
     <button class="tab" data-tab="esc">🚨 التصعيدات <span id="escBadge" class="badge hidden"></span></button>
     ${isAdmin ? '<button class="tab" data-tab="team">👥 الفريق</button>' : ''}
   </nav>
 
-  <section id="events" class="panel"></section>
+  <section id="inbox" class="panel">
+    <div id="convList"></div>
+    <div id="convDetail" class="hidden"></div>
+  </section>
+  <section id="events" class="panel hidden"></section>
   <section id="esc" class="panel hidden"></section>
   ${isAdmin ? `
   <section id="team" class="panel hidden">
@@ -248,6 +291,42 @@ if (IS_ADMIN) {
   loadUsers();
 }
 
+/* --------------------------- Stage 3: Inbox --------------------------- */
+async function loadConversations() {
+  var list = await fetch('/dashboard/api/conversations').then(function(r){return r.json();});
+  var el = $('#convList');
+  if (!list.length) { el.innerHTML = '<p class="muted pad">لا توجد محادثات بعد.</p>'; return; }
+  el.innerHTML = list.map(function(c){
+    var chan = c.provider === 'meta_dm' ? '💬 DM' : '💭 تعليق';
+    var time = c.last_message_at ? new Date(c.last_message_at).toLocaleString('en-GB',{hour12:false}) : '';
+    var last = (c.last_text || '').slice(0, 90);
+    return '<div class="row conv" onclick="openConv(\'' + c.id + '\')">'
+      + '<div class="meta"><b>' + esc(c.customer_name || 'عميل') + '</b> · ' + chan + ' · ' + time
+      + ' <span class="tag">' + esc(c.state) + '</span> <span class="tag">' + esc(c.language || '') + '</span> <span class="tag">' + c.message_count + ' رسالة</span></div>'
+      + '<div class="msg">' + esc(last) + '</div>'
+      + '</div>';
+  }).join('');
+}
+async function openConv(id) {
+  var d = await fetch('/dashboard/api/conversations/' + id).then(function(r){return r.json();});
+  if (!d || !d.conversation) return;
+  $('#convList').classList.add('hidden');
+  var det = $('#convDetail');
+  det.classList.remove('hidden');
+  var msgs = d.messages.map(function(m){
+    var who = m.direction === 'inbound' ? '👤' : '🤖';
+    var cls = m.direction === 'inbound' ? 'bubble cust' : 'bubble ai';
+    return '<div class="' + cls + '">' + who + ' ' + esc(m.text || '') + '<div class="mtime">' + new Date(m.created_at).toLocaleString('en-GB',{hour12:false}) + '</div></div>';
+  }).join('');
+  det.innerHTML = '<button class="backbtn" onclick="closeConv()">→ رجوع للقايمة</button>'
+    + '<div class="meta" style="margin:8px 0"><b>' + esc(d.conversation.customer_name || 'عميل') + '</b> · ' + esc(d.conversation.provider) + ' · <span class="tag">' + esc(d.conversation.state) + '</span></div>'
+    + msgs;
+}
+function closeConv() {
+  $('#convDetail').classList.add('hidden');
+  $('#convList').classList.remove('hidden');
+}
+
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
   t.classList.add('active');
@@ -256,7 +335,8 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 }));
 
 load();
-setInterval(load, 15000);
+loadConversations();
+setInterval(function(){ load(); if ($('#convDetail').classList.contains('hidden')) loadConversations(); }, 15000);
 </script>
 </body></html>`);
 });
@@ -302,4 +382,10 @@ main { max-width: 980px; margin: 22px auto; padding: 0 16px; }
 }
 .addform label { font-size: 13px; display: flex; gap: 4px; align-items: center; }
 .addform button { padding: 9px 16px; border: none; background: #4a2c17; color: #fff; border-radius: 8px; font-weight: 700; cursor: pointer; }
+.bubble { max-width: 82%; padding: 8px 12px; border-radius: 12px; margin: 6px 0; white-space: pre-wrap; font-size: 14px; }
+.bubble.cust { background: #e8dfd2; margin-right: auto; }
+.bubble.ai { background: #4a2c17; color: #fff; margin-left: auto; }
+.mtime { font-size: 10px; opacity: .6; margin-top: 3px; }
+.row.conv { cursor: pointer; }
+.backbtn { border: none; background: #e8dfd2; padding: 7px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; margin-bottom: 8px; }
 `;
