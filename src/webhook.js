@@ -10,7 +10,10 @@ import {
   findOrCreateChannel,
   findOrCreateCustomer,
   findOrCreateConversation,
-  persistMessage,
+  persistInboundMessage,
+  persistOutboundMessage,
+  updateMessageDelivery,
+  deliveryErrorCategory,
   createEscalationRecord,
   escalationCategory
 } from './services/conversations.js';
@@ -140,6 +143,26 @@ async function processMessage(event, ctx, deps = {}) {
   await ctx.metaClient.sendTypingIndicator(psid);
   const authorName = await ctx.metaClient.getUserFirstName(psid);
 
+  // ---- Stage 4.4.6: PERSIST INBOUND FIRST (before AI / grounding / Meta) ----
+  let conversationId = null;
+  if (pgEnabled) {
+    try {
+      const tenantId = ctx?.tenantId;
+      if (tenantId) {
+        const channelId = await findOrCreateChannel({ tenantId, brandId: ctx.brandId ?? null, provider: 'meta_dm', externalId: ctx.pageId, displayName: 'Messenger DM' });
+        const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_dm', externalId: psid, name: authorName });
+        conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey: psid, customerId });
+        const inbound = await persistInboundMessage({ tenantId, conversationId, text, providerMessageId: msg.mid, providerTs: event.timestamp ? new Date(event.timestamp) : null });
+        if (inbound.duplicate) {
+          console.log(`↩️  DM ${msg.mid} already persisted — skipping (webhook redelivery)`);
+          return;
+        }
+      }
+    } catch (e) {
+      console.error('⚠️ inbound persist failed (dm):', e.message);
+    }
+  }
+
   // Stage 4.4.3: scoped AI path — ctx is mandatory. No legacy/global retry.
   let draft;
   try {
@@ -147,9 +170,11 @@ async function processMessage(event, ctx, deps = {}) {
   } catch (err) {
     if (err?.code === 'AI_CONTEXT_UNAVAILABLE') {
       console.warn(`⛔ [${ctx.pageId}] scoped AI context unavailable — DM not answered (fail closed)`);
-      return;
+    } else {
+      console.error(`❌ AI failed on DM ${msg.mid}:`, err.message);
     }
-    throw err;
+    await persistOutboundFailure(conversationId, ctx, { pgEnabled });
+    return;
   }
   // ---- Deterministic grounding guard (Stage 4.4.5) ----
   const dmKnowledge = draft?._knowledge ?? null;
@@ -162,7 +187,22 @@ async function processMessage(event, ctx, deps = {}) {
       draft = guarded.draft;
     }
   }
-  const sendResp = await ctx.metaClient.sendMessengerReply(psid, draft.reply);
+
+  // ---- Deliver with explicit outbound lifecycle (Stage 4.4.6) ----
+  let sendResp = null;
+  let outboundRow = null;
+  try {
+    outboundRow = conversationId ? await persistOutboundMessage({ tenantId: ctx.tenantId, conversationId, text: draft.reply, deliveryStatus: 'pending' }) : null;
+    sendResp = await ctx.metaClient.sendMessengerReply(psid, draft.reply);
+    if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'sent', providerMessageId: sendResp?.message_id ?? null });
+  } catch (err) {
+    const category = deliveryErrorCategory(err);
+    console.error(`❌ Failed to deliver DM to ${psid}: [${category}]`);
+    if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'failed', errorCategory: category }).catch(() => {});
+    else await persistOutboundFailure(conversationId, ctx, { pgEnabled, text: draft.reply, errorCategory: category });
+    mark(msg.mid, psid);
+    return;
+  }
   mark(msg.mid, psid);
 
   console.log(
@@ -182,24 +222,7 @@ async function processMessage(event, ctx, deps = {}) {
     escalate: draft.escalate
   });
 
-  // ---- Stage 3: persist conversation in Postgres (best-effort) ----
-  let conversationId = null;
-  if (pgEnabled) {
-    try {
-      // Stage 4.3B.3: routed events persist ONLY under the resolved routing tenant.
-      // No getDefaultTenantId() fallback — fail closed for persistence if ctx is incomplete.
-      const tenantId = ctx?.tenantId;
-      if (tenantId) {
-        const channelId = await findOrCreateChannel({ tenantId, brandId: ctx.brandId ?? null, provider: 'meta_dm', externalId: ctx.pageId, displayName: 'Messenger DM' });
-        const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_dm', externalId: psid, name: authorName });
-        conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey: psid, customerId, lang: draft.lang });
-        await persistMessage({ tenantId, conversationId, direction: 'inbound', senderType: 'customer', text, providerMessageId: msg.mid, providerTs: event.timestamp ? new Date(event.timestamp) : null });
-        await persistMessage({ tenantId, conversationId, direction: 'outbound', senderType: 'ai', text: draft.reply, providerMessageId: sendResp?.message_id });
-      }
-    } catch (e) {
-      console.error('⚠️ conversation persist failed (dm):', e.message);
-    }
-  }
+  // (inbound + outbound persistence already handled above — Stage 4.4.6)
 
   // ---- Staff alert for DMs too (blogger collabs, complaints, contact data) ----
   const reason = draft.escalate
@@ -262,6 +285,30 @@ async function processComment(value, ctx, deps = {}) {
 
   console.log(`💬 New comment from ${from.name ?? from.id}: "${message || '(media only)'}"`);
 
+  // ---- Stage 4.4.6: PERSIST INBOUND FIRST (before AI / grounding / Meta) ----
+  // The customer's message must survive even if the LLM, grounding, or the Meta
+  // publish fails. Idempotent: a Meta redelivery of the same comment is detected
+  // via ON CONFLICT on (conversation_id, provider_message_id) and skips processing.
+  let conversationId = null;
+  if (pgEnabled) {
+    try {
+      const tenantId = ctx?.tenantId;
+      if (tenantId) {
+        const channelId = await findOrCreateChannel({ tenantId, brandId: ctx.brandId ?? null, provider: 'meta_comment', externalId: ctx.pageId, displayName: 'Facebook comments' });
+        const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_comment', externalId: from.id, name: from.name });
+        const externalKey = value.parent_id && value.parent_id !== value.post_id ? value.parent_id : commentId;
+        conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey, customerId });
+        const inbound = await persistInboundMessage({ tenantId, conversationId, text: message, providerMessageId: commentId, providerTs: value.created_time ? new Date(value.created_time * 1000) : null });
+        if (inbound.duplicate) {
+          console.log(`↩️  Comment ${commentId} already persisted — skipping (webhook redelivery)`);
+          return;
+        }
+      }
+    } catch (e) {
+      console.error('⚠️ inbound persist failed (comment):', e.message);
+    }
+  }
+
   // Stage 4.4.3: scoped AI path — ctx is mandatory. No legacy/global retry.
   let draft;
   try {
@@ -269,9 +316,11 @@ async function processComment(value, ctx, deps = {}) {
   } catch (err) {
     if (err?.code === 'AI_CONTEXT_UNAVAILABLE') {
       console.warn(`⛔ [${ctx.pageId}] scoped AI context unavailable — comment not answered (fail closed)`);
-      return;
+    } else {
+      console.error(`❌ AI failed on comment ${commentId}:`, err.message);
     }
-    throw err;
+    await persistOutboundFailure(conversationId, ctx, { pgEnabled });
+    return;
   }
 
   // ---- Deterministic grounding guard (Stage 4.4.5) ----
@@ -294,7 +343,20 @@ async function processComment(value, ctx, deps = {}) {
   const finalMessage = draft.reply;
 
   // ---- Publish via the request-scoped routed Meta client (ctx.metaClient) ----
-  const replyResp = await ctx.metaClient.replyToComment(commentId, finalMessage);
+  let replyResp = null;
+  let outboundRow = null;
+  try {
+    outboundRow = conversationId ? await persistOutboundMessage({ tenantId: ctx.tenantId, conversationId, text: finalMessage, deliveryStatus: 'pending' }) : null;
+    replyResp = await ctx.metaClient.replyToComment(commentId, finalMessage);
+    if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'sent', providerMessageId: replyResp?.id ?? null });
+  } catch (err) {
+    const category = deliveryErrorCategory(err);
+    console.error(`❌ Failed to deliver reply for comment ${commentId}: [${category}]`);
+    if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'failed', errorCategory: category }).catch(() => {});
+    else if (conversationId) await persistOutboundFailure(conversationId, ctx, { pgEnabled, text: finalMessage, errorCategory: category });
+    mark(commentId, from.id); // prevent duplicate Meta retries from re-attempting publish
+    return;
+  }
   mark(commentId, from.id);
 
   console.log(
@@ -315,23 +377,7 @@ async function processComment(value, ctx, deps = {}) {
   });
 
   // ---- Stage 3: persist conversation in Postgres (best-effort, never breaks replies) ----
-  let conversationId = null;
-  if (pgEnabled) {
-    try {
-      // Stage 4.3B.3: routed events persist ONLY under the resolved routing tenant.
-      const tenantId = ctx?.tenantId;
-      if (tenantId) {
-        const channelId = await findOrCreateChannel({ tenantId, brandId: ctx.brandId ?? null, provider: 'meta_comment', externalId: ctx.pageId, displayName: 'Facebook comments' });
-        const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_comment', externalId: from.id, name: from.name });
-        const externalKey = value.parent_id && value.parent_id !== value.post_id ? value.parent_id : commentId;
-        conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey, customerId, lang: draft.lang });
-        await persistMessage({ tenantId, conversationId, direction: 'inbound', senderType: 'customer', text: message, providerMessageId: commentId, providerTs: value.created_time ? new Date(value.created_time * 1000) : null });
-        await persistMessage({ tenantId, conversationId, direction: 'outbound', senderType: 'ai', text: draft.reply, providerMessageId: replyResp?.id });
-      }
-    } catch (e) {
-      console.error('⚠️ conversation persist failed (comment):', e.message);
-    }
-  }
+  // (Inbound was already persisted at the top of this handler — Stage 4.4.6.)
 
   // ---- Staff alert: escalation (complaint/collab/reservation) OR customer shared contact data ----
   const reason = draft.escalate
@@ -349,6 +395,16 @@ async function processComment(value, ctx, deps = {}) {
       }
     }
     await notify({ channel: 'comment', commentId, from, message, reason, draft });
+  }
+}
+
+/** Stage 4.4.6 — record a sanitized delivery failure for an outbound AI message. */
+async function persistOutboundFailure(conversationId, ctx, { pgEnabled, text = null, errorCategory = 'llm_error' } = {}) {
+  if (!pgEnabled || !conversationId || !ctx?.tenantId) return;
+  try {
+    await persistOutboundMessage({ tenantId: ctx.tenantId, conversationId, text, deliveryStatus: 'failed', errorCategory });
+  } catch (e) {
+    console.error('⚠️ outbound failure persist failed (comment):', e.message);
   }
 }
 

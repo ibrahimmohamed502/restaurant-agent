@@ -141,7 +141,7 @@ dashboardRouter.get('/dashboard/api/conversations/:id', requireAuth, async (req,
   );
   if (!conv) return res.status(404).json({ error: 'not found' });
   const { rows: messages } = await pool.query(
-    `SELECT direction, sender_type, text, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 200`,
+    `SELECT direction, sender_type, text, created_at, delivery_status, delivery_error FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 200`,
     [conv.id]
   );
   res.json({ conversation: conv, messages });
@@ -329,7 +329,22 @@ async function openConv(id) {
   var msgs = d.messages.map(function(m){
     var who = m.direction === 'inbound' ? '👤' : '🤖';
     var cls = m.direction === 'inbound' ? 'bubble cust' : 'bubble ai';
-    return '<div class="' + cls + '">' + who + ' ' + esc(m.text || '') + '<div class="mtime">' + new Date(m.created_at).toLocaleString('en-GB',{hour12:false}) + '</div></div>';
+    var st = '';
+    if (m.direction === 'outbound') {
+      if (m.delivery_status === 'failed') {
+        var label = m.delivery_error === 'meta_auth_expired' ? 'فشل الإرسال — انتهت صلاحية الاعتماد'
+          : m.delivery_error === 'meta_permission' ? 'فشل الإرسال — لا توجد صلاحية'
+          : m.delivery_error === 'meta_rate_limit' ? 'فشل الإرسال — تجاوز الحد'
+          : m.delivery_error === 'network_error' ? 'فشل الإرسال — مشكلة شبكة'
+          : 'فشل الإرسال';
+        st = ' <span class="tag" style="background:#b3261e;color:#fff">' + label + '</span>';
+      } else if (m.delivery_status === 'pending') {
+        st = ' <span class="tag" style="background:#8a6d00;color:#fff">قيد الإرسال</span>';
+      } else {
+        st = ' <span class="tag" style="background:#1e6b3a;color:#fff">تم الإرسال ✓</span>';
+      }
+    }
+    return '<div class="' + cls + '">' + who + ' ' + esc(m.text || '') + st + '<div class="mtime">' + new Date(m.created_at).toLocaleString('en-GB',{hour12:false}) + '</div></div>';
   }).join('');
   det.innerHTML = '<button class="backbtn" onclick="closeConv()">→ رجوع للقايمة</button>'
     + '<div class="meta" style="margin:8px 0"><b>' + esc(d.conversation.customer_name || 'عميل') + '</b> · ' + esc(d.conversation.provider) + ' · <span class="tag">' + esc(d.conversation.state) + '</span></div>'

@@ -1,4 +1,5 @@
 import { pool } from '../db/pg.js';
+import crypto from 'node:crypto';
 
 /**
  * Conversation persistence service (Stage 3).
@@ -109,6 +110,93 @@ export async function persistMessage({ tenantId, conversationId, direction, send
     [tenantId, conversationId, direction, senderType, text || null, providerMessageId || null, providerTs || null]
   );
   await pool.query(`UPDATE conversations SET last_message_at = now() WHERE id = $1`, [conversationId]);
+}
+
+/**
+ * Stage 4.4.6 — Persist the inbound customer message IMMEDIATELY (before AI / Meta).
+ * Idempotent: returns null when this exact provider message was already stored
+ * (Meta webhook redelivery), so callers skip the whole event.
+ */
+export async function persistInboundMessage({ tenantId, conversationId, senderType = 'customer', text, providerMessageId, providerTs }) {
+  if (!tenantId || !conversationId || !providerMessageId) {
+    const err = new Error('persistInboundMessage: tenantId/conversationId/providerMessageId required');
+    err.code = 'MISSING_INBOUND_CONTEXT';
+    throw err;
+  }
+  const { rows } = await pool.query(
+    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, text, provider_message_id, provider_ts)
+     VALUES ($1,$2,'inbound',$3,$4,$5,$6)
+     ON CONFLICT (conversation_id, provider_message_id) DO NOTHING RETURNING id`,
+    [tenantId, conversationId, senderType, text || null, providerMessageId, providerTs || null]
+  );
+  if (rows[0]) {
+    await pool.query(`UPDATE conversations SET last_message_at = now() WHERE id = $1`, [conversationId]);
+    return { id: rows[0].id, duplicate: false };
+  }
+  return { id: null, duplicate: true };
+}
+
+/**
+ * Stage 4.4.6 — Record an outbound (AI) message and its delivery status.
+ * delivery_status: 'pending' (queued for Meta) or 'sent'/'failed' (terminal).
+ * errorCategory must be a sanitized token like 'meta_auth_expired' — never a token,
+ * header, raw Meta payload, or any secret.
+ */
+export async function persistOutboundMessage({ tenantId, conversationId, text, providerMessageId = null, providerTs = null, deliveryStatus = 'pending', errorCategory = null }) {
+  if (!tenantId || !conversationId) {
+    const err = new Error('persistOutboundMessage: tenantId/conversationId required');
+    err.code = 'MISSING_OUTBOUND_CONTEXT';
+    throw err;
+  }
+  if (deliveryStatus === 'sent' && errorCategory) {
+    const err = new Error('persistOutboundMessage: sent status cannot carry an error');
+    err.code = 'INVALID_DELIVERY_STATUS';
+    throw err;
+  }
+  // A pending outbound row has no provider id yet → de-dupe on (conversation_id, NULL)
+  // cannot rely on the unique index, so use a sentinel for NULL and conflict-guard.
+  const sentinel = providerMessageId ?? `pending:${crypto.randomUUID()}`;
+  const { rows } = await pool.query(
+    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, text, provider_message_id, provider_ts, delivery_status, delivery_error)
+     VALUES ($1,$2,'outbound','ai',$3,$4,$5,$6,$7)
+     ON CONFLICT (conversation_id, provider_message_id) DO NOTHING RETURNING id`,
+    [tenantId, conversationId, text || null, sentinel, providerTs || null, deliveryStatus, errorCategory]
+  );
+  if (rows[0]) {
+    await pool.query(`UPDATE conversations SET last_message_at = now() WHERE id = $1`, [conversationId]);
+    return { id: rows[0].id, duplicate: false };
+  }
+  return { id: null, duplicate: true };
+}
+
+/** Stage 4.4.6 — Update an outbound message's delivery state after a Meta attempt. */
+export async function updateMessageDelivery({ tenantId, messageId, deliveryStatus, providerMessageId = null, errorCategory = null }) {
+  if (!tenantId || !messageId || !['pending', 'sent', 'failed'].includes(deliveryStatus)) {
+    const err = new Error('updateMessageDelivery: invalid delivery update');
+    err.code = 'INVALID_DELIVERY_UPDATE';
+    throw err;
+  }
+  const { rows } = await pool.query(
+    `UPDATE messages
+        SET delivery_status = $1,
+            delivery_error = $2,
+            provider_message_id = COALESCE($3, provider_message_id)
+      WHERE id = $4 AND tenant_id = $5 AND direction = 'outbound'
+      RETURNING id, delivery_status, provider_message_id`,
+    [deliveryStatus, errorCategory, providerMessageId, messageId, tenantId]
+  );
+  return rows[0] ?? null;
+}
+
+/** Stage 4.4.6 — sanitized failure categories (never raw Meta errors/tokens). */
+export function deliveryErrorCategory(err) {
+  const msg = String(err?.message ?? '');
+  if (/Graph API 401|Error validating access token|session has expired/i.test(msg)) return 'meta_auth_expired';
+  if (/Graph API 403|permission|OAuthException/i.test(msg)) return 'meta_permission';
+  if (/Graph API 4\d\d|rate limit|too many requests/i.test(msg)) return 'meta_rate_limit';
+  if (/Graph API 5\d\d/.test(msg)) return 'meta_api_error';
+  if (/fetch failed|ECONNREFUSED|ETIMEDOUT|network/i.test(msg)) return 'network_error';
+  return 'meta_api_error';
 }
 
 export async function createEscalationRecord({ tenantId, conversationId, category, reason, summary }) {

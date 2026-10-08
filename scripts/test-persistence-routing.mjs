@@ -29,7 +29,7 @@ pool.query = async (sql, params = []) => {
   if (/UPDATE customers SET last_interaction/.test(sql)) return { rows: [] };
   if (/SELECT id FROM conversations/.test(sql)) return { rows: [] };
   if (/INSERT INTO conversations/.test(sql)) return { rows: [{ id: 'conv_1' }] };
-  if (/INSERT INTO messages/.test(sql)) return { rows: [] };
+  if (/INSERT INTO messages/.test(sql)) return { rows: [{ id: 'msg_1' }] };
   if (/UPDATE conversations SET last_message_at/.test(sql)) return { rows: [] };
   if (/INSERT INTO escalations/.test(sql)) return { rows: [] };
   return { rows: [] };
