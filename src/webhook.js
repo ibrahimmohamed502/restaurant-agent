@@ -268,7 +268,18 @@ async function processComment(value, ctx, deps = {}) {
   const finalMessage = `@[${from.id}] ${draft.reply}`;
 
   // ---- Publish via the request-scoped routed Meta client (ctx.metaClient) ----
-  const replyResp = await ctx.metaClient.replyToComment(commentId, finalMessage);
+  // Meta returns an opaque "Graph API 500 (code 1)" for some @[user_id] mention
+  // payloads (app connection dependent). Retry once without the mention so a
+  // real customer never loses their reply because of a formatting feature.
+  let replyResp;
+  try {
+    replyResp = await ctx.metaClient.replyToComment(commentId, finalMessage);
+  } catch (err) {
+    const isGraph500 = /Graph API 500/.test(err?.message ?? '');
+    if (!isGraph500) throw err;
+    console.warn(`⚠️ Mention reply rejected for ${commentId} — retrying without mention`);
+    replyResp = await ctx.metaClient.replyToComment(commentId, draft.reply);
+  }
   mark(commentId, from.id);
 
   console.log(

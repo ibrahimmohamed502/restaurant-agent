@@ -98,6 +98,19 @@ console.log('\n🧪 Stage 4.4.3 — webhook scoped-AI wiring\n');
   check('R/S. valid scoped comment + DM replies still work', ctx.calls.includes('commentSend') && ctx.calls.includes('dmSend'));
 }
 
+// R2: mention-reply rejected with Graph 500 → automatic retry WITHOUT mention
+{
+  const calls = [];
+  const ctx = makeCtx();
+  ctx.metaClient.replyToComment = async (id, m) => {
+    calls.push(m);
+    if (m.startsWith('@[')) throw new Error('Graph API 500 (code 1): An unknown error has occurred.');
+    return { id: 'r1' };
+  };
+  await processComment({ comment_id: 'cR2', message: 'hi', from: { id: 'uX', name: 'U' } }, ctx, baseDeps());
+  check('R2. mention 500 → retried without mention, reply delivered', calls.length === 2 && !calls[1].startsWith('@['));
+}
+
 // O: ctx.pageId self-skip
 {
   const ctx = makeCtx({ pageId: 'self_page' });
