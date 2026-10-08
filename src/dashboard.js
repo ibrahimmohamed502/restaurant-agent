@@ -309,12 +309,16 @@ async function loadConversations() {
     var chan = c.provider === 'meta_dm' ? '💬 DM' : '💭 تعليق';
     var time = c.last_message_at ? new Date(c.last_message_at).toLocaleString('en-GB',{hour12:false}) : '';
     var last = (c.last_text || '').slice(0, 90);
-    return '<div class="row conv" onclick="openConv(\'' + c.id + '\')">'
+    return '<div class="row conv" data-id="' + c.id + '">'
       + '<div class="meta"><b>' + esc(c.customer_name || 'عميل') + '</b> · ' + chan + ' · ' + time
       + ' <span class="tag">' + esc(c.state) + '</span> <span class="tag">' + esc(c.language || '') + '</span> <span class="tag">' + c.message_count + ' رسالة</span></div>'
       + '<div class="msg">' + esc(last) + '</div>'
       + '</div>';
   }).join('');
+  // Event delegation — avoids quote-escaping issues inside template literals
+  el.querySelectorAll('.row.conv').forEach(function(row){
+    row.addEventListener('click', function(){ openConv(row.dataset.id); });
+  });
 }
 async function openConv(id) {
   var d = await fetch('/dashboard/api/conversations/' + id).then(function(r){return r.json();});
