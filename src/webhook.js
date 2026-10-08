@@ -139,7 +139,18 @@ async function processMessage(event, ctx, deps = {}) {
 
   await ctx.metaClient.sendTypingIndicator(psid);
   const authorName = await ctx.metaClient.getUserFirstName(psid);
-  const draft = await analyze({ text, authorName, channel: 'dm' });
+
+  // Stage 4.4.3: scoped AI path — ctx is mandatory. No legacy/global retry.
+  let draft;
+  try {
+    draft = await analyze({ text, authorName, channel: 'dm', ctx });
+  } catch (err) {
+    if (err?.code === 'AI_CONTEXT_UNAVAILABLE') {
+      console.warn(`⛔ [${ctx.pageId}] scoped AI context unavailable — DM not answered (fail closed)`);
+      return;
+    }
+    throw err;
+  }
   const sendResp = await ctx.metaClient.sendMessengerReply(psid, draft.reply);
   mark(msg.mid, psid);
 
@@ -241,7 +252,17 @@ async function processComment(value, ctx, deps = {}) {
   console.log(`💬 New comment from ${from.name ?? from.id}: "${message || '(media only)'}"`);
 
   // ---- AI Engine: intent analysis + language detection + reply drafting ----
-  const draft = await analyze({ text: message, authorName: from.name });
+  // Stage 4.4.3: scoped AI path — ctx is mandatory. No legacy/global retry.
+  let draft;
+  try {
+    draft = await analyze({ text: message, authorName: from.name, channel: 'comment', ctx });
+  } catch (err) {
+    if (err?.code === 'AI_CONTEXT_UNAVAILABLE') {
+      console.warn(`⛔ [${ctx.pageId}] scoped AI context unavailable — comment not answered (fail closed)`);
+      return;
+    }
+    throw err;
+  }
 
   // Rule: User Mention — prepend the Graph API mention tag @[user_id]
   const finalMessage = `@[${from.id}] ${draft.reply}`;
