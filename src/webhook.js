@@ -1,17 +1,11 @@
 import crypto from 'node:crypto';
 import express from 'express';
-import {
-  replyToComment,
-  sendMessengerReply,
-  sendTypingIndicator,
-  getUserFirstName
-} from './facebook.js';
+import { buildRouteContext } from './services/routeContext.js';
 import { analyzeAndDraft } from './agent.js';
 import { notifyStaff } from './notify.js';
 import { logEvent, addEscalation } from './db.js';
 import { enabled } from './db/pg.js';
 import {
-  getDefaultTenantId,
   findOrCreateChannel,
   findOrCreateCustomer,
   findOrCreateConversation,
@@ -23,7 +17,8 @@ import { alreadyReplied, markReplied, userOverLimit } from './store.js';
 
 export const webhookRouter = express.Router();
 
-const PAGE_ID = process.env.FB_PAGE_ID;
+// Stage 4.3B.2 note: the routed path NEVER uses a global FB_PAGE_ID for routing or
+// self-skip — every routed event uses ctx.pageId from buildRouteContext(entry).
 
 /* ------------------------------------------------------------------ */
 /* GET /webhook — Meta verification handshake                          */
@@ -70,10 +65,22 @@ function verifySignature(req) {
 /* ------------------------------------------------------------------ */
 /* Flow from the diagram: intake → AI engine → reply to EVERY comment  */
 /* ------------------------------------------------------------------ */
-async function handlePayload(body) {
+async function handlePayload(body, handlers = {}) {
   if (body.object !== 'page') return;
 
+  const { buildCtx = buildRouteContext, onComment = processComment, onMessage = processMessage } = handlers;
+
   for (const entry of body.entry ?? []) {
+    // ---- Resolve the DB-driven routing context ONCE per entry (fail closed) ----
+    let ctx;
+    try {
+      ctx = await buildCtx(entry);
+    } catch (err) {
+      // sanitized: only the safe error code / page id — never credentials
+      console.warn(`⏭️ Skipping webhook entry ${entry?.id ?? '(no id)'} — routing failed: ${err?.code ?? 'RESOLVE_FAILED'}`);
+      continue;
+    }
+
     // ---- Channel 1: page feed comments ----
     for (const change of entry.changes ?? []) {
       if (change.field !== 'feed') continue;
@@ -81,34 +88,48 @@ async function handlePayload(body) {
       // Only brand-new comments (skip edits, deletes, reactions, posts…)
       if (v?.item !== 'comment' || v?.verb !== 'add') continue;
 
-      await processComment(v).catch((err) =>
+      await onComment(v, ctx).catch((err) =>
         console.error(`❌ Failed on comment ${v?.comment_id}:`, err.message)
       );
     }
 
     // ---- Channel 2: Messenger DMs ----
     for (const event of entry.messaging ?? []) {
-      await processMessage(event).catch((err) =>
+      await onMessage(event, ctx).catch((err) =>
         console.error(`❌ Failed on DM from ${event?.sender?.id}:`, err.message)
       );
     }
   }
 }
 
+export { handlePayload };
+export { processComment, processMessage };
+
 /* ------------------------------------------------------------------ */
 /* Messenger DM flow: typing → same AI engine → reply                  */
 /* ------------------------------------------------------------------ */
-async function processMessage(event) {
+async function processMessage(event, ctx, deps = {}) {
+  const {
+    analyze = analyzeAndDraft,
+    notify = notifyStaff,
+    logEvt = logEvent,
+    addEsc = addEscalation,
+    isReplied = alreadyReplied,
+    mark = markReplied,
+    overLimit = userOverLimit,
+    pgEnabled = enabled
+  } = deps;
+
   const msg = event.message;
   const psid = event.sender?.id;
 
-  if (!psid || psid === PAGE_ID) return;
+  if (!psid || psid === ctx.pageId) return;
   // Skip our own echoed messages, delivery/read receipts, postbacks…
   if (!msg || msg.is_echo || msg.delivery || msg.read) return;
-  if (alreadyReplied(msg.mid)) return;
+  if (isReplied(msg.mid)) return;
 
   const limit = Number(process.env.MAX_REPLIES_PER_USER_PER_HOUR || 30);
-  if (userOverLimit(psid, limit)) {
+  if (overLimit(psid, limit)) {
     console.warn(`⚠️ DM anti-abuse cap hit for ${psid} — skipping`);
     return;
   }
@@ -116,18 +137,18 @@ async function processMessage(event) {
   const text = msg.text || '';
   console.log(`💬 New DM from ${psid}: "${text || '(media only)'}"`);
 
-  await sendTypingIndicator(psid);
-  const authorName = await getUserFirstName(psid);
-  const draft = await analyzeAndDraft({ text, authorName, channel: 'dm' });
-  const sendResp = await sendMessengerReply(psid, draft.reply);
-  markReplied(msg.mid, psid);
+  await ctx.metaClient.sendTypingIndicator(psid);
+  const authorName = await ctx.metaClient.getUserFirstName(psid);
+  const draft = await analyze({ text, authorName, channel: 'dm' });
+  const sendResp = await ctx.metaClient.sendMessengerReply(psid, draft.reply);
+  mark(msg.mid, psid);
 
   console.log(
     `✅ DM replied to ${psid} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
   );
 
   // ---- Dashboard activity log ----
-  logEvent({
+  logEvt({
     channel: 'messenger',
     customerName: authorName,
     customerId: psid,
@@ -141,11 +162,13 @@ async function processMessage(event) {
 
   // ---- Stage 3: persist conversation in Postgres (best-effort) ----
   let conversationId = null;
-  if (enabled) {
+  if (pgEnabled) {
     try {
-      const tenantId = await getDefaultTenantId();
+      // Stage 4.3B.3: routed events persist ONLY under the resolved routing tenant.
+      // No getDefaultTenantId() fallback — fail closed for persistence if ctx is incomplete.
+      const tenantId = ctx?.tenantId;
       if (tenantId) {
-        const channelId = await findOrCreateChannel({ tenantId, provider: 'meta_dm', externalId: PAGE_ID, displayName: 'Messenger DM' });
+        const channelId = await findOrCreateChannel({ tenantId, brandId: ctx.brandId ?? null, provider: 'meta_dm', externalId: ctx.pageId, displayName: 'Messenger DM' });
         const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_dm', externalId: psid, name: authorName });
         conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey: psid, customerId, lang: draft.lang });
         await persistMessage({ tenantId, conversationId, direction: 'inbound', senderType: 'customer', text, providerMessageId: msg.mid, providerTs: event.timestamp ? new Date(event.timestamp) : null });
@@ -163,15 +186,15 @@ async function processMessage(event) {
       ? 'العميل ترك بيانات تواصل في الماسنجر'
       : null;
   if (reason) {
-    addEscalation({ channel: 'messenger', customerName: authorName, customerId: psid, message: text, reply: draft.reply, reason });
+    addEsc({ channel: 'messenger', customerName: authorName, customerId: psid, message: text, reply: draft.reply, reason });
     if (conversationId) {
       try {
-        await createEscalationRecord({ tenantId: await getDefaultTenantId(), conversationId, category: escalationCategory(reason), reason, summary: draft.intent });
+        await createEscalationRecord({ tenantId: ctx?.tenantId, conversationId, category: escalationCategory(reason), reason, summary: draft.intent });
       } catch (e) {
         console.error('⚠️ escalation persist failed (dm):', e.message);
       }
     }
-    await notifyStaff({
+    await notify({
       channel: 'messenger',
       from: { id: psid, name: authorName },
       message: text,
@@ -181,25 +204,36 @@ async function processMessage(event) {
   }
 }
 
-async function processComment(value) {
+async function processComment(value, ctx, deps = {}) {
+  const {
+    analyze = analyzeAndDraft,
+    notify = notifyStaff,
+    logEvt = logEvent,
+    addEsc = addEscalation,
+    isReplied = alreadyReplied,
+    mark = markReplied,
+    overLimit = userOverLimit,
+    pgEnabled = enabled
+  } = deps;
+
   const { comment_id: commentId, message = '', from } = value;
   if (!commentId || !from?.id) return;
 
   // Safety: never reply to the Page's own comments (prevents infinite loops)
-  if (from.id === PAGE_ID) {
+  if (from.id === ctx.pageId) {
     console.log(`⏭️ Skipping comment ${commentId} — authored by the Page itself (comment as your PERSONAL profile to test)`);
     return;
   }
 
   // Safety: never reply twice to the same comment (webhook redeliveries)
-  if (alreadyReplied(commentId)) {
+  if (isReplied(commentId)) {
     console.log(`↩️  Already handled comment ${commentId} — skipping`);
     return;
   }
 
   // Anti-abuse cap only — genuine commenters still always get a reply
   const limit = Number(process.env.MAX_REPLIES_PER_USER_PER_HOUR || 30);
-  if (userOverLimit(from.id, limit)) {
+  if (overLimit(from.id, limit)) {
     console.warn(`⚠️ User ${from.id} hit the hourly anti-abuse cap — skipping`);
     return;
   }
@@ -207,21 +241,21 @@ async function processComment(value) {
   console.log(`💬 New comment from ${from.name ?? from.id}: "${message || '(media only)'}"`);
 
   // ---- AI Engine: intent analysis + language detection + reply drafting ----
-  const draft = await analyzeAndDraft({ text: message, authorName: from.name });
+  const draft = await analyze({ text: message, authorName: from.name });
 
   // Rule: User Mention — prepend the Graph API mention tag @[user_id]
   const finalMessage = `@[${from.id}] ${draft.reply}`;
 
-  // ---- Publish via FB API ----
-  const replyResp = await replyToComment(commentId, finalMessage);
-  markReplied(commentId, from.id);
+  // ---- Publish via the request-scoped routed Meta client (ctx.metaClient) ----
+  const replyResp = await ctx.metaClient.replyToComment(commentId, finalMessage);
+  mark(commentId, from.id);
 
   console.log(
     `✅ Replied to ${commentId} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
   );
 
   // ---- Dashboard activity log ----
-  logEvent({
+  logEvt({
     channel: 'comment',
     customerName: from.name,
     customerId: from.id,
@@ -235,11 +269,12 @@ async function processComment(value) {
 
   // ---- Stage 3: persist conversation in Postgres (best-effort, never breaks replies) ----
   let conversationId = null;
-  if (enabled) {
+  if (pgEnabled) {
     try {
-      const tenantId = await getDefaultTenantId();
+      // Stage 4.3B.3: routed events persist ONLY under the resolved routing tenant.
+      const tenantId = ctx?.tenantId;
       if (tenantId) {
-        const channelId = await findOrCreateChannel({ tenantId, provider: 'meta_comment', externalId: PAGE_ID, displayName: 'Facebook comments' });
+        const channelId = await findOrCreateChannel({ tenantId, brandId: ctx.brandId ?? null, provider: 'meta_comment', externalId: ctx.pageId, displayName: 'Facebook comments' });
         const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_comment', externalId: from.id, name: from.name });
         const externalKey = value.parent_id && value.parent_id !== value.post_id ? value.parent_id : commentId;
         conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey, customerId, lang: draft.lang });
@@ -258,15 +293,15 @@ async function processComment(value) {
       ? 'العميل ترك بيانات تواصل (رقم/إيميل/حساب)'
       : null;
   if (reason) {
-    addEscalation({ channel: 'comment', customerName: from.name, customerId: from.id, message, reply: draft.reply, reason });
+    addEsc({ channel: 'comment', customerName: from.name, customerId: from.id, message, reply: draft.reply, reason });
     if (conversationId) {
       try {
-        await createEscalationRecord({ tenantId: await getDefaultTenantId(), conversationId, category: escalationCategory(reason), reason, summary: draft.intent });
+        await createEscalationRecord({ tenantId: ctx?.tenantId, conversationId, category: escalationCategory(reason), reason, summary: draft.intent });
       } catch (e) {
         console.error('⚠️ escalation persist failed (comment):', e.message);
       }
     }
-    await notifyStaff({ channel: 'comment', commentId, from, message, reason, draft });
+    await notify({ channel: 'comment', commentId, from, message, reason, draft });
   }
 }
 
