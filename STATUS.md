@@ -29,7 +29,7 @@
 
 ## 🚧 Stage 4 (in progress) — Provider Abstraction + Multi-Page Routing
 
-### ✅ Stage 4.1 — Channel Resolver (DONE, awaiting review)
+### ✅ Stage 4.1 — Channel Resolver (COMPLETE)
 - **`src/services/channelResolver.js`** — `resolveMetaChannel(pageId)`: incoming `entry.id` → channel (`provider='meta'`, `external_id=pageId`) → tenant/brand من صف القناة → credential مشفر (`provider_credentials` scoped بـ `channel_id + tenant_id`)
 - **Strict fail-safe:** `UNKNOWN_META_PAGE` (مجهول — صفر auto-routing لـ UFC) / `CHANNEL_INACTIVE` (معطل) / `CREDENTIAL_MISSING`
 - التوكين المفكك **مش بيتعرض** في logs/errors/debug — بيرجع بس لما `includeCredential:true` (استخدام داخلي للإرسال)
@@ -37,6 +37,15 @@
 - **مش wired في الـ webhook بعد** — البوت الحالي (CV) شغال زي ما هو بدون أي تغيير
 - **`scripts/test-channelResolver.mjs`** — 11/11 unit tests ناجحة (mocked db، بتشتغل محلياً بدون deploy): known/unknown page، tenant/brand صح، credential صح، inactive، missing credential، cross-tenant isolation، no-secret-in-errors، not-wired
 - ملاحظة لـ 4.2: قناة routing canonical هي `provider='meta'` (مش meta_comment/meta_dm اللي بيجمعوا المحادثات في الـ Inbox) — القناة بتاعت CV `provider='meta'` لازم تتزرع قبل التوصيل الفعلي
+### ✅ Stage 4.2 — Meta/Facebook Outbound Provider Preparation (COMPLETE)
+- **`createMetaClient({ accessToken })`** في `src/facebook.js` — MetaClient موحد: `replyToComment` / `sendMessengerReply` / `sendTypingIndicator` / `getUserFirstName` / `privateReplyToComment`
+- **Credential resolution:** explicit token مفضل ← fallback مؤقت لـ `FB_PAGE_ACCESS_TOKEN` env ← `META_CREDENTIAL_MISSING` لو الاتنين مش موجودين (بدون إرسال أي طلب)
+- **Token safety:** Authorization **header** بدل تضمين التوكين في URL (مفيش توكين في أي لينك) + errors sanitized (status+message+code بس، بدون رابط/بيانات خام)
+- **Backward compatible:** الـ named exports القديمة بتشتغل بنفس الـ signatures (env fallback) — البوت الحالي شغال زي ما هو
+- **مش wired** في webhook.js بعد — routing سليم بدون تغيير، LWC لسه متوقفة (هترجع 4.3+)
+- `scripts/test-metaClient.mjs` — 12/12 ناجحة (explicit>env, env fallback, missing cred, كل العمليات, no-token-in-errors/URL/logs, backward compat, not-wired)
+- قرار معماري مؤكد: routing channel (`provider='meta'`) منفصلة عن conversation channels (`meta_comment`/`meta_dm`) — بدون دمج
+- Graph API version المستخدمة: **v21.0** (من `FB_GRAPH_VERSION` env — بدون ترقية)
 - **لم يتم نشره للإنتاج بعد** (مش wired) — Stage 4 لسه جارية، مش مكتملة
 
 ## ✅ قناة الماسنجر LIVE (5 أكتوبر)
