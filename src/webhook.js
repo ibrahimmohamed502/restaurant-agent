@@ -9,6 +9,16 @@ import {
 import { analyzeAndDraft } from './agent.js';
 import { notifyStaff } from './notify.js';
 import { logEvent, addEscalation } from './db.js';
+import { enabled } from './db/pg.js';
+import {
+  getDefaultTenantId,
+  findOrCreateChannel,
+  findOrCreateCustomer,
+  findOrCreateConversation,
+  persistMessage,
+  createEscalationRecord,
+  escalationCategory
+} from './services/conversations.js';
 import { alreadyReplied, markReplied, userOverLimit } from './store.js';
 
 export const webhookRouter = express.Router();
@@ -109,7 +119,7 @@ async function processMessage(event) {
   await sendTypingIndicator(psid);
   const authorName = await getUserFirstName(psid);
   const draft = await analyzeAndDraft({ text, authorName, channel: 'dm' });
-  await sendMessengerReply(psid, draft.reply);
+  const sendResp = await sendMessengerReply(psid, draft.reply);
   markReplied(msg.mid, psid);
 
   console.log(
@@ -129,6 +139,23 @@ async function processMessage(event) {
     escalate: draft.escalate
   });
 
+  // ---- Stage 3: persist conversation in Postgres (best-effort) ----
+  let conversationId = null;
+  if (enabled) {
+    try {
+      const tenantId = await getDefaultTenantId();
+      if (tenantId) {
+        const channelId = await findOrCreateChannel({ tenantId, provider: 'meta_dm', externalId: PAGE_ID, displayName: 'Messenger DM' });
+        const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_dm', externalId: psid, name: authorName });
+        conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey: psid, customerId, lang: draft.lang });
+        await persistMessage({ tenantId, conversationId, direction: 'inbound', senderType: 'customer', text, providerMessageId: msg.mid, providerTs: event.timestamp ? new Date(event.timestamp) : null });
+        await persistMessage({ tenantId, conversationId, direction: 'outbound', senderType: 'ai', text: draft.reply, providerMessageId: sendResp?.message_id });
+      }
+    } catch (e) {
+      console.error('⚠️ conversation persist failed (dm):', e.message);
+    }
+  }
+
   // ---- Staff alert for DMs too (blogger collabs, complaints, contact data) ----
   const reason = draft.escalate
     ? 'تصعيد في الماسنجر (شكوى/تعاون/حجز/بيانات تواصل)'
@@ -137,6 +164,13 @@ async function processMessage(event) {
       : null;
   if (reason) {
     addEscalation({ channel: 'messenger', customerName: authorName, customerId: psid, message: text, reply: draft.reply, reason });
+    if (conversationId) {
+      try {
+        await createEscalationRecord({ tenantId: await getDefaultTenantId(), conversationId, category: escalationCategory(reason), reason, summary: draft.intent });
+      } catch (e) {
+        console.error('⚠️ escalation persist failed (dm):', e.message);
+      }
+    }
     await notifyStaff({
       channel: 'messenger',
       from: { id: psid, name: authorName },
@@ -179,7 +213,7 @@ async function processComment(value) {
   const finalMessage = `@[${from.id}] ${draft.reply}`;
 
   // ---- Publish via FB API ----
-  await replyToComment(commentId, finalMessage);
+  const replyResp = await replyToComment(commentId, finalMessage);
   markReplied(commentId, from.id);
 
   console.log(
@@ -199,6 +233,24 @@ async function processComment(value) {
     escalate: draft.escalate
   });
 
+  // ---- Stage 3: persist conversation in Postgres (best-effort, never breaks replies) ----
+  let conversationId = null;
+  if (enabled) {
+    try {
+      const tenantId = await getDefaultTenantId();
+      if (tenantId) {
+        const channelId = await findOrCreateChannel({ tenantId, provider: 'meta_comment', externalId: PAGE_ID, displayName: 'Facebook comments' });
+        const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_comment', externalId: from.id, name: from.name });
+        const externalKey = value.parent_id && value.parent_id !== value.post_id ? value.parent_id : commentId;
+        conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey, customerId, lang: draft.lang });
+        await persistMessage({ tenantId, conversationId, direction: 'inbound', senderType: 'customer', text: message, providerMessageId: commentId, providerTs: value.created_time ? new Date(value.created_time * 1000) : null });
+        await persistMessage({ tenantId, conversationId, direction: 'outbound', senderType: 'ai', text: draft.reply, providerMessageId: replyResp?.id });
+      }
+    } catch (e) {
+      console.error('⚠️ conversation persist failed (comment):', e.message);
+    }
+  }
+
   // ---- Staff alert: escalation (complaint/collab/reservation) OR customer shared contact data ----
   const reason = draft.escalate
     ? 'تصعيد (شكوى/تعاون/حجز/بيانات تواصل)'
@@ -207,6 +259,13 @@ async function processComment(value) {
       : null;
   if (reason) {
     addEscalation({ channel: 'comment', customerName: from.name, customerId: from.id, message, reply: draft.reply, reason });
+    if (conversationId) {
+      try {
+        await createEscalationRecord({ tenantId: await getDefaultTenantId(), conversationId, category: escalationCategory(reason), reason, summary: draft.intent });
+      } catch (e) {
+        console.error('⚠️ escalation persist failed (comment):', e.message);
+      }
+    }
     await notifyStaff({ channel: 'comment', commentId, from, message, reason, draft });
   }
 }
