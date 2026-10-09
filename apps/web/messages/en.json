@@ -1,0 +1,69 @@
+{
+  "common": {
+    "appName": "Customer Engagement Platform",
+    "company": "Life with Cacao",
+    "loading": "Loading…",
+    "retry": "Retry",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "search": "Search",
+    "logout": "Sign out",
+    "profile": "Profile",
+    "language": "Language",
+    "theme": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "comingSoon": "Coming soon"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "inbox": "Unified Inbox",
+    "customers": "Customers",
+    "companies": "Companies",
+    "brands": "Brands",
+    "channels": "Channels",
+    "ai": "AI",
+    "knowledge": "Knowledge Base",
+    "team": "Team & Access",
+    "integrations": "Integrations",
+    "audit": "Audit Logs",
+    "settings": "Settings"
+  },
+  "navGroups": { "overview": "Overview", "engagement": "Engagement", "organization": "Organization", "configuration": "Configuration" },
+  "auth": {
+    "loginTitle": "Sign in",
+    "loginSubtitle": "Enter your credentials to access the admin console",
+    "email": "Email",
+    "password": "Password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "submit": "Sign in",
+    "signingIn": "Signing in…",
+    "invalidCredentials": "Invalid email or password",
+    "rateLimited": "Too many attempts. Please try again later.",
+    "unexpected": "Something went wrong. Please try again.",
+    "emailRequired": "Email is required",
+    "emailInvalid": "Invalid email format",
+    "passwordRequired": "Password is required"
+  },
+  "states": {
+    "emptyTitle": "No data",
+    "emptyDescription": "Content will appear here once available.",
+    "errorTitle": "Couldn't load content",
+    "errorDescription": "An error occurred while fetching data. Please try again.",
+    "unauthorizedTitle": "You don't have access",
+    "unauthorizedDescription": "This page requires elevated permissions.",
+    "notFoundTitle": "Page not found",
+    "notFoundDescription": "The link you opened is incorrect or has moved."
+  },
+  "shell": {
+    "collapse": "Collapse sidebar",
+    "expand": "Expand sidebar",
+    "menu": "Menu",
+    "company": "Company",
+    "brand": "Brand",
+    "superAdmin": "Super admin"
+  },
+  "placeholder": "This module is on the implementation roadmap."
+}

@@ -1,0 +1,14 @@
+node_modules
+.next
+out
+build
+dist
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+.env*
+!.env.example
+.DS_Store
+Thumbs.db
+.idea
+.vscode

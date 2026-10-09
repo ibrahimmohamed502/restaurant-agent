@@ -3,6 +3,8 @@ import express from 'express';
 import { webhookRouter } from './src/webhook.js';
 import { dashboardRouter } from './src/dashboard.js';
 import { usersRouter } from './src/routes/users.js';
+import { createApiV1Router } from './src/api/v1/index.js';
+import { pool } from './src/db/pg.js';
 import { migrate } from './src/db/migrate.js';
 import { seedIfEmpty } from './src/db/seed.js';
 
@@ -20,6 +22,18 @@ app.use(
 app.use(webhookRouter);
 app.use(dashboardRouter);
 app.use(usersRouter);
+if (pool) app.use('/api/v1', createApiV1Router({ pool }));
+
+// JSON body parse errors → sanitized 400 (never a stack trace)
+app.use((err, req, _res, next) => {
+  if (err?.type === 'entity.parse.failed') {
+    const base = req.path.startsWith('/api/v1')
+      ? { error: { code: 'BAD_JSON', message: 'malformed JSON body' } }
+      : null;
+    return _res.status(400).json(base ?? { error: 'malformed JSON body' });
+  }
+  next(err);
+});
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', ts: Date.now() });

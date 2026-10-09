@@ -1,0 +1,69 @@
+{
+  "common": {
+    "appName": "منصة إدارة العملاء",
+    "company": "لايف وذ كاكاو",
+    "loading": "جارٍ التحميل…",
+    "retry": "إعادة المحاولة",
+    "cancel": "إلغاء",
+    "confirm": "تأكيد",
+    "save": "حفظ",
+    "search": "بحث",
+    "logout": "تسجيل الخروج",
+    "profile": "الملف الشخصي",
+    "language": "اللغة",
+    "theme": "المظهر",
+    "light": "فاتح",
+    "dark": "داكن",
+    "comingSoon": "قريباً"
+  },
+  "nav": {
+    "dashboard": "لوحة التحكم",
+    "inbox": "صندوق الموحد",
+    "customers": "العملاء",
+    "companies": "الشركات",
+    "brands": "العلامات التجارية",
+    "channels": "القنوات",
+    "ai": "الذكاء الاصطناعي",
+    "knowledge": "قاعدة المعرفة",
+    "team": "الفريق والصلاحيات",
+    "integrations": "التكاملات",
+    "audit": "سجلات التدقيق",
+    "settings": "الإعدادات"
+  },
+  "navGroups": { "overview": "نظرة عامة", "engagement": "التفاعل", "organization": "المؤسسة", "configuration": "الإعدادات" },
+  "auth": {
+    "loginTitle": "تسجيل الدخول",
+    "loginSubtitle": "أدخل بياناتك للوصول إلى لوحة الإدارة",
+    "email": "البريد الإلكتروني",
+    "password": "كلمة المرور",
+    "showPassword": "إظهار كلمة المرور",
+    "hidePassword": "إخفاء كلمة المرور",
+    "submit": "دخول",
+    "signingIn": "جارٍ تسجيل الدخول…",
+    "invalidCredentials": "البريد الإلكتروني أو كلمة المرور غير صحيحة",
+    "rateLimited": "محاولات كثيرة. حاول مرة أخرى لاحقاً.",
+    "unexpected": "حدث خطأ غير متوقع. حاول مرة أخرى.",
+    "emailRequired": "البريد الإلكتروني مطلوب",
+    "emailInvalid": "صيغة البريد الإلكتروني غير صحيحة",
+    "passwordRequired": "كلمة المرور مطلوبة"
+  },
+  "states": {
+    "emptyTitle": "لا توجد بيانات",
+    "emptyDescription": "سيظهر المحتوى هنا عند توفره.",
+    "errorTitle": "تعذّر تحميل المحتوى",
+    "errorDescription": "حدث خطأ أثناء جلب البيانات. يرجى المحاولة مرة أخرى.",
+    "unauthorizedTitle": "لا تملك صلاحية الوصول",
+    "unauthorizedDescription": "هذه الصفحة تتطلب صلاحيات أعلى.",
+    "notFoundTitle": "الصفحة غير موجودة",
+    "notFoundDescription": "الرابط الذي فتحته غير صحيح أو تم نقله."
+  },
+  "shell": {
+    "collapse": "تصغير القائمة",
+    "expand": "توسيع القائمة",
+    "menu": "القائمة",
+    "company": "الشركة",
+    "brand": "العلامة التجارية",
+    "superAdmin": "مدير عام"
+  },
+  "placeholder": "هذه الوحدة قيد التطوير ضمن خارطة الطريق."
+}
