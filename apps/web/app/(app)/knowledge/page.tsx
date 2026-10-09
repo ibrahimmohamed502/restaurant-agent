@@ -3,38 +3,20 @@
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { Loader2 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { BookOpen, Eye, GitBranch, Pencil, Store } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
-import { ErrorState, EmptyState, PageLoading } from '@/components/ui/states';
+import { ErrorState, PageLoading } from '@/components/ui/states';
 import { useToast } from '@/components/ui/toaster';
 import { KbActionBar, KbSectionNav, KbStatusBar, type KbAction, type SaveState } from '@/components/kb/kb-shell';
 import { ConfirmDialog, KbSkeleton, PreviewSummary, ReviewList, ValidationPanel } from '@/components/kb/kb-parts';
-import { MenuEditor, BranchEditor, type MenuStructure, type Branch } from '@/components/kb/menu-editor';
-import { FaqEditor, PolicyEditor, SourcesPanel, type Faq, type PolicyField } from '@/components/kb/editors';
-import { knowledgeApi, type KnowledgeOverview } from '@/lib/knowledge-api';
+import { MenuEditor } from '@/components/kb/menu-editor';
+import { BranchEditor, FaqEditor, PolicyEditor, SourcesPanel, type Faq, type PolicyField } from '@/components/kb/editors';
+import { OverviewWorkspace, OVERVIEW_GROUPS } from '@/components/kb/overview';
+import { knowledgeApi, type KnowledgeOverview, type ValidationError, type Review } from '@/lib/knowledge-api';
 
 type SectionKey = 'overview' | 'menu' | 'branches' | 'faq' | 'policies' | 'sources';
 
-/** Fields that actually exist in the published LWC document. */
-const OVERVIEW_FIELDS: PolicyField[] = [
-  { key: 'restaurantName', label: 'اسم المطعم / العلامة', kind: 'text' },
-  { key: 'menuUrl', label: 'رابط المنيو', kind: 'text', help: 'https://…' },
-  { key: 'currency', label: 'العملة', kind: 'text' },
-  { key: 'halal', label: 'معلومات الحلال', kind: 'long' },
-  { key: 'reservations', label: 'الحجوزات', kind: 'long' },
-  { key: 'delivery', label: 'التوصيل / الخدمة', kind: 'long' },
-  { key: 'location', label: 'الموقع', kind: 'long' },
-  { key: 'about', label: 'نبذة عن المطعم', kind: 'long' }
-];
-
-const POLICY_FIELDS: PolicyField[] = [
-  { key: 'meatSources', label: 'مصادر اللحوم (نص)', kind: 'long' },
-  { key: 'agentNotes', label: 'ملاحظات تشغيلية للمساعد', kind: 'long', help: 'توجيهات تظهر للمساعد الآلي داخل knowledge فقط' }
-];
-
-const FAQ_KEYS = ['faqs', 'faq', 'questions'];
-
+/** Fields that exist in the published LWC document, grouped for a premium workspace. */
 export default function KnowledgePage() {
   const t = useTranslations('nav');
   const router = useRouter();
@@ -42,14 +24,14 @@ export default function KnowledgePage() {
 
   const [overview, setOverview] = React.useState<KnowledgeOverview | null>(null);
   const [loading, setLoading] = React.useState(true);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [loadError, setLoadError] = React.useState(false);
 
   const [section, setSection] = React.useState<SectionKey>('overview');
   const [content, setContent] = React.useState<Record<string, unknown> | null>(null);
-  const [baseline, setBaseline] = React.useState<string>('');
+  const [baseline, setBaseline] = React.useState('');
   const [saveState, setSaveState] = React.useState<SaveState>('idle');
-  const [errors, setErrors] = React.useState<Array<{ section: string; path: string; field: string | null; messageKey: string }>>([]);
-  const [review, setReview] = React.useState<{ counts: Record<string, number>; bySection: Record<string, Record<string, number>>; items: Array<{ path: string; type: string; value?: string; from?: string; to?: string }> } | null>(null);
+  const [errors, setErrors] = React.useState<ValidationError[]>([]);
+  const [review, setReview] = React.useState<Review | null>(null);
   const [busy, setBusy] = React.useState<Record<string, boolean>>({});
   const [dialog, setDialog] = React.useState<null | 'publish' | 'discard' | 'unsaved'>(null);
   const [pendingSection, setPendingSection] = React.useState<SectionKey | null>(null);
@@ -57,26 +39,18 @@ export default function KnowledgePage() {
   /* ------------------------------------------------------------- loading */
   const load = React.useCallback(async () => {
     setLoading(true);
-    setLoadError(null);
+    setLoadError(false);
     try {
       const data = await knowledgeApi.overview();
       setOverview(data);
-      if (data.draft) {
-        setContent(data.draft.content);
-        setBaseline(JSON.stringify(data.draft.content));
-        setSaveState('idle');
-      } else if (data.published) {
-        setContent(data.published.structured);
-        setBaseline(JSON.stringify(data.published.structured));
-        setSaveState('idle');
-      } else {
-        setContent(null);
-        setBaseline('');
-      }
+      const base = data.draft?.content ?? data.published?.structured ?? null;
+      setContent(base);
+      setBaseline(JSON.stringify(base));
+      setSaveState('idle');
       setErrors([]);
       setReview(null);
-    } catch (err) {
-      setLoadError((err as { message?: string })?.message ?? 'error');
+    } catch {
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -87,14 +61,15 @@ export default function KnowledgePage() {
   const dirty = content !== null && JSON.stringify(content) !== baseline;
   const canEdit = overview?.permissions.canEdit ?? false;
   const canPublish = overview?.permissions.canPublish ?? false;
-  const hasDraft = Boolean(overview?.draft && overview.draft.status !== 'discarded');
+  const hasDraft = Boolean(overview?.draft && overview.draft.status === 'editing');
+  const publishedVersion = overview?.published?.version ?? null;
 
   React.useEffect(() => { setSaveState(dirty ? 'dirty' : 'idle'); }, [dirty]);
 
   /* ------------------------------------------------------------- editing */
   const patch = (next: Record<string, unknown>) => { setContent(next); setSaveState('dirty'); };
 
-  const ensureDraft = async (): Promise<boolean> => {
+  const ensureDraft = async () => {
     if (hasDraft || !content) return true;
     try {
       const created = await knowledgeApi.createDraft();
@@ -118,7 +93,7 @@ export default function KnowledgePage() {
       setBaseline(JSON.stringify(res.draft.content));
       setErrors(res.validation.errors);
       setSaveState('saved');
-      push({ title: res.validation.ok ? 'تم حفظ المسودة' : 'تم الحفظ — توجد أخطاء تحقق', variant: res.validation.ok ? 'default' : 'destructive' });
+      push({ title: res.validation.ok ? 'تم حفظ المسودة' : 'تم الحفظ — توجد مشاكل تحقق', variant: res.validation.ok ? 'default' : 'destructive' });
     } catch (err) {
       setSaveState('error');
       push({ title: 'فشل الحفظ', description: (err as { message?: string }).message, variant: 'destructive' });
@@ -189,9 +164,8 @@ export default function KnowledgePage() {
     }
   };
 
-  /* -------------------------------------------------- unsaved-change guard */
   const switchSection = (next: SectionKey) => {
-    if (dirty) { setPendingSection(next); setDialog('unsaved'); return; }
+    if (dirty && next !== section) { setPendingSection(next); setDialog('unsaved'); return; }
     setSection(next);
   };
 
@@ -204,15 +178,15 @@ export default function KnowledgePage() {
   /* ------------------------------------------------------------------ view */
   if (loading) {
     return (
-      <div className="mx-auto w-full max-w-6xl space-y-6">
+      <div className="space-y-5">
         <PageHeader title={t('knowledge')} />
-        <PageLoading />
+        <KbSkeleton />
       </div>
     );
   }
   if (loadError || !overview) {
     return (
-      <div className="mx-auto w-full max-w-6xl space-y-6">
+      <div className="space-y-5">
         <PageHeader title={t('knowledge')} />
         <ErrorState title="تعذّر تحميل قاعدة المعرفة" description="حدث خطأ أثناء جلب البيانات." actionLabel="إعادة المحاولة" onAction={load} />
       </div>
@@ -220,49 +194,63 @@ export default function KnowledgePage() {
   }
   if (!content) {
     return (
-      <div className="mx-auto w-full max-w-6xl space-y-6">
+      <div className="space-y-5">
         <PageHeader title={t('knowledge')} description="إدارة معرفة العلامة التجارية" />
-        <EmptyState title="لا توجد معرفة منشورة" description="أنشئ مسودة أولًا لبدء إدارة المحتوى." />
+        <div className="rounded-lg border border-dashed border-border px-6 py-14 text-center">
+          <p className="text-sm text-muted-foreground">لا توجد معرفة منشورة بعد. أنشئ مسودة لبدء إدارة المحتوى.</p>
+        </div>
       </div>
     );
   }
 
   const c = content;
-  const menus = ((c.menus ?? {}) as MenuStructure);
-  const branches = (Array.isArray(c.branches) ? c.branches : []) as Branch[];
-  const faqKey = FAQ_KEYS.find((k) => Array.isArray(c[k])) ?? 'faqs';
-  const faqs = (Array.isArray(c[faqKey]) ? c[faqKey] : []) as Faq[];
+  const menus = (c.menus ?? {}) as Record<string, Record<string, Array<Record<string, unknown>>>>;
+  const branches = Array.isArray(c.branches) ? c.branches : [];
+  const faqKey = ['faqs', 'faq', 'questions'].find((k) => Array.isArray(c[k])) ?? 'faqs';
+  const faqs = Array.isArray(c[faqKey]) ? c[faqKey] : [];
+  const editing = hasDraft;
 
-  const sections: Array<{ key: SectionKey; label: string; badge?: string }> = [
-    { key: 'overview', label: 'نظرة عامة' },
-    { key: 'menu', label: 'المنيو', badge: String(Object.keys(menus).length) },
-    { key: 'branches', label: 'الفروع', badge: String(branches.length) },
-    { key: 'faq', label: 'الأسئلة الشائعة', badge: String(faqs.length) },
-    { key: 'policies', label: 'السياسات والخدمة' },
-    { key: 'sources', label: 'المصادر والإصدارات' }
+  const sections = [
+    { key: 'overview', label: 'نظرة عامة', icon: Store },
+    { key: 'menu', label: 'المنيو', icon: BookOpen, badge: String(Object.keys(menus).length) },
+    { key: 'branches', label: 'الفروع', icon: GitBranch, badge: String(branches.length) },
+    { key: 'faq', label: 'الأسئلة الشائعة', icon: Eye, badge: String(faqs.length) },
+    { key: 'policies', label: 'السياسات والخدمة', icon: Pencil },
+    { key: 'sources', label: 'المصادر والإصدارات', icon: BookOpen }
   ];
 
   const actions: KbAction[] = [
-    ...(canEdit ? [{ key: 'draft', label: 'إنشاء مسودة', onClick: () => ensureDraft().then(() => push({ title: 'المسودة جاهزة' })), variant: 'secondary' as const, disabled: hasDraft }] : []),
-    { key: 'save', label: 'حفظ المسودة', onClick: saveDraft, variant: 'secondary' as const, disabled: !canEdit || !dirty, busy: busy.save },
-    { key: 'validate', label: 'تحقق', onClick: validate, variant: 'secondary' as const, disabled: !canEdit, busy: busy.validate },
-    { key: 'preview', label: 'معاينة', onClick: preview, variant: 'secondary' as const, disabled: !canEdit, busy: busy.preview },
-    { key: 'publish', label: 'نشر', onClick: () => setDialog('publish'), variant: 'primary' as const, disabled: !canPublish || errors.length > 0, busy: busy.publish, title: errors.length ? 'عالج مشاكل التحقق أولًا' : undefined },
-    ...(canEdit && hasDraft ? [{ key: 'discard', label: 'إلغاء المسودة', onClick: () => setDialog('discard'), variant: 'destructive' as const, disabled: busy.discard }] : [])
+    ...(canEdit && !editing ? [{ key: 'draft', label: 'إنشاء مسودة', onClick: () => ensureDraft().then(() => push({ title: 'المسودة جاهزة' })), variant: 'primary' as const }] : []),
+    { key: 'save', label: 'حفظ المسودة', onClick: saveDraft, variant: 'secondary', disabled: !canEdit || !editing || !dirty, busy: busy.save },
+    { key: 'validate', label: 'تحقق', onClick: validate, variant: 'secondary', disabled: !canEdit || !editing, busy: busy.validate },
+    { key: 'preview', label: 'معاينة', onClick: preview, variant: 'secondary', disabled: !canEdit || !editing, busy: busy.preview },
+    { key: 'publish', label: 'نشر', onClick: () => setDialog('publish'), variant: 'primary', disabled: !canPublish || !editing || errors.length > 0, busy: busy.publish, title: errors.length ? 'عالج مشاكل التحقق أولًا' : undefined },
+    ...(canEdit && editing ? [{ key: 'discard', label: 'إلغاء المسودة', onClick: () => setDialog('discard'), variant: 'destructive' as const, disabled: busy.discard }] : [])
   ];
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-5 pb-24">
+    <div className="space-y-5">
       <PageHeader
         title={t('knowledge')}
         description="إدارة معرفة العلامة التجارية: المنيو، الفروع، الأسئلة الشائعة والسياسات"
         breadcrumb={<a href="/inbox" onClick={leaveWorkspace} className="hover:underline">صندوق الموحد</a>}
+        actions={
+          editing ? (
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs font-medium text-warning">
+              <Pencil className="h-3 w-3" aria-hidden /> تحرير مسودة
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-success/30 bg-success/10 px-2 py-1 text-xs font-medium text-success">
+              <Eye className="h-3 w-3" aria-hidden /> عرض المنشور
+            </span>
+          )
+        }
       />
 
       <KbStatusBar
         brandLabel={overview.source.title}
-        publishedVersion={overview.published?.version ?? null}
-        draftState={hasDraft ? 'draft' : 'none'}
+        publishedVersion={publishedVersion}
+        draftState={editing ? 'draft' : 'none'}
         saveState={saveState}
         errorCount={errors.length || null}
       />
@@ -275,17 +263,18 @@ export default function KnowledgePage() {
         />
       ) : null}
 
-      <KbSectionNav sections={sections} active={section} onChange={(k) => switchSection(k as SectionKey)} />
-
-      <div className="min-h-[280px]">
-        {section === 'overview' ? (
-          <PolicyEditor fields={OVERVIEW_FIELDS} value={c} onChange={(next) => patch({ ...next })} />
-        ) : null}
-        {section === 'menu' ? <MenuEditor menus={menus} onChange={(next) => patch({ ...c, menus: next })} /> : null}
-        {section === 'branches' ? <BranchEditor branches={branches} onChange={(next) => patch({ ...c, branches: next })} /> : null}
-        {section === 'faq' ? <FaqEditor faqs={faqs} onChange={(next) => patch({ ...c, [faqKey]: next })} label="السؤال" /> : null}
-        {section === 'policies' ? <PolicyEditor fields={POLICY_FIELDS} value={c} onChange={(next) => patch(next)} /> : null}
-        {section === 'sources' ? <SourcesPanel source={overview.source} versions={overview.history} /> : null}
+      <div className="grid gap-5 lg:grid-cols-[13rem_1fr]">
+        <KbSectionNav sections={sections} active={section} onChange={(k) => switchSection(k as SectionKey)} />
+        <div className="min-w-0">
+          {section === 'overview' ? (
+            <OverviewWorkspace value={c} groups={OVERVIEW_GROUPS} editing={editing && canEdit} onChange={(next) => patch({ ...next })} />
+          ) : null}
+          {section === 'menu' ? <MenuEditor menus={menus} readOnly={!editing || !canEdit} onChange={(next) => patch({ ...c, menus: next })} /> : null}
+          {section === 'branches' ? <BranchEditor branches={branches} readOnly={!editing || !canEdit} onChange={(next) => patch({ ...c, branches: next })} /> : null}
+          {section === 'faq' ? <FaqEditor faqs={faqs} label="السؤال" readOnly={!editing || !canEdit} onChange={(next) => patch({ ...c, [faqKey]: next })} /> : null}
+          {section === 'policies' ? <PolicyEditor value={c} editing={editing && canEdit} onChange={(next) => patch(next)} /> : null}
+          {section === 'sources' ? <SourcesPanel source={overview.source} versions={overview.history} /> : null}
+        </div>
       </div>
 
       <KbActionBar actions={actions} />
@@ -302,10 +291,10 @@ export default function KnowledgePage() {
         {review ? (
           <div className="space-y-2">
             <p className="text-[13px] text-muted-foreground">
-              أضيف {review.counts.added ?? 0} · عُدّل {review.counts.modified ?? 0} · حُذف {review.counts.removed ?? 0}
+              أُضيف {review.counts.added ?? 0} · عُدّل {review.counts.modified ?? 0} · حُذف {review.counts.removed ?? 0}
             </p>
             <div className="max-h-40 overflow-y-auto rounded-md border border-border">
-              <ReviewList review={review as never} />
+              <ReviewList review={review} />
             </div>
           </div>
         ) : (
@@ -334,12 +323,6 @@ export default function KnowledgePage() {
         onConfirm={async () => { await saveDraft(); setDialog(null); if (pendingSection) setSection(pendingSection); }}
         onCancel={() => { setDialog(null); if (pendingSection) setSection(pendingSection); }}
       />
-
-      {busy.publish ? (
-        <div className="fixed bottom-4 end-4 z-[70] flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-sm shadow-lg">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> جارٍ النشر…
-        </div>
-      ) : null}
     </div>
   );
 }

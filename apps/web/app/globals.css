@@ -2,70 +2,187 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * PREMIUM WARM ENTERPRISE — design tokens
+ * Warm neutral surfaces, restrained brand accent, layered dark mode.
+ * All semantic colors are HSL channels consumed by tailwind.config.ts.
+ */
 @layer base {
   :root {
-    --background: 40 33% 97%;
+    /* surfaces */
+    --background: 40 30% 98%;
     --surface: 0 0% 100%;
-    --surface-2: 40 20% 95%;
-    --foreground: 24 20% 14%;
-    --muted: 40 16% 93%;
-    --muted-foreground: 24 8% 42%;
-    --border: 30 14% 87%;
-    --input: 30 14% 82%;
-    --ring: 24 60% 34%;
-    --primary: 24 52% 32%;
-    --primary-foreground: 36 40% 97%;
-    --accent: 30 45% 90%;
-    --accent-foreground: 24 40% 20%;
-    --destructive: 0 68% 42%;
+    --surface-2: 38 24% 96%;
+    --surface-3: 36 20% 93%;
+    --foreground: 24 22% 12%;
+    --secondary-foreground: 24 10% 34%;
+    --muted: 36 18% 94%;
+    --muted-foreground: 24 8% 44%;
+    --border: 32 16% 89%;
+    --border-strong: 30 14% 80%;
+    --input: 30 14% 84%;
+
+    /* brand */
+    --primary: 24 46% 30%;
+    --primary-hover: 24 46% 25%;
+    --primary-foreground: 36 44% 97%;
+    --accent: 30 40% 92%;
+    --accent-foreground: 24 42% 20%;
+
+    /* semantic */
+    --destructive: 2 64% 44%;
     --destructive-foreground: 0 0% 100%;
-    --success: 142 62% 30%;
+    --success: 150 52% 30%;
     --success-foreground: 0 0% 100%;
-    --warning: 36 88% 38%;
+    --warning: 34 82% 38%;
     --warning-foreground: 0 0% 100%;
-    --info: 214 70% 42%;
+    --info: 214 62% 42%;
     --info-foreground: 0 0% 100%;
-    --radius: 0.375rem;
-    --shadow-color: 24 30% 20%;
-    --font-sans: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, monospace;
+
+    --ring: 24 46% 34%;
+
+    /* radius + elevation */
+    --radius: 0.5rem;
+    --radius-sm: 0.25rem;
+    --shadow-color: 26 32% 22%;
+    --shadow-sm: 0 1px 2px 0 hsl(var(--shadow-color) / 0.05);
+    --shadow-md: 0 2px 8px -2px hsl(var(--shadow-color) / 0.08), 0 1px 2px -1px hsl(var(--shadow-color) / 0.05);
+    --shadow-lg: 0 12px 32px -12px hsl(var(--shadow-color) / 0.14), 0 2px 6px -2px hsl(var(--shadow-color) / 0.06);
+
+    /* typography */
+    --font-sans: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', 'Noto Sans Arabic', 'Tahoma', sans-serif;
+    --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+
+    /* motion */
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --dur-fast: 120ms;
+    --dur-base: 180ms;
+    --dur-slow: 260ms;
+
+    /* layout */
+    --sidebar-w: 16rem;
+    --sidebar-w-collapsed: 4.25rem;
+    --topbar-h: 3.5rem;
   }
 
   .dark {
-    --background: 24 12% 8%;
-    --surface: 24 10% 11%;
-    --surface-2: 24 9% 15%;
-    --foreground: 36 22% 92%;
-    --muted: 24 9% 17%;
-    --muted-foreground: 36 10% 64%;
-    --border: 24 9% 22%;
-    --input: 24 9% 26%;
-    --ring: 30 60% 60%;
-    --primary: 30 62% 58%;
-    --primary-foreground: 24 40% 10%;
-    --accent: 24 12% 20%;
-    --accent-foreground: 36 22% 92%;
-    --destructive: 0 62% 52%;
+    --background: 26 14% 7%;
+    --surface: 26 12% 10%;
+    --surface-2: 26 11% 13%;
+    --surface-3: 26 10% 16%;
+    --foreground: 36 24% 93%;
+    --secondary-foreground: 34 12% 72%;
+    --muted: 26 11% 15%;
+    --muted-foreground: 34 10% 62%;
+    --border: 27 10% 20%;
+    --border-strong: 27 9% 27%;
+    --input: 27 10% 24%;
+
+    --primary: 32 58% 56%;
+    --primary-hover: 32 58% 62%;
+    --primary-foreground: 26 30% 10%;
+    --accent: 26 12% 19%;
+    --accent-foreground: 36 24% 92%;
+
+    --destructive: 3 68% 58%;
     --destructive-foreground: 0 0% 100%;
-    --success: 142 52% 46%;
+    --success: 150 46% 46%;
     --success-foreground: 0 0% 100%;
-    --warning: 36 82% 56%;
-    --warning-foreground: 24 40% 10%;
-    --info: 214 70% 60%;
+    --warning: 36 80% 58%;
+    --warning-foreground: 26 30% 10%;
+    --info: 214 66% 62%;
     --info-foreground: 0 0% 100%;
+
+    --ring: 32 58% 60%;
     --shadow-color: 0 0% 0%;
+    --shadow-sm: 0 1px 2px 0 hsl(0 0% 0% / 0.3);
+    --shadow-md: 0 2px 8px -2px hsl(0 0% 0% / 0.4), 0 1px 2px -1px hsl(0 0% 0% / 0.3);
+    --shadow-lg: 0 16px 40px -16px hsl(0 0% 0% / 0.55), 0 2px 6px -2px hsl(0 0% 0% / 0.35);
   }
 
   * {
     @apply border-border;
   }
 
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
     text-rendering: optimizeLegibility;
+    font-feature-settings: 'kern' 1;
   }
 
   :focus-visible {
     @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+    border-radius: var(--radius-sm);
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.16);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* page container rhythm */
+  .page-shell {
+    @apply mx-auto w-full max-w-[76rem] px-4 py-6 lg:px-8 lg:py-8;
+  }
+
+  /* refined focus ring for interactive surfaces */
+  .focus-ring {
+    @apply transition-[box-shadow,border-color] duration-[--dur-fast] ease-[--ease-out] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+
+  /* subtle entrance used by drawers, dialogs, panels */
+  .enter-up {
+    animation: enter-up var(--dur-slow) var(--ease-out) both;
+  }
+  .enter-fade {
+    animation: enter-fade var(--dur-base) var(--ease-out) both;
+  }
+  .enter-slide-ltr {
+    animation: enter-slide var(--dur-slow) var(--ease-out) both;
+  }
+  [dir='rtl'] .enter-slide-ltr {
+    animation-name: enter-slide-rtl;
+  }
+  @keyframes enter-up {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes enter-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes enter-slide {
+    from { opacity: 0; transform: translateX(12px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes enter-slide-rtl {
+    from { opacity: 0; transform: translateX(-12px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  /* skeleton shimmer */
+  .shimmer {
+    background-image: linear-gradient(100deg, transparent 20%, hsl(var(--muted-foreground) / 0.07) 45%, transparent 70%);
+    background-size: 200% 100%;
+    animation: shimmer 1.6s linear infinite;
+  }
+  @keyframes shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
   }
 }

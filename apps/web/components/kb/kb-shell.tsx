@@ -97,34 +97,39 @@ export function KbActionBar({ actions, className }: { actions: KbAction[]; class
   );
 }
 
-/** Secondary navigation for the knowledge workspace. */
+/** Navigation for the knowledge workspace (vertical rail on desktop). */
 export function KbSectionNav({
   sections,
   active,
   onChange
 }: {
-  sections: Array<{ key: string; label: string; badge?: string }>;
+  sections: Array<{ key: string; label: string; badge?: string; icon?: React.ComponentType<{ className?: string }> }>;
   active: string;
   onChange: (key: string) => void;
 }) {
   return (
-    <nav aria-label="Knowledge sections" className="flex gap-1 overflow-x-auto border-b border-border pb-px">
-      {sections.map((s) => (
-        <button
-          key={s.key}
-          type="button"
-          onClick={() => onChange(s.key)}
-          aria-current={active === s.key ? 'page' : undefined}
-          className={cn(
-            'relative shrink-0 rounded-md px-3 py-2 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            active === s.key ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          {s.label}
-          {s.badge ? <span className="ms-1.5 text-[11px] text-muted-foreground">{s.badge}</span> : null}
-          {active === s.key ? <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-primary" aria-hidden /> : null}
-        </button>
-      ))}
+    <nav aria-label="Knowledge sections" className="flex gap-1 overflow-x-auto pb-2 lg:flex-col lg:overflow-visible lg:pb-0">
+      {sections.map((s) => {
+        const Icon = s.icon;
+        const isActive = active === s.key;
+        return (
+          <button
+            key={s.key}
+            type="button"
+            onClick={() => onChange(s.key)}
+            aria-current={isActive ? 'page' : undefined}
+            className={cn(
+              'relative flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-start text-[13px] font-medium transition-colors duration-[--dur-fast] lg:w-full',
+              isActive ? 'bg-primary/10 text-primary' : 'text-secondary-foreground hover:bg-muted hover:text-foreground'
+            )}
+          >
+            {isActive ? <span className="absolute inset-y-1.5 start-0 w-0.5 rounded-full bg-primary" aria-hidden /> : null}
+            {Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden /> : null}
+            <span className="truncate">{s.label}</span>
+            {s.badge ? <span className="ms-auto text-2xs text-muted-foreground">{s.badge}</span> : null}
+          </button>
+        );
+      })}
     </nav>
   );
 }

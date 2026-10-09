@@ -46,7 +46,8 @@ export function TextInput({
   invalid,
   dir,
   type = 'text',
-  inputMode
+  inputMode,
+  readOnly
 }: {
   id?: string;
   value: string;
@@ -56,6 +57,7 @@ export function TextInput({
   dir?: 'ltr' | 'rtl';
   type?: string;
   inputMode?: 'text' | 'decimal' | 'tel' | 'url' | 'numeric';
+  readOnly?: boolean;
 }) {
   return (
     <Input
@@ -65,6 +67,7 @@ export function TextInput({
       dir={dir}
       value={value}
       placeholder={placeholder}
+      readOnly={readOnly}
       aria-invalid={invalid || undefined}
       onChange={(e) => onChange(e.target.value)}
       className="h-9"
@@ -77,13 +80,15 @@ export function TextArea({
   value,
   onChange,
   rows = 4,
-  placeholder
+  placeholder,
+  readOnly
 }: {
   id?: string;
   value: string;
   onChange: (v: string) => void;
   rows?: number;
   placeholder?: string;
+  readOnly?: boolean;
 }) {
   return (
     <textarea
@@ -91,10 +96,16 @@ export function TextArea({
       rows={rows}
       value={value}
       placeholder={placeholder}
+      readOnly={readOnly}
       onChange={(e) => onChange(e.target.value)}
-      className="flex w-full rounded-md border border-input bg-surface px-3 py-2 text-sm text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex w-full rounded-md border border-input bg-surface px-3 py-2 text-sm text-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring read-only:opacity-70"
     />
   );
+}
+
+/** Editable textarea for policy sections. */
+export function PolicyEditorBody({ value, onChange, rows = 4 }: { value: string; onChange: (v: string) => void; rows?: number }) {
+  return <TextArea value={value} onChange={onChange} rows={rows} />;
 }
 
 /* ------------------------------------------------------------------- drawer */
