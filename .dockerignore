@@ -1,10 +1,20 @@
+# .dockerignore — keeps the image build context small and secret-free.
+# NOTE: the app image (root Dockerfile) and the web image (apps/web/Dockerfile)
+# both build from the repository root as context.
+
 node_modules
-npm-debug.log
+**/node_modules
+.next
+**/.next
+npm-debug.log*
+yarn-error.log*
+
+# never ship secrets
 .env
 .env.*
 !.env.example
+
+# infra noise
 .git
 .gitignore
-Dockerfile
-docker-compose.yml
 data/
