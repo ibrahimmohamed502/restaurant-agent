@@ -15,6 +15,7 @@ import crypto from 'node:crypto';
 import { validateSession, createSession, revokeSession, sessionCookie, parseCookie } from '../../auth/sessions.js';
 import { verifyPassword } from '../../auth/passwords.js';
 import { lockedSeconds, recordFailedLogin, resetLoginAttempts } from '../../auth/ratelimit.js';
+import { createKnowledgeRouter } from './knowledge.js';
 
 const CSRF_COOKIE = 'csrf_token';
 const CSRF_HEADER = 'x-csrf-token';
@@ -215,6 +216,9 @@ export function createApiV1Router(deps = {}) {
   });
 
   router.get('/_health', (_req, res) => res.json({ data: { status: 'ok' } }));
+
+  /* --------------------- Stage 5: Knowledge Base management --------------------- */
+  router.use('/knowledge', createKnowledgeRouter({ pool }));
 
   // error envelope for anything unexpected
   router.use((err, _req, res, _next) => {

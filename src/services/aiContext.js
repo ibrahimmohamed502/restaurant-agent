@@ -96,15 +96,19 @@ async function loadScoped({ tenantId, brandId }, db) {
   );
   if (sources.rows.length === 0) throw new AiContextError(AI_CONTEXT_ERRORS.KNOWLEDGE_SOURCE_MISSING, 'no knowledge source for tenant/brand');
 
+  // Stage 5: only the PUBLISHED document is eligible, newest version wins.
+  // Drafts are stored in knowledge_drafts and are never read by the live AI.
   const docs = await db.query(
-    `SELECT d.id, d.structured
+    `SELECT d.id, d.version, d.updated_at, d.structured
      FROM knowledge_documents d
      JOIN knowledge_sources s ON s.id = d.source_id
-     WHERE d.tenant_id = $1 AND s.tenant_id = $1 AND s.brand_id = $2`,
-    [tenantId, brandId]
+     WHERE d.source_id = $1 AND s.tenant_id = $2 AND s.brand_id = $3 AND d.status = 'published'
+     ORDER BY d.version DESC, d.updated_at DESC
+     LIMIT 1`,
+    [sources.rows[0].id, tenantId, brandId]
   );
-  if (docs.rows.length === 0) throw new AiContextError(AI_CONTEXT_ERRORS.KNOWLEDGE_DOCUMENT_MISSING, 'no knowledge document for tenant/brand');
-  if (docs.rows.length > 1) throw new AiContextError(AI_CONTEXT_ERRORS.KNOWLEDGE_AMBIGUOUS, 'multiple knowledge documents for tenant/brand — refusing arbitrary choice');
+  if (docs.rows.length === 0) throw new AiContextError(AI_CONTEXT_ERRORS.KNOWLEDGE_DOCUMENT_MISSING, 'no published knowledge document for tenant/brand');
+  if (docs.rows.length > 1) throw new AiContextError(AI_CONTEXT_ERRORS.KNOWLEDGE_AMBIGUOUS, 'multiple published knowledge documents for tenant/brand — refusing arbitrary choice');
 
   const knowledge = docs.rows[0].structured;
   if (!knowledge || typeof knowledge !== 'object' || Array.isArray(knowledge) || Object.keys(knowledge).length === 0) {

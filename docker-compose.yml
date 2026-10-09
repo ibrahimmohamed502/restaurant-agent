@@ -44,7 +44,6 @@ services:
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
       DATA_DIR: ${DATA_DIR:-/tmp/lwc-data}
-      # inline (default, current behavior) | queue (worker processes events)
       WEBHOOK_QUEUE_MODE: ${WEBHOOK_QUEUE_MODE:-inline}
     depends_on:
       postgres:
@@ -81,13 +80,11 @@ services:
       retries: 10
 
   # ------------------------------------ Stage 4 completion: queue worker ---
-  # Same image/code as the API; consumes the BullMQ queue when WEBHOOK_QUEUE_MODE=queue.
   worker:
     build: .
     container_name: restaurant-agent-worker
     restart: unless-stopped
     command: ["node", "src/workers/metaEventWorker.js"]
-    # the app image healthcheck targets :3000, which the worker does not serve
     healthcheck:
       test: ["CMD", "node", "-e", "process.exit(0)"]
       interval: 30s
@@ -104,11 +101,6 @@ services:
       LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
       DATA_DIR: ${DATA_DIR:-/tmp/lwc-data}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
 
   # ------------------------------- Cloudflare quick tunnel (public URL) ----
   cloudflared:

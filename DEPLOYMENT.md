@@ -115,3 +115,23 @@ Processing mode (`WEBHOOK_QUEUE_MODE`):
 Cutover: set `WEBHOOK_QUEUE_MODE=queue` in the stack env and
 `docker compose -p restaurant-agent up -d` (worker already deployed).
 Rollback: set it back to `inline`.
+## Stage 5 — Knowledge Base drafts/publish (migration 006)
+
+- `migrations/006_knowledge_drafts_versions.sql` (additive): `knowledge_drafts`,
+  `knowledge_publications`, and `knowledge_documents.status` (default 'published').
+- `src/services/knowledge.js` — published reads, draft CRUD, authoritative
+  server-side validation, human-readable diff for preview, atomic publish
+  (archive previous + insert new published version + history in one transaction).
+- `src/api/v1/knowledge.js` — `/api/v1/knowledge` (GET overview, POST draft,
+  PUT draft with optimistic baseVersion conflict, POST validate/preview/publish/
+  discard, GET history). Tenant always from the session; publish = Company Admin,
+  edit = Company Admin/Supervisor, Agent = read-only.
+- `src/services/aiContext.js` now reads only `status='published'` documents,
+  newest version first — drafts are never consumed by production AI.
+- Frontend: `apps/web/app/(app)/knowledge` workspace (overview, menu, branches,
+  FAQs, policies, sources) with sticky action bar, drawer editors, validation
+  panel, preview review, publish confirmation, unsaved-change guard.
+
+Apply the migration before deploying:
+  docker exec -i restaurant-postgres psql -U "`$POSTGRES_USER" -d "`$POSTGRES_DB" < migrations/006_knowledge_drafts_versions.sql
+The migration is additive and keeps every existing document published.
