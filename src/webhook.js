@@ -69,11 +69,85 @@ function verifySignature(req) {
 /* ------------------------------------------------------------------ */
 /* Flow from the diagram: intake → AI engine → reply to EVERY comment  */
 /* ------------------------------------------------------------------ */
+
+/** Processing mode: 'inline' (default, current behavior) or 'queue' (worker). */
+export function webhookProcessingMode() {
+  return process.env.WEBHOOK_QUEUE_MODE === 'queue' ? 'queue' : 'inline';
+}
+
+/**
+ * Stage 4 completion — queue-mode intake: normalize → dedupe (webhook_events)
+ * → enqueue → fast ACK. Falls back to inline processing when the queue is
+ * unavailable, so behavior is never silently lost.
+ *
+ * `queueIntake` is the per-event seam (exported for tests): record → enqueue,
+ * and on enqueue failure it removes the intake row and returns the event so the
+ * caller processes it inline exactly once.
+ */
+export async function queueIntake(events, deps = {}) {
+  const {
+    recordWebhookEvent,
+    enqueueMetaEvent,
+    deleteWebhookEvent
+  } = deps;
+  const result = { enqueued: 0, duplicates: 0, fallbackEvents: [] };
+  for (const ev of events) {
+    const recorded = await recordWebhookEvent(ev);
+    if (!recorded) { result.duplicates++; continue; }
+    try {
+      await enqueueMetaEvent(ev);
+      result.enqueued++;
+    } catch (e) {
+      // enqueue failed AFTER the row was recorded: undo the row so the event is
+      // not permanently blocked, and process it inline exactly once.
+      console.warn(`⚠️ enqueue failed for ${ev.eventId} — falling back to inline (${e?.code ?? 'error'})`);
+      await deleteWebhookEvent(ev.provider, ev.eventId).catch(() => undefined);
+      result.fallbackEvents.push(ev);
+    }
+  }
+  return result;
+}
+
+async function enqueuePayload(body) {
+  try {
+    const { normalizeMetaWebhook } = await import('./providers/meta/normalizer.js');
+    const { recordWebhookEvent, deleteWebhookEvent } = await import('./services/webhookEvents.js');
+    const { enqueueMetaEvent } = await import('./queues/metaEvents.js');
+    const events = normalizeMetaWebhook(body);
+    return await queueIntake(events, { recordWebhookEvent, enqueueMetaEvent, deleteWebhookEvent });
+  } catch (err) {
+    // queue infrastructure unavailable → inline fallback (never drop the event)
+    console.warn(`⚠️ queue intake unavailable (${err?.code ?? 'error'}) — processing inline`);
+    return null;
+  }
+}
+
 async function handlePayload(body, handlers = {}) {
   if (body.object !== 'page') return;
 
-  const { buildCtx = buildRouteContext, onComment = processComment, onMessage = processMessage } = handlers;
+  const { buildCtx = buildRouteContext, onComment = processComment, onMessage = processMessage, enqueueFn = enqueuePayload, queueIntakeFn = queueIntake } = handlers;
 
+  // ---- Stage 4 queue mode (default remains inline) ----
+  if (webhookProcessingMode() === 'queue' && !handlers.skipQueue) {
+    const outcome = await enqueueFn(body);
+    if (outcome === null) {
+      // intake infrastructure failed entirely → inline fallback below
+    } else if (outcome.fallbackEvents?.length) {
+      await processInline(body, { buildCtx, onComment, onMessage }, new Set(outcome.fallbackEvents.map((e) => e.eventId)));
+      return;
+    } else {
+      if (outcome.enqueued || outcome.duplicates) {
+        console.log(`📥 queued ${outcome.enqueued} event(s)${outcome.duplicates ? `, ${outcome.duplicates} duplicate(s) skipped` : ''}`);
+      }
+      return; // everything handled by the worker (or duplicates skipped)
+    }
+  }
+
+  await processInline(body, { buildCtx, onComment, onMessage }, null);
+}
+
+/** Original inline processing loop. `onlyEventIds` restricts processing to a subset. */
+async function processInline(body, { buildCtx, onComment, onMessage }, onlyEventIds) {
   for (const entry of body.entry ?? []) {
     // ---- Resolve the DB-driven routing context ONCE per entry (fail closed) ----
     let ctx;
@@ -91,6 +165,7 @@ async function handlePayload(body, handlers = {}) {
       const v = change.value;
       // Only brand-new comments (skip edits, deletes, reactions, posts…)
       if (v?.item !== 'comment' || v?.verb !== 'add') continue;
+      if (onlyEventIds && !onlyEventIds.has(v?.comment_id)) continue;
 
       await onComment(v, ctx).catch((err) =>
         console.error(`❌ Failed on comment ${v?.comment_id}:`, err.message)
@@ -99,6 +174,8 @@ async function handlePayload(body, handlers = {}) {
 
     // ---- Channel 2: Messenger DMs ----
     for (const event of entry.messaging ?? []) {
+      const mid = event?.message?.mid;
+      if (onlyEventIds && !onlyEventIds.has(mid)) continue;
       await onMessage(event, ctx).catch((err) =>
         console.error(`❌ Failed on DM from ${event?.sender?.id}:`, err.message)
       );

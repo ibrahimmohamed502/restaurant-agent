@@ -90,3 +90,28 @@ The database is never touched by either path.
 * `lwc-web` → 3001, `/login` renders (RTL for ar, LTR for en), `/api/*` proxies
 * routing check: Page `738688299520738` → channel `19002b89-…` → UFC → LWC
 * `conversations` / `messages` counts unchanged
+
+## Stage 4 completion — queue/worker
+
+- `src/providers/meta/` — provider boundary: normalizer (raw Meta payload ->
+  normalized internal event) + provider (outbound delivery via the existing
+  MetaClient, always with a freshly resolved DB credential).
+- `src/workers/metaEventPipeline.js` — processes a queued event with the SAME
+  core functions as the inline path (scoped AI, grounding, persist-first,
+  delivery_status, one plain reply, retry-compatible).
+- `src/queues/` — BullMQ queue (`meta-events`) + shared ioredis connection.
+  Job payloads carry ids/context only, never credentials.
+- `src/services/webhookEvents.js` — provider-level idempotency via the existing
+  `webhook_events` UNIQUE (provider, external_id); message-level dedupe stays.
+- `worker` service in docker-compose.yml runs
+  `node src/workers/metaEventWorker.js` (same image/code, own process).
+
+Processing mode (`WEBHOOK_QUEUE_MODE`):
+- `inline` (default) — current behavior, nothing changes.
+- `queue` — intake normalizes + dedupes + enqueues, Meta ACKs fast, worker
+  processes. If Redis/queue is unavailable at intake, it falls back to inline so
+  no event is dropped.
+
+Cutover: set `WEBHOOK_QUEUE_MODE=queue` in the stack env and
+`docker compose -p restaurant-agent up -d` (worker already deployed).
+Rollback: set it back to `inline`.

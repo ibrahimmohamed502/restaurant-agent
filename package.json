@@ -14,9 +14,11 @@
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "bullmq": "^6.3.12",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "franc-min": "^6.2.0",
+    "ioredis": "^6.0.0",
     "pg": "^8.13.1"
   }
 }

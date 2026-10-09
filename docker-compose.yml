@@ -1,3 +1,4 @@
+# =============================================================================
 # LWC Customer Engagement Platform - production stack (project: restaurant-agent)
 #
 # Managed by Portainer. Secrets are NEVER stored here: values come from the
@@ -5,6 +6,11 @@
 # variables. See .env.example for the full list of variable NAMES.
 #
 # Usage: docker compose -p restaurant-agent up -d --build
+#
+# Processing modes (WEBHOOK_QUEUE_MODE):
+#   inline (default) - webhook processed in the API process (current behavior)
+#   queue           - webhook ACKs fast, processing moves to the worker service
+# =============================================================================
 
 services:
   # ----- API + Facebook bot + legacy dashboard (Stage 5: also /api/v1) -----
@@ -38,6 +44,8 @@ services:
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
       DATA_DIR: ${DATA_DIR:-/tmp/lwc-data}
+      # inline (default, current behavior) | queue (worker processes events)
+      WEBHOOK_QUEUE_MODE: ${WEBHOOK_QUEUE_MODE:-inline}
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,8 +80,30 @@ services:
       timeout: 5s
       retries: 10
 
+  # ------------------------------------ Stage 4 completion: queue worker ---
+  # Same image/code as the API; consumes the BullMQ queue when WEBHOOK_QUEUE_MODE=queue.
+  worker:
+    build: .
+    container_name: restaurant-agent-worker
+    restart: unless-stopped
+    command: ["node", "src/workers/metaEventWorker.js"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://lwc:${POSTGRES_PASSWORD}@postgres:5432/lwc_saas}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-gemini-3.8-flash}
+      LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   # ------------------------------- Cloudflare quick tunnel (public URL) ----
-  # Points at http://restaurant-agent:3000 (service-name DNS alias).
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: restaurant-tunnel
@@ -83,8 +113,6 @@ services:
       - restaurant-agent
 
   # --------------------------- Stage 5 frontend (INTERNAL ONLY, port 3001) --
-  # The browser only talks to this origin; /api/* is proxied server-side to
-  # restaurant-agent:3000 (first-party cookies, no CORS).
   web:
     build:
       context: .
