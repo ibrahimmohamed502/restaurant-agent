@@ -3,6 +3,7 @@ import express from 'express';
 import { webhookRouter } from './src/webhook.js';
 import { dashboardRouter } from './src/dashboard.js';
 import { usersRouter } from './src/routes/users.js';
+import { uiProxyMiddleware } from './src/uiProxy.js';
 import { createApiV1Router } from './src/api/v1/index.js';
 import { pool } from './src/db/pg.js';
 import { migrate } from './src/db/migrate.js';
@@ -19,8 +20,14 @@ app.use(
   })
 );
 
+// Stage 5: browser UI routes are served by the Next.js SaaS frontend.
+// The public tunnel hostname is unchanged, so /webhook still reaches Express.
+// If WEB_UPSTREAM is unset this is a no-op and the legacy behavior is preserved.
+app.use(uiProxyMiddleware({ upstream: process.env.WEB_UPSTREAM }));
+
 app.use(webhookRouter);
 app.use(dashboardRouter);
+app.use('/legacy', dashboardRouter); // legacy Express dashboard kept for diagnostics only
 app.use(usersRouter);
 if (pool) app.use('/api/v1', createApiV1Router({ pool }));
 
