@@ -1,19 +1,13 @@
-# =============================================================================
-# LWC Customer Engagement Platform — production stack
+# LWC Customer Engagement Platform - production stack (project: restaurant-agent)
 #
-# Managed by Portainer as stack project "restaurant-agent" (KEEP the project
-# name: the Postgres data volume is named <project>_pg_data).
+# Managed by Portainer. Secrets are NEVER stored here: values come from the
+# server-side .env next to this file, or from Portainer -> Stack -> Environment
+# variables. See .env.example for the full list of variable NAMES.
 #
-# Secrets are NEVER stored in this file. All values come from the stack
-# environment (Portainer → Stack → Environment variables, or the .env file that
-# lives ONLY on the server next to this compose file). See .env.example for the
-# complete list of variable NAMES.
-#
-# Usage: docker compose up -d --build
-# =============================================================================
+# Usage: docker compose -p restaurant-agent up -d --build
 
 services:
-  # ---------------------------------------------------------------- API + bot
+  # ----- API + Facebook bot + legacy dashboard (Stage 5: also /api/v1) -----
   restaurant-agent:
     build: .
     container_name: restaurant-page-agent
@@ -22,7 +16,6 @@ services:
       - "3000:3000"
     environment:
       PORT: ${PORT:-3000}
-      NODE_ENV: ${NODE_ENV:-production}
       WEBHOOK_VERIFY_TOKEN: ${WEBHOOK_VERIFY_TOKEN}
       FB_APP_ID: ${FB_APP_ID}
       FB_APP_SECRET: ${FB_APP_SECRET}
@@ -39,26 +32,19 @@ services:
       STAFF_EMAIL_TO: ${STAFF_EMAIL_TO:-}
       STAFF_EMAIL_FROM: ${STAFF_EMAIL_FROM:-}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-lwc}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lwc_saas}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://lwc:${POSTGRES_PASSWORD}@postgres:5432/lwc_saas}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
       DATA_DIR: ${DATA_DIR:-/tmp/lwc-data}
-      # Allow the browser origins that may call the API directly (same-origin
-      # proxy via the web app means this is usually empty).
-      API_CORS_ORIGINS: ${API_CORS_ORIGINS:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    networks:
-      default:
-        # legacy alias used by the tunnel + internal callers
-        aliases: [restaurant-agent]
 
-  # ------------------------------------------------------- Postgres + pgvector
+  # --------------------------------- PostgreSQL + pgvector ----------------
   postgres:
     image: pgvector/pgvector:pg16
     container_name: restaurant-postgres
@@ -74,11 +60,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    networks:
-      default:
-        aliases: [postgres]
 
-  # ------------------------------------------------------------------- Redis
+  # ---------------------------------------------------- Redis -------------
   redis:
     image: redis:7-alpine
     container_name: restaurant-redis
@@ -88,27 +71,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    networks:
-      default:
-        aliases: [redis]
 
-  # ------------------------------------------- Cloudflare tunnel (public URL)
+  # ------------------------------- Cloudflare quick tunnel (public URL) ----
+  # Points at http://restaurant-agent:3000 (service-name DNS alias).
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: restaurant-tunnel
     restart: unless-stopped
     command: tunnel --no-autoupdate --url http://restaurant-agent:3000
     depends_on:
-      restaurant-agent:
-        condition: service_started
-    networks:
-      default:
-        aliases: [cloudflared]
+      - restaurant-agent
 
-  # ------------------------------------- Stage 5 frontend (internal only!)
-  # Builds the Next.js app (multi-stage Dockerfile in apps/web/).
-  # Same-origin proxy: browser → /api/* → restaurant-agent:3000/api/*
-  # (no CORS, cookies stay first-party).
+  # --------------------------- Stage 5 frontend (INTERNAL ONLY, port 3001) --
+  # The browser only talks to this origin; /api/* is proxied server-side to
+  # restaurant-agent:3000 (first-party cookies, no CORS).
   web:
     build:
       context: .
