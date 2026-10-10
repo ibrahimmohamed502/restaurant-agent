@@ -52,12 +52,20 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers,
-      credentials: 'include',
-      body: body === undefined ? undefined : JSON.stringify(body)
-    });
+    // never let an unsettled request pin the UI forever
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      res = await fetch(`${API_BASE}${path}`, {
+        method,
+        headers,
+        credentials: 'include',
+        signal: controller.signal,
+        body: body === undefined ? undefined : JSON.stringify(body)
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   } catch {
     throw new ApiError(0, 'NETWORK_ERROR', 'network error');
   }
