@@ -6,7 +6,7 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { authApi, type MeResponse } from '@/lib/api';
+import { authApi, ensureCsrfToken, type MeResponse } from '@/lib/api';
 
 type Errors = { email?: string; password?: string; form?: string };
 type Props = {
@@ -14,8 +14,8 @@ type Props = {
   loginFn?: (email: string, password: string) => Promise<{ user: MeResponse['user'] }>;
   onSuccess?: () => void;
   texts?: {
-    title: string;
-    subtitle: string;
+    loginTitle: string;
+    loginSubtitle: string;
     email: string;
     password: string;
     submit: string;
@@ -25,6 +25,7 @@ type Props = {
     invalidCredentials: string;
     rateLimited: string;
     unexpected: string;
+    csrfError?: string;
     emailRequired: string;
     emailInvalid: string;
     passwordRequired: string;
@@ -36,8 +37,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 export function LoginForm({ loginFn = (e, p) => authApi.login(e, p), onSuccess, texts }: Props) {
   const fallback = useTranslations('auth');
   const T = texts ?? {
-    title: fallback('title'),
-    subtitle: fallback('subtitle'),
+    loginTitle: fallback('loginTitle'),
+    loginSubtitle: fallback('loginSubtitle'),
     email: fallback('email'),
     password: fallback('password'),
     submit: fallback('submit'),
@@ -47,6 +48,7 @@ export function LoginForm({ loginFn = (e, p) => authApi.login(e, p), onSuccess, 
     invalidCredentials: fallback('invalidCredentials'),
     rateLimited: fallback('rateLimited'),
     unexpected: fallback('unexpected'),
+    csrfError: fallback('csrfError'),
     emailRequired: fallback('emailRequired'),
     emailInvalid: fallback('emailInvalid'),
     passwordRequired: fallback('passwordRequired')
@@ -68,6 +70,12 @@ export function LoginForm({ loginFn = (e, p) => authApi.login(e, p), onSuccess, 
     return Object.keys(next).length === 0;
   };
 
+  // Warm up the double-submit CSRF cookie on mount so the FIRST credential
+  // submission never fails with CSRF_INVALID (cold start).
+  React.useEffect(() => {
+    void ensureCsrfToken().catch(() => {});
+  }, []);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting.current) return;
@@ -76,7 +84,7 @@ export function LoginForm({ loginFn = (e, p) => authApi.login(e, p), onSuccess, 
     setLoading(true);
     setErrors({});
     try {
-      await loginFn(email.trim(), password);
+      await attempt();
       onSuccess?.();
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code;
@@ -89,11 +97,28 @@ export function LoginForm({ loginFn = (e, p) => authApi.login(e, p), onSuccess, 
     }
   };
 
+  /** Single login attempt; refreshes the CSRF cookie and retries once on CSRF_INVALID. */
+  const attempt = async (retried = false): Promise<void> => {
+    await ensureCsrfToken().catch(() => {});
+    try {
+      await loginFn(email.trim(), password);
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'CSRF_INVALID' && !retried) {
+        // cookie missing/expired (e.g. long-idle tab): refresh it, then retry once
+        await ensureCsrfToken().catch(() => {});
+        return attempt(true);
+      }
+      if (code === 'CSRF_INVALID') setErrors({ form: T.csrfError ?? T.unexpected });
+      else throw err;
+    }
+  };
+
   return (
     <div className="w-full max-w-sm">
       <div className="mb-6 space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">{T.title}</h1>
-        <p className="text-sm text-muted-foreground">{T.subtitle}</p>
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">{T.loginTitle}</h1>
+        <p className="text-sm text-muted-foreground">{T.loginSubtitle}</p>
       </div>
       <form onSubmit={submit} noValidate className="space-y-4" aria-busy={loading}>
         <div className="space-y-1.5">
