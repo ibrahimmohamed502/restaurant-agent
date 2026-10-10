@@ -12,8 +12,8 @@
  */
 import express from 'express';
 import crypto from 'node:crypto';
-import { validateSession, createSession, revokeSession, sessionCookie, parseCookie } from '../../auth/sessions.js';
-import { verifyPassword } from '../../auth/passwords.js';
+import { validateSession, createSession, revokeSession, revokeOtherSessions, sessionCookie, parseCookie } from '../../auth/sessions.js';
+import { verifyPassword, hashPassword } from '../../auth/passwords.js';
 import { lockedSeconds, recordFailedLogin, resetLoginAttempts } from '../../auth/ratelimit.js';
 import { createKnowledgeRouter } from './knowledge.js';
 import { createUsersRouter } from './users.js';
@@ -118,7 +118,7 @@ export async function requireV1Auth(req, res, next) {
     const auth = token ? await validate(token) : null;
     if (!auth) return apiError(res, 401, 'UNAUTHENTICATED', 'authentication required');
     if (!auth.tenantId) return apiError(res, 403, 'TENANT_REQUIRED', 'no tenant context on session');
-    req.v1 = { tenantId: auth.tenantId, user: auth.user, roles: auth.roles || [] };
+    req.v1 = { tenantId: auth.tenantId, user: auth.user, roles: auth.roles || [], sessionId: auth.sessionId ?? null };
     next();
   } catch {
     return apiError(res, 401, 'UNAUTHENTICATED', 'authentication required');
@@ -139,6 +139,7 @@ export function createApiV1Router(deps = {}) {
     pool,
     createSessionFn = createSession,
     revokeSessionFn = revokeSession,
+    revokeOtherSessionsFn = revokeOtherSessions,
     validateSessionFn = validateSession,
     verifyPasswordFn = verifyPassword,
     lockedSecondsFn = lockedSeconds,
@@ -155,8 +156,7 @@ export function createApiV1Router(deps = {}) {
   router.use((req, _res, next) => { req.db = pool; req.validateSession = validateSessionFn; next(); });
 
   /* ------------------------------ auth ------------------------------ */
-  router.post('/auth/login', async (req, res) => {
-    try {
+  router.post('/auth/login', async (req, res) => {    try {
       const { email, password } = validate(req.body, {
         email: { required: true, type: 'email' },
         password: { required: true, type: 'string', min: 1, max: 200 }
@@ -211,6 +211,69 @@ export function createApiV1Router(deps = {}) {
     const auth = token ? await validateSessionFn(token) : null;
     if (!auth) return apiError(res, 401, 'UNAUTHENTICATED', 'authentication required');
     return res.json({ data: { user: sanitizeUser({ ...auth.user, roles: auth.roles }), tenantId: auth.tenantId, roles: auth.roles || [] } });
+  });
+
+  /* ------------------- change own password (self-service) ------------------- */
+  router.post('/auth/password', requireV1Auth, async (req, res) => {
+    const { currentPassword, newPassword } = req.body ?? {};
+    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+      return apiError(res, 422, 'VALIDATION_ERROR', 'invalid request payload', { passwords: 'required' });
+    }
+    if (String(newPassword).length < 8) {
+      return apiError(res, 422, 'VALIDATION_ERROR', 'invalid request payload', { newPassword: 'too_short' });
+    }
+    try {
+      const { rows } = await pool.query(
+        `SELECT id, password_hash FROM users WHERE id = $1 AND tenant_id = $2`,
+        [req.v1.user.id, req.v1.tenantId]
+      );
+      const user = rows[0];
+      // identical response for wrong password / unknown user (no enumeration)
+      if (!user || !(await verifyPasswordFn(currentPassword, user.password_hash))) {
+        return apiError(res, 401, 'INVALID_CREDENTIALS', 'current password is incorrect');
+      }
+      await pool.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [await hashPassword(newPassword), user.id]);
+      // revoke every OTHER session — this device stays signed in
+      if (req.v1.sessionId) await revokeOtherSessionsFn(user.id, req.v1.sessionId).catch(() => {});
+      return res.json({ data: { ok: true } });
+    } catch (err) {
+      console.error('api/v1 password change failed:', err.message);
+      return apiError(res, 500, 'INTERNAL', 'unexpected error');
+    }
+  });
+
+  /* ------------- channels (read-only tenant routing view) ------------- */
+  // Metadata only — provider credentials are NEVER selected or exposed.
+  router.get('/channels', requireV1Auth, async (req, res) => {
+    try {
+      const { rows } = await pool.query(
+        `SELECT c.id, c.provider, c.external_id, c.display_name, c.status, c.created_at,
+                b.name AS brand_name,
+                h.status AS health_status, h.last_event_at
+           FROM channels c
+           LEFT JOIN brands b ON b.id = c.brand_id
+           LEFT JOIN integration_health h ON h.channel_id = c.id
+          WHERE c.tenant_id = $1
+          ORDER BY c.created_at DESC`,
+        [req.v1.tenantId]
+      );
+      return res.json({
+        data: rows.map((r) => ({
+          id: r.id,
+          provider: r.provider,
+          externalId: r.external_id,
+          displayName: r.display_name,
+          status: r.status,
+          brandName: r.brand_name,
+          health: r.health_status ?? null,
+          lastEventAt: r.last_event_at,
+          createdAt: r.created_at
+        }))
+      });
+    } catch (err) {
+      console.error('api/v1 channels failed:', err.message);
+      return apiError(res, 500, 'INTERNAL', 'unexpected error');
+    }
   });
 
   /* ------------------------------ protected sample (tenant-scoped) ------------------------------ */
