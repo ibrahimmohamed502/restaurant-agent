@@ -53,10 +53,18 @@ export async function revokeUserSessions(userId) {
   await pool.query(`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, [userId]);
 }
 
+/** Revokes every session for a user EXCEPT the given one (used after a password change). */
+export async function revokeOtherSessions(userId, keepSessionId) {
+  await pool.query(
+    `UPDATE sessions SET revoked_at = now()
+      WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL`,
+    [userId, keepSessionId]
+  );
+}
+
 export const sessionCookie = COOKIE;
 
-export function parseCookie(req, name) {
-  const raw = req.headers.cookie || '';
+export function parseCookie(req, name) {  const raw = req.headers.cookie || '';
   for (const part of raw.split(';')) {
     const [k, ...v] = part.trim().split('=');
     if (k === name) return decodeURIComponent(v.join('='));
