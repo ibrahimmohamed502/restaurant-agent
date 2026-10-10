@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import en from '@/messages/en.json';
 import ar from '@/messages/ar.json';
 
-const PAGES = ['ai', 'audit', 'brands', 'channels', 'companies', 'customers', 'integrations', 'settings'];
+const PAGES = ['ai', 'audit', 'brands', 'companies', 'customers', 'integrations', 'settings'];
 
 /** Roadmap modules must render the localized placeholder text — never the raw key. */
 describe('roadmap placeholder pages', () => {
