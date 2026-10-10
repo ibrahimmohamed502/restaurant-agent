@@ -14,7 +14,9 @@
     "theme": "Theme",
     "light": "Light",
     "dark": "Dark",
-    "comingSoon": "Coming soon"
+    "comingSoon": "Coming soon",
+    "platformName": "LWC Platform",
+    "close": "Close"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -116,7 +118,19 @@
     "loadErrorDescription": "An error occurred while fetching live data.",
     "signInRequired": "Sign in required",
     "signInDescription": "Your session expired. Sign in to view the dashboard.",
-    "retry": "Retry"
+    "retry": "Retry",
+    "welcome": "Here's what's happening across your customer conversations.",
+    "knowledgeVersion": "Knowledge v{version}",
+    "queueWorker": "Queue worker",
+    "queueFailed": "{count} failed",
+    "dbScoped": "DB-scoped channel",
+    "notConfigured": "Not configured",
+    "none": "None",
+    "statusHealthy": "Healthy",
+    "statusAttention": "Attention",
+    "statusUnavailable": "Unavailable",
+    "dm": "DM",
+    "comment": "Comment"
   },
   "dashboardFoundation": {
     "overview": "Overview",
