@@ -30,7 +30,9 @@ export function AppShell({
   const router = useRouter();
   const activeLocale = useLocale() as Locale;
   const [collapsed, setCollapsed] = React.useState(false);
-  const [mobileOpen, setMobileOpen] = React.useState(false);
+  /** One source of truth for the global nav: open by default on desktop,
+   *  drawer on smaller widths. The hamburger toggles this at every size. */
+  const [navOpen, setNavOpen] = React.useState(true);
   const [theme, setTheme] = React.useState<'light' | 'dark'>(resolveInitialTheme);
   const [context, setContext] = React.useState<{ company: string; brand: string } | null>(null);
 
@@ -58,9 +60,13 @@ export function AppShell({
       <Sidebar
         collapsed={collapsed}
         isSuperAdmin={isSuperAdmin}
-        mobileOpen={mobileOpen}
+        mobileOpen={navOpen}
         onToggleCollapsed={() => setCollapsed((c) => !c)}
-        onCloseMobile={() => setMobileOpen(false)}
+        onCloseMobile={() => {
+          // close-on-select only matters for the drawer (narrow widths);
+          // on desktop the sidebar stays open after navigation
+          if (typeof window !== 'undefined' && window.innerWidth < 1024) setNavOpen(false);
+        }}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar
@@ -69,7 +75,7 @@ export function AppShell({
           locale={activeLocale}
           theme={theme}
           onToggleCollapsed={() => setCollapsed((c) => !c)}
-          onOpenMobile={() => setMobileOpen(true)}
+          onOpenMobile={() => setNavOpen((v) => !v)}
           onLocaleChange={(l) => {
             // persist the locale FIRST so the refreshed server render actually switches language
             setLocaleCookie(l);
