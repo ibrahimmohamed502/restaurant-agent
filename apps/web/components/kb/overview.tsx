@@ -1,45 +1,46 @@
 'use client';
 
 import * as React from 'react';
+import { useTranslations } from 'next-intl';
 import { Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Field, TextArea, TextInput } from './kb-parts';
 
-/** Section grouping for the real published LWC fields. */
+/** Section grouping for the real published LWC fields (labels resolve via i18n keys). */
 export const OVERVIEW_GROUPS = [
   {
     key: 'brand',
-    title: 'معلومات العلامة',
+    titleKey: 'overview.group.brand',
     fields: [
-      { key: 'restaurantName', label: 'اسم المطعم / العلامة', type: 'text' },
-      { key: 'about', label: 'نبذة عن المطعم', type: 'long' }
+      { key: 'restaurantName', labelKey: 'overview.field.restaurantName', type: 'text' },
+      { key: 'about', labelKey: 'overview.field.about', type: 'long' }
     ]
   },
   {
     key: 'menu',
-    title: 'معلومات المنيو',
+    titleKey: 'overview.group.menu',
     fields: [
-      { key: 'menuUrl', label: 'رابط المنيو', type: 'text' },
-      { key: 'currency', label: 'العملة', type: 'text' }
+      { key: 'menuUrl', labelKey: 'overview.field.menuUrl', type: 'text' },
+      { key: 'currency', labelKey: 'overview.field.currency', type: 'text' }
     ]
   },
   {
     key: 'service',
-    title: 'معلومات الخدمة',
+    titleKey: 'overview.group.service',
     fields: [
-      { key: 'halal', label: 'معلومات الحلال', type: 'long' },
-      { key: 'delivery', label: 'التوصيل / الخدمة', type: 'long' },
-      { key: 'location', label: 'الموقع', type: 'long' }
+      { key: 'halal', labelKey: 'overview.field.halal', type: 'long' },
+      { key: 'delivery', labelKey: 'overview.field.delivery', type: 'long' },
+      { key: 'location', labelKey: 'overview.field.location', type: 'long' }
     ]
   },
   {
     key: 'reservations',
-    title: 'الحجوزات',
+    titleKey: 'overview.group.reservations',
     fields: [
-      { key: 'reservations', label: 'سياسة الحجوزات', type: 'long' }
+      { key: 'reservations', labelKey: 'overview.field.reservations', type: 'long' }
     ]
   }
-];
+] as const;
 
 function isEmptyValue(v: unknown) {
   return v === undefined || v === null || String(v).trim() === '';
@@ -57,12 +58,13 @@ export function OverviewWorkspace({
   editing: boolean;
   onChange: (next: Record<string, unknown>) => void;
 }) {
+  const tk = useTranslations('knowledge');
   return (
     <div className="space-y-5">
       {groups.map((group) => (
         <section key={group.key} className="overflow-hidden rounded-lg border border-border bg-surface shadow-sm">
           <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
-            <h3 className="text-[13px] font-semibold text-foreground">{group.title}</h3>
+            <h3 className="text-[13px] font-semibold text-foreground">{tk(group.titleKey)}</h3>
             {editing ? <Pencil className="h-3.5 w-3.5 text-muted-foreground" aria-hidden /> : null}
           </header>
           <dl className="divide-y divide-border">
@@ -70,7 +72,7 @@ export function OverviewWorkspace({
               const v = value?.[f.key];
               return (
                 <div key={f.key} className="grid gap-1 px-4 py-3 sm:grid-cols-[10rem_1fr] sm:gap-4 sm:py-2.5">
-                  <dt className="text-[13px] font-medium text-secondary-foreground">{f.label}</dt>
+                  <dt className="text-[13px] font-medium text-secondary-foreground">{tk(f.labelKey)}</dt>
                   <dd className="min-w-0 text-[13px] text-foreground">
                     {editing ? (
                       f.type === 'long' ? (
@@ -94,7 +96,7 @@ export function OverviewWorkspace({
       ))}
       {!editing ? (
         <p className="text-xs text-muted-foreground">
-          أنت تشاهد النسخة المنشورة. أنشئ مسودة لإجراء تعديلات.
+          {tk('overview.publishedNote')}
         </p>
       ) : null}
     </div>
