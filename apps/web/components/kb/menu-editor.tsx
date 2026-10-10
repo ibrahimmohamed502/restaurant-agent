@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { useTranslations } from 'next-intl';
 import { ChevronRight, Plus, Search, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,6 +19,7 @@ function ItemDrawer({ open, title, item, onClose, onSave, onDelete }: {
   onSave: (item: MenuItem) => void;
   onDelete?: () => void;
 }) {
+  const tk = useTranslations('knowledge');
   const [draft, setDraft] = React.useState(item ?? {});
   const [priceError, setPriceError] = React.useState<string | null>(null);
   React.useEffect(() => { setDraft(item ?? {}); setPriceError(null); }, [item, open]);
@@ -30,7 +32,7 @@ function ItemDrawer({ open, title, item, onClose, onSave, onDelete }: {
 
   const submit = () => {
     const p = price.trim();
-    if (p && !/^\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,3})?$/.test(p)) { setPriceError('أدخل سعرًا صحيحًا، مثل 4.650'); return; }
+    if (p && !/^\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,3})?$/.test(p)) { setPriceError(tk('menu.priceError')); return; }
     const next = { ...draft, price: p };
     if (draft.name !== undefined) next.name = nameEn;
     if (draft.name_en !== undefined) next.name_en = nameEn;
@@ -46,21 +48,21 @@ function ItemDrawer({ open, title, item, onClose, onSave, onDelete }: {
       title={title}
       onClose={onClose}
       footer={<>
-        {onDelete ? <Button variant="destructive" size="sm" className="me-auto gap-1.5" onClick={onDelete}><Trash2 className="h-3.5 w-3.5" aria-hidden /> حذف</Button> : null}
-        <Button variant="secondary" size="sm" onClick={onClose}>إلغاء</Button>
-        <Button size="sm" onClick={submit}>حفظ</Button>
+        {onDelete ? <Button variant="destructive" size="sm" className="me-auto gap-1.5" onClick={onDelete}><Trash2 className="h-3.5 w-3.5" aria-hidden /> {tk('menu.deleteItem')}</Button> : null}
+        <Button variant="secondary" size="sm" onClick={onClose}>{tk('common.cancel')}</Button>
+        <Button size="sm" onClick={submit}>{tk('common.save')}</Button>
       </>}
     >
-      <Field label="الاسم (إنجليزي)" htmlFor="item-name-en">
+      <Field label={tk('menu.field.nameEn')} htmlFor="item-name-en">
         <TextInput id="item-name-en" value={nameEn} onChange={(v) => set('name', v)} />
       </Field>
-      <Field label="الاسم (عربي)" htmlFor="item-name-ar">
+      <Field label={tk('menu.field.nameAr')} htmlFor="item-name-ar">
         <TextInput id="item-name-ar" dir="rtl" value={nameAr} onChange={(v) => set('name_ar', v)} />
       </Field>
-      <Field label="الوصف" htmlFor="item-desc">
+      <Field label={tk('menu.field.desc')} htmlFor="item-desc">
         <TextArea id="item-desc" rows={3} value={description} onChange={(v) => set('desc', v)} />
       </Field>
-      <Field label="السعر (د.ك)" htmlFor="item-price" error={priceError} hint="مثال: 4.650">
+      <Field label={tk('menu.field.price')} htmlFor="item-price" error={priceError} hint={tk('menu.field.priceHint')}>
         <TextInput id="item-price" dir="ltr" inputMode="decimal" value={price} onChange={(v) => set('price', v)} invalid={Boolean(priceError)} />
       </Field>
     </Drawer>
@@ -69,6 +71,7 @@ function ItemDrawer({ open, title, item, onClose, onSave, onDelete }: {
 
 /** Category rail + compact item rows; drawer editor for add/edit. */
 export function MenuEditor({ menus, readOnly, onChange }: { menus: MenuStructure; readOnly?: boolean; onChange: (menus: MenuStructure) => void }) {
+  const tk = useTranslations('knowledge');
   const [query, setQuery] = React.useState('');
   const [activeCat, setActiveCat] = React.useState<string | null>(() => Object.keys(menus)[0] ?? null);
   const [editing, setEditing] = React.useState<{ category: string; sub: string; index: number } | null>(null);
@@ -83,24 +86,24 @@ export function MenuEditor({ menus, readOnly, onChange }: { menus: MenuStructure
   const totalItems = categories.reduce((n, [, subs]) => n + Object.values(subs).reduce((m, items) => m + items.length, 0), 0);
 
   const addCategory = () => {
-    const name = window.prompt('اسم الفئة الجديدة');
+    const name = window.prompt(tk('menu.promptNewCategory'));
     if (!name || !name.trim()) return;
     onChange({ ...menus, [name.trim()]: { 'عام': [] } });
     setActiveCat(name.trim());
   };
   const removeCategory = (category: string) => {
-    if (!window.confirm(`حذف الفئة "${category}" وكل أصنافها؟`)) return;
+    if (!window.confirm(tk('menu.confirmDeleteCategory', { name: category }))) return;
     const next = { ...menus };
     delete next[category];
     onChange(next);
   };
   const addSubcategory = (category: string) => {
-    const name = window.prompt('اسم القائمة الفرعية');
+    const name = window.prompt(tk('menu.promptNewSubcategory'));
     if (!name || !name.trim()) return;
     onChange({ ...menus, [category]: { ...menus[category], [name.trim()]: [] } });
   };
   const removeSubcategory = (category: string, sub: string) => {
-    if (!window.confirm(`حذف "${sub}" وكل أصنافها؟`)) return;
+    if (!window.confirm(tk('menu.confirmDeleteSubcategory', { name: sub }))) return;
     const next = { ...menus, [category]: { ...menus[category] } };
     delete next[category][sub];
     onChange(next);
@@ -142,22 +145,22 @@ export function MenuEditor({ menus, readOnly, onChange }: { menus: MenuStructure
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-0 flex-1 sm:max-w-xs">
           <Search className="pointer-events-none absolute inset-y-0 start-2.5 my-auto h-4 w-4 text-muted-foreground" aria-hidden />
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="بحث في المنيو…" className="h-9 ps-8" aria-label="Search menu" />
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tk('menu.search')} className="h-9 ps-8" aria-label={tk('menu.search')} />
         </div>
         {!readOnly ? (
-          <Button size="sm" variant="secondary" className="gap-1.5" onClick={addCategory}><Plus className="h-3.5 w-3.5" aria-hidden /> إضافة فئة</Button>
+          <Button size="sm" variant="secondary" className="gap-1.5" onClick={addCategory}><Plus className="h-3.5 w-3.5" aria-hidden /> {tk('menu.addCategory')}</Button>
         ) : null}
-        <span className="text-xs text-muted-foreground">{totalItems} صنف · {categories.length} فئة</span>
+        <span className="text-xs text-muted-foreground">{tk('menu.counter', { items: totalItems, categories: categories.length })}</span>
       </div>
 
       {categories.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border px-4 py-12 text-center">
-          <p className="text-sm text-muted-foreground">لا توجد فئات بعد. ابدأ بإضافة فئة مثل «الإفطار».</p>
+          <p className="text-sm text-muted-foreground">{tk('menu.noCategories')}</p>
         </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[11rem_1fr]">
           {/* category rail */}
-          <nav aria-label="Menu categories" className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible">
+          <nav aria-label={tk('menu.categories')} className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible">
             {categories.map(([category, subs]) => {
               const count = Object.values(subs).reduce((n, items) => n + items.length, 0);
               const active = activeCat === category;
@@ -186,8 +189,8 @@ export function MenuEditor({ menus, readOnly, onChange }: { menus: MenuStructure
                 <h3 className="text-sm font-semibold text-foreground">{activeCat}</h3>
                 {!readOnly ? (
                   <div className="flex items-center gap-1">
-                    <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs" onClick={() => activeCat && addSubcategory(activeCat)}><Plus className="h-3 w-3" aria-hidden /> قائمة فرعية</Button>
-                    <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => activeCat && removeCategory(activeCat)}>حذف الفئة</Button>
+                    <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs" onClick={() => activeCat && addSubcategory(activeCat)}><Plus className="h-3 w-3" aria-hidden /> {tk('menu.addSubcategory')}</Button>
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => activeCat && removeCategory(activeCat)}>{tk('menu.deleteCategory')}</Button>
                   </div>
                 ) : null}
               </div>
@@ -195,7 +198,7 @@ export function MenuEditor({ menus, readOnly, onChange }: { menus: MenuStructure
 
             {subEntries.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center">
-                <p className="text-sm text-muted-foreground">لا توجد أصناف مطابقة.</p>
+                <p className="text-sm text-muted-foreground">{tk('menu.noMatches')}</p>
               </div>
             ) : null}
 
@@ -205,8 +208,8 @@ export function MenuEditor({ menus, readOnly, onChange }: { menus: MenuStructure
                   <h4 className="min-w-0 flex-1 truncate text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{sub}</h4>
                   {!readOnly ? (
                     <>
-                      <button type="button" className="text-2xs text-muted-foreground hover:text-destructive" onClick={() => activeCat && removeSubcategory(activeCat, sub)}>حذف</button>
-                      <button type="button" className="text-2xs text-primary hover:underline" onClick={() => activeCat && addItem(activeCat, sub)}>إضافة صنف</button>
+                      <button type="button" className="text-2xs text-muted-foreground hover:text-destructive" onClick={() => activeCat && removeSubcategory(activeCat, sub)}>{tk('menu.deleteSubcategory')}</button>
+                      <button type="button" className="text-2xs text-primary hover:underline" onClick={() => activeCat && addItem(activeCat, sub)}>{tk('menu.addItem')}</button>
                     </>
                   ) : null}
                 </header>
@@ -222,7 +225,7 @@ export function MenuEditor({ menus, readOnly, onChange }: { menus: MenuStructure
                         <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">{String(item.name ?? item.name_en ?? '—')}</span>
                         {item.name_ar ? <span className="hidden min-w-0 max-w-[35%] truncate text-xs text-muted-foreground sm:block">{String(item.name_ar)}</span> : null}
                         <span dir="ltr" className="shrink-0 text-[13px] font-medium tabular-nums text-foreground">
-                          {item.price === undefined || item.price === null || String(item.price).trim() === '' ? '—' : `${item.price} د.ك`}
+                          {item.price === undefined || item.price === null || String(item.price).trim() === '' ? '—' : `${item.price} ${tk('menu.currency')}`}
                         </span>
                         {!readOnly ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground rtl:rotate-180" aria-hidden /> : null}
                       </button>
@@ -237,7 +240,7 @@ export function MenuEditor({ menus, readOnly, onChange }: { menus: MenuStructure
 
       <ItemDrawer
         open={editing !== null}
-        title={editing && editing.index >= 0 ? 'تعديل صنف' : 'إضافة صنف'}
+        title={editing && editing.index >= 0 ? tk('menu.editItem') : tk('menu.newItem')}
         item={itemDraft}
         onClose={() => { setEditing(null); setItemDraft(null); }}
         onSave={saveItem}
