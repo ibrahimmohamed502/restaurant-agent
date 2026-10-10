@@ -29,6 +29,20 @@ export function csrfToken(): string | null {
   return readCookie('csrf_token');
 }
 
+/**
+ * Ensures the double-submit CSRF cookie exists before a mutating request.
+ * GET /auth/me never returns credentials (401 when anonymous) but the API's
+ * csrfGuard sets a fresh `csrf_token` cookie on any first touch — so calling
+ * it once "warms up" the cookie without weakening CSRF in any way.
+ * Safe to call repeatedly: no-op when the cookie is already present.
+ */
+export async function ensureCsrfToken(): Promise<string | null> {
+  const existing = csrfToken();
+  if (existing) return existing;
+  await api.get<MeResponse>('/auth/me').catch(() => {});
+  return csrfToken();
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
