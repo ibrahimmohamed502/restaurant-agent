@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useLocale } from 'next-intl';
 import { Sidebar } from './sidebar';
 import { Topbar } from './topbar';
+import { CommandPalette, useCommandPalette } from './command-palette';
+import { TopLoader } from './top-loader';
 import { authApi, type MeResponse } from '@/lib/api';
 import { PageLoading } from '@/components/ui/states';
 import { setThemeCookie, setLocaleCookie, directionFor, type Locale } from '@/lib/preferences';
@@ -35,6 +37,7 @@ export function AppShell({
   const [navOpen, setNavOpen] = React.useState(true);
   const [theme, setTheme] = React.useState<'light' | 'dark'>(resolveInitialTheme);
   const [context, setContext] = React.useState<{ company: string; brand: string } | null>(null);
+  const [paletteOpen, closePalette] = useCommandPalette();
 
   React.useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -93,6 +96,8 @@ export function AppShell({
           <div className="page-shell">{children}</div>
         </main>
       </div>
+      <TopLoader />
+      <CommandPalette open={paletteOpen} onClose={closePalette} isSuperAdmin={isSuperAdmin} />
     </div>
   );
 }
