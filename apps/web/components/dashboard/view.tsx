@@ -66,20 +66,46 @@ function timeAgo(iso: string | null): string {
   return `${Math.round(h / 24)}d`;
 }
 
+/** Counts a real value up to its target once it arrives (no fabricated data). */
+function useCountUp(target: number, durationMs = 650): number {
+  const [value, setValue] = React.useState(0);
+  const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  React.useEffect(() => {
+    if (reduced || !Number.isFinite(target)) { setValue(target); return; }
+    let raf = 0;
+    const start = performance.now();
+    const from = 0;
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - start) / durationMs);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setValue(Math.round(from + (target - from) * eased));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, durationMs, reduced]);
+  return value;
+}
+
 /* -------------------------------------------------------------- KPI cards */
 
-function KpiCard({ icon: Icon, label, value, hint, accent }: { icon: typeof Inbox; label: string; value: string | number; hint?: string; accent?: boolean }) {
+function KpiCard({ icon: Icon, label, value, hint, accent, index }: { icon: typeof Inbox; label: string; value: number; hint?: string; accent?: boolean; index?: number }) {
+  const shown = useCountUp(value);
   return (
-    <div className="group relative overflow-hidden rounded-lg border border-border bg-surface p-4 shadow-sm transition-[box-shadow,transform] duration-[--dur-base] ease-[--ease-out] hover:-translate-y-px hover:shadow-md">
-      {accent ? <span className="absolute inset-x-0 top-0 h-0.5 bg-primary/60" aria-hidden /> : null}
-      <div className="flex items-start justify-between gap-3">
+    <div className={cn(
+      'group relative overflow-hidden rounded-lg border border-border bg-surface p-4 shadow-sm transition-[box-shadow,transform] duration-[--dur-base] ease-[--ease-out] hover:-translate-y-px hover:shadow-md enter-up',
+      index ? `stagger-${index}` : undefined
+    )}>
+      {accent ? <span className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-e from-transparent via-primary to-transparent" aria-hidden /> : null}
+      <div className="absolute inset-0 bg-gradient-to-b from-primary/[0.03] to-transparent opacity-0 transition-opacity duration-[--dur-base] group-hover:opacity-100" aria-hidden />
+      <div className="relative flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-          <p className="mt-1 text-2xl font-semibold tabular-nums text-foreground">{value}</p>
+          <p className="mt-1 text-2xl font-semibold tabular-nums text-foreground">{shown}</p>
           {hint ? <p className="mt-1 text-xs text-muted-foreground">{hint}</p> : null}
         </div>
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-surface-2 text-secondary-foreground transition-colors group-hover:bg-primary/10 group-hover:text-primary">
-          <Icon className="h-4 w-4" aria-hidden />
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-surface-2 text-secondary-foreground transition-colors duration-[--dur-base] group-hover:bg-primary/10 group-hover:text-primary">
+          <Icon className="h-4 w-4 transition-transform duration-[--dur-base] group-hover:scale-110" aria-hidden />
         </span>
       </div>
     </div>
@@ -131,7 +157,7 @@ function StatusRow({ label, ok, detail, attention, unavailable }: { label: strin
 function ExecutiveHeader({ data, greeting, welcome }: { data: DashboardData; greeting: string; welcome: string }) {
   const t = useTranslations('dashboard');
   return (
-    <section className="enter-up relative overflow-hidden rounded-lg border border-border bg-gradient-to-b from-surface-2 to-surface p-5 shadow-sm">
+    <section className="enter-up shine-sweep relative overflow-hidden rounded-lg border border-border bg-gradient-to-b from-surface-2 to-surface p-5 shadow-sm">
       {/* subtle local cacao-arcs motif (no external artwork, decoration only) */}
       <svg className="pointer-events-none absolute inset-y-0 end-0 hidden h-full w-1/3 text-primary/[0.07] lg:block" viewBox="0 0 200 120" fill="none" aria-hidden>
         {Array.from({ length: 7 }, (_, i) => (
@@ -173,7 +199,7 @@ function RecentConversations({ rows }: { rows: DashboardData['conversations'] })
     <ul className="divide-y divide-border">
       {rows.map((c) => (
         <li key={c.id} className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-muted/60">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-2 text-xs font-medium text-secondary-foreground">
+          <span className="ring-brand flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-2 text-xs font-medium text-secondary-foreground">
             {(c.customerName ?? '?').trim().charAt(0).toUpperCase()}
           </span>
           <div className="min-w-0 flex-1">
@@ -265,15 +291,15 @@ export function DashboardView() {
       <ExecutiveHeader data={data} greeting={greeting} welcome={t('welcome')} />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiCard icon={MessageSquare} label={t('conversations')} value={data.kpis.conversations} hint={t('allTime')} accent />
-        <KpiCard icon={Inbox} label={t('messages')} value={data.kpis.messages} hint={t('inboundOutbound')} />
-        <KpiCard icon={Radio} label={t('activeChannels')} value={data.kpis.active_channels} hint={t('routedChannels')} />
-        <KpiCard icon={Activity} label={t('escalations')} value={data.kpis.escalations} hint={t('needsAttention')} />
+        <KpiCard icon={MessageSquare} label={t('conversations')} value={data.kpis.conversations} hint={t('allTime')} accent index={1} />
+        <KpiCard icon={Inbox} label={t('messages')} value={data.kpis.messages} hint={t('inboundOutbound')} index={2} />
+        <KpiCard icon={Radio} label={t('activeChannels')} value={data.kpis.active_channels} hint={t('routedChannels')} index={3} />
+        <KpiCard icon={Activity} label={t('escalations')} value={data.kpis.escalations} hint={t('needsAttention')} index={4} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Panel
-          className="lg:col-span-2"
+          className="enter-up stagger-2 lg:col-span-2"
           title={t('recentConversations')}
           subtitle={t('latestActivity')}
           action={<Link href="/inbox" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">{t('viewAll')}<ArrowRight className="h-3 w-3 rtl:rotate-180" aria-hidden /></Link>}
@@ -282,7 +308,7 @@ export function DashboardView() {
         </Panel>
 
         <div className="space-y-4">
-          <Panel title={t('platformStatus')} subtitle={t('verifiedState')}>
+          <Panel className="enter-up stagger-3" title={t('platformStatus')} subtitle={t('verifiedState')}>
             <ul className="divide-y divide-border">
               <StatusRow label={t('routedChannels')} ok detail={t('dbScoped')} />
               <StatusRow label={t('aiAgent')} ok={Boolean(data.aiAgent?.is_active)} detail={data.aiAgent?.name ?? t('notConfigured')} />
@@ -295,7 +321,7 @@ export function DashboardView() {
             </ul>
           </Panel>
 
-          <Panel title={t('knowledge')} subtitle={t('currentBrand')} action={<Link href="/knowledge" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">{t('manage')}</Link>}>
+          <Panel className="enter-up stagger-4" title={t('knowledge')} subtitle={t('currentBrand')} action={<Link href="/knowledge" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">{t('manage')}</Link>}>
             <div className="flex items-center gap-3 p-4">
               <span className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
                 <BookOpen className="h-5 w-5" aria-hidden />
@@ -307,14 +333,14 @@ export function DashboardView() {
             </div>
           </Panel>
 
-          <Panel title={t('quickActions')}>
+          <Panel className="enter-up stagger-5" title={t('quickActions')}>
             <QuickActions />
           </Panel>
         </div>
       </div>
 
       {data.aiAgent ? (
-        <Panel title={t('aiAgent')} subtitle={data.aiAgent.name}>
+        <Panel className="enter-up stagger-5" title={t('aiAgent')} subtitle={data.aiAgent.name}>
           <div className="flex items-center gap-3 p-4">
             <span className="flex h-9 w-9 items-center justify-center rounded-md bg-surface-2 text-secondary-foreground">
               <Bot className="h-4 w-4" aria-hidden />
