@@ -35,7 +35,6 @@ describe('auth/login translation parity', () => {
     const ar = Object.keys(arAuth).sort().join(',');
     expect(en).toBe(ar);
   });
-
   it('login uses loginTitle/loginSubtitle and csrfError — no raw auth.title keys', () => {
     expect(enAuth.loginTitle).toBeTruthy();
     expect(enAuth.loginSubtitle).toBeTruthy();
@@ -47,5 +46,32 @@ describe('auth/login translation parity', () => {
     expect(enAuth.subtitle).toBeUndefined();
     expect(arAuth.title).toBeUndefined();
     expect(arAuth.subtitle).toBeUndefined();
+  });
+});
+
+describe('knowledge workspace translation parity', () => {
+  it('knowledge namespace has exact EN/AR key parity', () => {
+    const enK = (en as Record<string, unknown>).knowledge as Record<string, unknown>;
+    const arK = (ar as Record<string, unknown>).knowledge as Record<string, unknown>;
+    expect(Object.keys(enK).sort().join(',')).toBe(Object.keys(arK).sort().join(','));
+  });
+
+  it('knowledge namespace covers sections, menu, branches, actions and dialogs', () => {
+    const enK = (en as Record<string, unknown>).knowledge as Record<string, Record<string, unknown>>;
+    expect(enK.sections.branches).toBeTruthy();
+    expect(enK.sections.overview).toBeTruthy();
+    expect(enK.sections.faq).toBeTruthy();
+    expect(enK.sections.policies).toBeTruthy();
+    expect(enK.sections.sources).toBeTruthy();
+    expect(enK.menu.addCategory).toBeTruthy();
+    expect(enK.menu.editItem).toBeTruthy();
+    expect(enK.branches.add).toBeTruthy();
+    expect(enK.actions.publish).toBeTruthy();
+    expect(enK.actions.saveDraft).toBeTruthy();
+    expect((enK.dialog as Record<string, Record<string, unknown>>).publish.title).toBeTruthy();
+    expect(enK.back).toBeTruthy();
+    // all leaves are strings (no nested empty values)
+    const walk = (o: unknown): unknown[] => (typeof o === 'object' && o !== null ? Object.values(o).flatMap(walk) : [o]);
+    expect(walk(enK).every((v) => typeof v === 'string')).toBe(true);
   });
 });
