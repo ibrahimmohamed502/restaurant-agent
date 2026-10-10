@@ -3,10 +3,11 @@
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { Languages, LogOut, Menu as MenuIcon, Moon, Sun } from 'lucide-react';
+import { Languages, KeyRound, LogOut, Menu as MenuIcon, Moon, Sun } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { BrandMark } from '@/components/brand/brand-mark';
+import { ChangePasswordDialog } from './change-password-dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { setLocaleCookie } from '@/lib/preferences';
@@ -57,6 +58,7 @@ export function Topbar({
 }) {
   const t = useTranslations();
   const initials = (user?.name || user?.email || '?').trim().charAt(0).toUpperCase();
+  const [passwordOpen, setPasswordOpen] = React.useState(false);
 
   return (
     <header className="sticky top-0 z-30 flex h-topbar items-center gap-2 border-b border-border bg-surface/85 px-3 backdrop-blur lg:px-5">
@@ -127,6 +129,9 @@ export function Topbar({
                 <p className="text-xs text-muted-foreground">{user?.email ?? ''}</p>
               </div>
               <div className="my-1 h-px bg-border" />
+              <DropdownMenuItem onSelect={() => setPasswordOpen(true)}>
+                <KeyRound className="h-4 w-4" /> {t('auth.changePassword')}
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={onLogout}>
                 <LogOut className="h-4 w-4" /> {t('common.logout')}
               </DropdownMenuItem>
@@ -134,6 +139,7 @@ export function Topbar({
           </DropdownMenu>
         </div>
       </div>
+      <ChangePasswordDialog open={passwordOpen} onClose={() => setPasswordOpen(false)} />
     </header>
   );
 }
