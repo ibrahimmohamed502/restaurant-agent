@@ -30,7 +30,7 @@ const { createApiV1Router } = await import('../src/api/v1/index.js');
 const router = createApiV1Router({
   pool: db,
   verifyPasswordFn: async (plain, hash) => { verifyCalls.push({ plain, hash }); return plain === hash; },
-  createSessionFn: async ({ tenantId, userId }) => { const t = crypto.randomBytes(16).toString('hex'); sessions.set(t, { tenantId, userId }); return t; },
+  createSessionFn: async ({ tenantId, userId }) => { const t = crypto.randomBytes(16).toString('hex'); sessions.set(t, { tenantId, userId }); return { token: t, expiresAt: new Date(Date.now() + 60000) }; },
   validateSessionFn: async (token) => sessions.has(token) ? { tenantId: sessions.get(token).tenantId, user: { id: sessions.get(token).userId, email: 'a@b.co', name: 'A' }, roles: ['Company Admin'] } : null,
   revokeSessionFn: async (token) => sessions.delete(token),
   lockedSecondsFn: async (email) => (loginFails.get(email) || 0) >= 5 ? 60 : 0,
@@ -77,6 +77,12 @@ const csrfCookie = ok.setCookie.match(/csrf_token=[^;]*/)?.[0];
 const csrf = csrfCookie?.split('=')[1];
 check('login success → 200 + user payload without sensitive fields', ok.status === 200 && ok.j.data?.user?.email === 'a@b.co' && !JSON.stringify(ok.j).includes('password') && !JSON.stringify(ok.j).includes('session'));
 check('login sets httpOnly session cookie + readable csrf cookie', Boolean(cookie) && /HttpOnly/i.test(ok.setCookie) && Boolean(bootCsrfCookie));
+
+// regression: createSession returns { token, expiresAt } in production — the cookie
+// must carry the RAW token string, never the serialized object
+check('login cookie carries the raw session token (createSession return is destructured)', Boolean(cookie) && !cookie.includes('%7B') && !cookie.includes('j=') && sessions.has(cookie.split('=')[1]));
+const meAfterLogin = await call('/auth/me', { cookie });
+check('GET /auth/me with the login session cookie → 200 (end-to-end session validation)', meAfterLogin.status === 200 && meAfterLogin.j.data?.user?.email === 'a@b.co' && meAfterLogin.j.data?.tenantId === 't1');
 
 // login failure: wrong password, unknown email, inactive → identical 401
 const bad1 = await post('/auth/login', { email: 'a@b.co', password: 'nope' });
