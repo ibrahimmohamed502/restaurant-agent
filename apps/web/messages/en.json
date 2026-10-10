@@ -55,7 +55,14 @@
     "csrfError": "Security check failed. Please try again.",
     "emailRequired": "Email is required",
     "emailInvalid": "Invalid email format",
-    "passwordRequired": "Password is required"
+    "passwordRequired": "Password is required",
+    "changePassword": "Change password",
+    "changePasswordHint": "You will stay signed in on this device; other devices will be signed out.",
+    "currentPassword": "Current password",
+    "newPassword": "New password",
+    "confirmPassword": "Confirm new password",
+    "passwordTooShort": "New password must be at least 8 characters.",
+    "passwordMismatch": "The two new passwords do not match."
   },
   "states": {
     "emptyTitle": "No data",
@@ -405,6 +412,38 @@
       "admin": "Company Admin",
       "supervisor": "Supervisor",
       "agent": "Agent"
+    }
+  },
+  "command": {
+    "title": "Quick navigation",
+    "placeholder": "Search pages and actions…",
+    "noResults": "No matching pages.",
+    "hint": "↑↓ to navigate · Enter to open",
+    "shortcut": "⌘K"
+  },
+  "channels": {
+    "nav": "Channels",
+    "description": "Meta routing channels connected to this workspace (read-only)",
+    "readonlyNote": "Read-only view. Connecting and reconnecting providers arrives with the Integrations stage.",
+    "statusActive": "Active",
+    "health.ok": "Healthy",
+    "health.degraded": "Degraded",
+    "health.down": "Down",
+    "empty": {
+      "title": "No channels yet",
+      "description": "Routing channels appear here once a Meta page is connected."
+    },
+    "errors": {
+      "title": "Couldn't load channels",
+      "description": "An error occurred while fetching routing channels."
+    },
+    "table": {
+      "channel": "Channel",
+      "provider": "Provider",
+      "brand": "Brand",
+      "status": "Status",
+      "health": "Health",
+      "lastEvent": "Last event"
     }
   }
 }
