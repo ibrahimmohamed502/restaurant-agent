@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { useTranslations } from 'next-intl';
 import { cn } from '@/lib/utils';
 
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -21,19 +22,20 @@ export function KbStatusBar({
   errorCount: number | null;
   className?: string;
 }) {
+  const tk = useTranslations('knowledge');
   const state = draftState === 'draft'
     ? saveState === 'dirty'
-      ? { tone: 'warning', label: { en: 'Draft · Unsaved changes', ar: 'مسودة · تغييرات غير محفوظة' } }
+      ? { tone: 'warning', label: tk('statusBar.draftUnsaved') }
       : saveState === 'saving'
-        ? { tone: 'info', label: { en: 'Saving…', ar: 'جارٍ الحفظ…' } }
+        ? { tone: 'info', label: tk('statusBar.saving') }
         : saveState === 'saved'
-          ? { tone: 'success', label: { en: 'Draft saved', ar: 'تم حفظ المسودة' } }
+          ? { tone: 'success', label: tk('statusBar.saved') }
           : saveState === 'error'
-            ? { tone: 'destructive', label: { en: 'Save failed', ar: 'فشل الحفظ' } }
-            : { tone: 'neutral', label: { en: 'Draft', ar: 'مسودة' } }
+            ? { tone: 'destructive', label: tk('statusBar.saveFailed') }
+            : { tone: 'neutral', label: tk('statusBar.draft') }
     : publishedVersion
-      ? { tone: 'success', label: { en: `Published · v${publishedVersion}`, ar: `منشور · الإصدار ${publishedVersion}` } }
-      : { tone: 'neutral', label: { en: 'No published version', ar: 'لا يوجد إصدار منشور' } };
+      ? { tone: 'success', label: tk('statusBar.published', { version: publishedVersion }) }
+      : { tone: 'neutral', label: tk('statusBar.noPublished') };
 
   const toneClass = {
     neutral: 'border-border bg-surface-2 text-muted-foreground',
@@ -46,10 +48,10 @@ export function KbStatusBar({
   return (
     <div className={cn('flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border pb-3', className)}>
       <div className="text-sm font-medium text-foreground">{brandLabel}</div>
-      <span className={cn('inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium', toneClass)}>{state.label.ar}</span>
+      <span className={cn('inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium', toneClass)}>{state.label}</span>
       {errorCount !== null && errorCount > 0 ? (
         <span className="inline-flex items-center rounded-md border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
-          {errorCount === 1 ? 'مشكلة واحدة تحتاج انتباهك' : `${errorCount} مشكلات تحتاج انتباهك`}
+          {errorCount === 1 ? tk('statusBar.oneIssue') : tk('statusBar.issues', { count: errorCount })}
         </span>
       ) : null}
     </div>
