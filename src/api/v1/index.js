@@ -184,7 +184,8 @@ export function createApiV1Router(deps = {}) {
         return invalid();
       }
       await resetLoginAttemptsFn(email, ip);
-      const token = await createSessionFn({ tenantId: user.tenant_id, userId: user.id, ip, userAgent: req.get('user-agent') || '' });
+      // createSession returns { token, expiresAt } — the RAW token string is the cookie value
+      const { token } = await createSessionFn({ tenantId: user.tenant_id, userId: user.id, ip, userAgent: req.get('user-agent') || '' });
       res.cookie(sessionCookie, token, {
         httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production',
         path: '/', maxAge: 1000 * 60 * 60 * 12
