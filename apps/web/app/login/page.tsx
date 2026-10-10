@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { useRouter } from 'next/navigation';
 import { Languages, Moon, Sparkles, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -40,6 +41,7 @@ function BrandArtwork({ className }: { className?: string }) {
 
 export default function LoginPage() {
   const activeLocale = useLocale() as Locale;
+  const router = useRouter();
   const [theme, setTheme] = React.useState<'light' | 'dark'>('light');
   return (
     <main className="grid min-h-screen bg-background lg:grid-cols-2">
@@ -89,7 +91,7 @@ export default function LoginPage() {
         </div>
         <div className="flex flex-1 items-center justify-center p-6">
           <div className="w-full max-w-sm">
-            <LoginForm />
+            <LoginForm onSuccess={() => router.replace('/dashboard')} />
           </div>
         </div>
       </section>
