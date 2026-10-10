@@ -5,27 +5,28 @@ import { hashPassword } from '../auth/passwords.js';
 import { revokeUserSessions } from '../auth/sessions.js';
 import { audit } from '../auth/audit.js';
 
-export const usersRouter = express.Router();
 const ADMIN = requireRole('Company Admin');
 
-/* ------------------------- GET /dashboard/api/users ------------------------- */
-usersRouter.get('/dashboard/api/users', requireAuth, ADMIN, async (req, res) => {
+/* ------------------------------- handlers ------------------------------- */
+/* Exported so both the legacy dashboard router and the /api/v1 router can
+   reuse the exact same tenant-scoped, RBAC-guarded implementation. */
+
+export async function listUsers(req, res) {
   const { rows } = await pool.query(
     `SELECT u.id, u.email, u.name, u.status, u.created_at, u.last_login_at,
             COALESCE(json_agg(r.name) FILTER (WHERE r.name IS NOT NULL), '[]') AS roles
-     FROM users u
-     LEFT JOIN user_roles ur ON ur.user_id = u.id
-     LEFT JOIN roles r ON r.id = ur.role_id
-     WHERE u.tenant_id = $1
-     GROUP BY u.id
-     ORDER BY u.created_at`,
+       FROM users u
+       LEFT JOIN user_roles ur ON ur.user_id = u.id
+       LEFT JOIN roles r ON r.id = ur.role_id
+      WHERE u.tenant_id = $1
+      GROUP BY u.id
+      ORDER BY u.created_at`,
     [req.auth.tenantId]
   );
   res.json(rows);
-});
+}
 
-/* ------------------------ POST /dashboard/api/users ------------------------- */
-usersRouter.post('/dashboard/api/users', requireAuth, ADMIN, async (req, res) => {
+export async function createUser(req, res) {
   const { email, name, password, roles = [] } = req.body ?? {};
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name and password are required' });
   if (String(password).length < 8) return res.status(400).json({ error: 'password must be at least 8 characters' });
@@ -57,10 +58,9 @@ usersRouter.post('/dashboard/api/users', requireAuth, ADMIN, async (req, res) =>
   } finally {
     client.release();
   }
-});
+}
 
-/* --------------------- POST /dashboard/api/users/:id/status --------------------- */
-usersRouter.post('/dashboard/api/users/:id/status', requireAuth, ADMIN, async (req, res) => {
+export async function setUserStatus(req, res) {
   const { status } = req.body ?? {};
   if (!['active', 'disabled'].includes(status)) return res.status(400).json({ error: 'status must be active|disabled' });
   if (req.params.id === req.auth.user.id && status === 'disabled') {
@@ -76,10 +76,9 @@ usersRouter.post('/dashboard/api/users/:id/status', requireAuth, ADMIN, async (r
   if (status === 'disabled') await revokeUserSessions(rows[0].id);
   audit({ tenantId: req.auth.tenantId, actorUserId: req.auth.user.id, action: `users.${status === 'active' ? 'activate' : 'disable'}`, objectType: 'user', objectId: rows[0].id, ip: req.ip, metadata: { email: rows[0].email } });
   res.json(rows[0]);
-});
+}
 
-/* --------------------- POST /dashboard/api/users/:id/roles --------------------- */
-usersRouter.post('/dashboard/api/users/:id/roles', requireAuth, ADMIN, async (req, res) => {
+export async function setUserRoles(req, res) {
   const { roles = [] } = req.body ?? {};
   if (!Array.isArray(roles)) return res.status(400).json({ error: 'roles must be an array' });
 
@@ -112,4 +111,13 @@ usersRouter.post('/dashboard/api/users/:id/roles', requireAuth, ADMIN, async (re
   } finally {
     client.release();
   }
-});
+}
+
+/* ------------------------- legacy dashboard router ------------------------- */
+
+export const usersRouter = express.Router();
+
+usersRouter.get('/dashboard/api/users', requireAuth, ADMIN, listUsers);
+usersRouter.post('/dashboard/api/users', requireAuth, ADMIN, createUser);
+usersRouter.post('/dashboard/api/users/:id/status', requireAuth, ADMIN, setUserStatus);
+usersRouter.post('/dashboard/api/users/:id/roles', requireAuth, ADMIN, setUserRoles);
