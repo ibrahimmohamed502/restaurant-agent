@@ -133,5 +133,217 @@
     "inboxBody": "مؤشرات المحادثات ستتوفر مع وحدة الصندوق.",
     "knowledgeTitle": "تغطية قاعدة المعرفة",
     "knowledgeBody": "تابع الإصدارات المنشورة لكل علاماتك التجارية."
+  },
+  "knowledge": {
+    "description": "إدارة معرفة العلامة التجارية: المنيو، الفروع، الأسئلة الشائعة والسياسات",
+    "back": "رجوع",
+    "backToInbox": "رجوع إلى الصندوق الموحد",
+    "errors": {
+      "title": "تعذّر تحميل قاعدة المعرفة",
+      "description": "حدث خطأ أثناء جلب البيانات."
+    },
+    "empty": {
+      "title": "لا توجد معرفة منشورة بعد",
+      "description": "أنشئ مسودة لبدء إدارة المحتوى."
+    },
+    "status": {
+      "editingDraft": "تحرير مسودة",
+      "viewingPublished": "عرض المنشور",
+      "validationHint": "عالج مشاكل التحقق أولًا"
+    },
+    "sections": {
+      "overview": "نظرة عامة",
+      "menu": "المنيو",
+      "branches": "الفروع",
+      "faq": "الأسئلة الشائعة",
+      "policies": "السياسات والخدمة",
+      "sources": "المصادر والإصدارات"
+    },
+    "actions": {
+      "createDraft": "إنشاء مسودة",
+      "draftReady": "المسودة جاهزة",
+      "saveDraft": "حفظ المسودة",
+      "validate": "تحقق",
+      "preview": "معاينة",
+      "publish": "نشر",
+      "discardDraft": "إلغاء المسودة"
+    },
+    "toast": {
+      "saved": "تم حفظ المسودة",
+      "savedWithIssues": "تم الحفظ — توجد مشاكل تحقق",
+      "saveFailed": "فشل الحفظ",
+      "draftFailed": "تعذّر إنشاء المسودة",
+      "validateOk": "التحقق نجح",
+      "validateIssues": "{count} مشكلات تحتاج انتباهك",
+      "validateFailed": "فشل التحقق",
+      "previewOk": "المسودة جاهزة للنشر",
+      "previewIssues": "راجع مشاكل التحقق قبل النشر",
+      "previewFailed": "فشل المعاينة",
+      "published": "تم النشر — الإصدار v{version}",
+      "publishFailed": "فشل النشر",
+      "discarded": "تم إلغاء المسودة",
+      "discardFailed": "فشل إلغاء المسودة"
+    },
+    "dialog": {
+      "publish": {
+        "title": "نشر الإصدار الجديد؟",
+        "description": "سيصبح هذا الإصدار هو المعرفة النشطة للمساعد الآلي. الإصدار السابق يبقى متاحًا في السجل.",
+        "confirm": "تأكيد النشر",
+        "publishing": "جارٍ النشر…",
+        "reviewSummary": "أُضيف {added} · عُدّل {modified} · حُذف {removed}",
+        "previewHint": "للمراجعة الكاملة اضغط «معاينة» قبل النشر."
+      },
+      "discard": {
+        "title": "إلغاء المسودة؟",
+        "description": "سيتم التخلي عن كل التغييرات غير المنشورة. المعرفة المنشورة حاليًا لا تتأثر."
+      },
+      "unsaved": {
+        "title": "تغييرات غير محفوظة",
+        "description": "لديك تعديلات لم تُحفظ بعد. هل تريد الحفظ قبل المتابعة؟",
+        "confirm": "حفظ ومتابعة",
+        "cancel": "تجاهل التغييرات"
+      }
+    },
+    "menu": {
+      "search": "بحث في المنيو…",
+      "addCategory": "إضافة فئة",
+      "promptNewCategory": "اسم الفئة الجديدة",
+      "confirmDeleteCategory": "حذف الفئة \"{name}\" وكل أصنافها؟",
+      "promptNewSubcategory": "اسم القائمة الفرعية",
+      "confirmDeleteSubcategory": "حذف \"{name}\" وكل أصنافها؟",
+      "addSubcategory": "قائمة فرعية",
+      "deleteCategory": "حذف الفئة",
+      "deleteSubcategory": "حذف",
+      "addItem": "إضافة صنف",
+      "noCategories": "لا توجد فئات بعد. ابدأ بإضافة فئة مثل «الإفطار».",
+      "noMatches": "لا توجد أصناف مطابقة.",
+      "counter": "{items} صنف · {categories} فئة",
+      "editItem": "تعديل صنف",
+      "newItem": "إضافة صنف",
+      "deleteItem": "حذف",
+      "field": {
+        "nameEn": "الاسم (إنجليزي)",
+        "nameAr": "الاسم (عربي)",
+        "desc": "الوصف",
+        "price": "السعر (د.ك)",
+        "priceHint": "مثال: 4.650"
+      },
+      "currency": "د.ك",
+      "priceError": "أدخل سعرًا صحيحًا، مثل 4.650",
+      "categories": "الفئات"
+    },
+    "branches": {
+      "count": "{count} فرع",
+      "add": "إضافة فرع",
+      "empty": "لا توجد فروع بعد. أضف أول فرع.",
+      "edit": "تعديل",
+      "delete": "حذف",
+      "editTitle": "تعديل فرع",
+      "newTitle": "إضافة فرع",
+      "field": {
+        "name": "اسم الفرع",
+        "area": "المنطقة",
+        "timings": "مواعيد العمل",
+        "timingsHint": "مثال: 8:00 AM – 11:30 PM",
+        "maps": "رابط الخريطة",
+        "phone": "الهاتف"
+      },
+      "error": {
+        "name": "الاسم مطلوب",
+        "maps": "رابط غير صحيح",
+        "phone": "رقم هاتف غير صحيح",
+        "duplicate": "يوجد فرع بنفس الاسم"
+      },
+      "confirmDelete": "حذف الفرع \"{name}\"?"
+    },
+    "faq": {
+      "empty": "لا توجد أسئلة شائعة بعد.",
+      "add": "إضافة سؤال",
+      "count": "{count} سؤال",
+      "untitled": "سؤال بدون عنوان",
+      "field": {
+        "question": "السؤال",
+        "answer": "الإجابة"
+      },
+      "edit": "تعديل",
+      "delete": "حذف"
+    },
+    "policies": {
+      "meatSources": "مصادر اللحوم",
+      "agentNotes": "ملاحظات تشغيلية للمساعد"
+    },
+    "sources": {
+      "title": "مصدر المعرفة",
+      "kind": "النوع",
+      "versionCount": "عدد الإصدارات",
+      "currentVersion": "الإصدار الحالي",
+      "history": "سجل النشر",
+      "noHistory": "لم يتم النشر بعد."
+    },
+    "overview": {
+      "publishedNote": "أنت تشاهد النسخة المنشورة. أنشئ مسودة لإجراء تعديلات.",
+      "group": {
+        "brand": "معلومات العلامة",
+        "menu": "معلومات المنيو",
+        "service": "معلومات الخدمة",
+        "reservations": "الحجوزات"
+      },
+      "field": {
+        "restaurantName": "اسم المطعم / العلامة",
+        "about": "نبذة عن المطعم",
+        "menuUrl": "رابط المنيو",
+        "currency": "العملة",
+        "halal": "معلومات الحلال",
+        "delivery": "التوصيل / الخدمة",
+        "location": "الموقع",
+        "reservations": "سياسة الحجوزات"
+      }
+    },
+    "validation": {
+      "oneProblem": "مشكلة واحدة",
+      "problems": "{count} مشكلات",
+      "hide": "إخفاء",
+      "show": "عرض",
+      "jump": "انتقال",
+      "attention": "التحقق يحتاج انتباهك"
+    },
+    "sectionLabel": {
+      "overview": "نظرة عامة",
+      "menu": "المنيو",
+      "branches": "الفروع",
+      "faq": "الأسئلة الشائعة",
+      "policies": "السياسات",
+      "sources": "المصادر",
+      "root": "عام"
+    },
+    "review": {
+      "empty": "لا توجد تغييرات مقارنة بالإصدار المنشور.",
+      "added": "إضافة",
+      "modified": "تعديل",
+      "removed": "حذف"
+    },
+    "preview": {
+      "categories": "فئات المنيو",
+      "subcategories": "القوائم الفرعية",
+      "branches": "الفروع",
+      "baseVersion": "إصدار الأساس"
+    },
+    "statusBar": {
+      "draftUnsaved": "مسودة · تغييرات غير محفوظة",
+      "saving": "جارٍ الحفظ…",
+      "saved": "تم حفظ المسودة",
+      "saveFailed": "فشل الحفظ",
+      "draft": "مسودة",
+      "published": "منشور · الإصدار {version}",
+      "noPublished": "لا يوجد إصدار منشور",
+      "oneIssue": "مشكلة واحدة تحتاج انتباهك",
+      "issues": "{count} مشكلات تحتاج انتباهك"
+    },
+    "common": {
+      "save": "حفظ",
+      "cancel": "إلغاء",
+      "delete": "حذف",
+      "close": "إغلاق"
+    }
   }
 }
