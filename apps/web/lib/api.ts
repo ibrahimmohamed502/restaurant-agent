@@ -92,7 +92,27 @@ export const authApi = {
   login: (email: string, password: string) =>
     api.post<{ user: MeResponse['user']; tenantId: string }>('/auth/login', { email, password }),
   logout: () => api.post<{ ok: true }>('/auth/logout'),
-  me: () => api.get<MeResponse>('/auth/me')
+  me: () => api.get<MeResponse>('/auth/me'),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    api.post<{ ok: true }>('/auth/password', { currentPassword, newPassword })
+};
+
+/* ----------------------------------- channels (read-only routing view) */
+
+export type ChannelInfo = {
+  id: string;
+  provider: string;
+  externalId: string | null;
+  displayName: string | null;
+  status: string;
+  brandName: string | null;
+  health: 'ok' | 'degraded' | 'down' | null;
+  lastEventAt: string | null;
+  createdAt: string;
+};
+
+export const channelsApi = {
+  list: () => api.get<ChannelInfo[]>('/channels')
 };
 
 /* ----------------------------------- users (Team & Access) */
