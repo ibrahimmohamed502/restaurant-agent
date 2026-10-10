@@ -1,449 +1,203 @@
 # 🔄 OPENCODE SESSION HANDOVER
 
 > **Read this ENTIRE document before doing anything.**
-> Purpose: continue this project from the exact current point WITHOUT repeating previous audits, rediscovering architecture, or guessing previous decisions.
-> Anything uncertain is marked **UNKNOWN / NEEDS VERIFICATION**.
-> **NEVER include access tokens, passwords, encryption keys, secrets, sensitive env values, or decrypted credentials in this file.**
+> Purpose: continue this project from the exact current point WITHOUT re-auditing, re-discovering
+> architecture, or guessing previous decisions.
+> **NEVER include access tokens, passwords, encryption keys, secrets, sensitive env values, or
+> decrypted credentials in this file or in any command output.**
 
 ---
 
-# 1. PROJECT OVERVIEW
+# 1. PROJECT SUMMARY
 
-## What the system currently does
-An **AI customer engagement platform** that auto-replies to Facebook Page comments and Messenger DMs in the commenter's own language (Arabic→Kuwaiti dialect, English, etc.), using a restaurant/business knowledge base, with escalation detection (complaints/collaborations/contact-data) that alerts staff, plus an admin dashboard (Unified Inbox, stats, team management).
+AI customer-engagement platform for restaurant/business brands: auto-replies to Facebook Page
+comments and Messenger DMs in the commenter's own language (Arabic→Kuwaiti dialect, English, etc.)
+from brand-scoped knowledge, with escalation detection (complaints/collaborations/reservations/
+contact-data) that alerts staff, plus an admin SaaS platform (Unified Inbox, Knowledge Base, Teams).
 
-## How it evolved
-Started as a **single Facebook restaurant bot** (one page, one env token, knowledge.json in repo) → evolved into a **multi-tenant SaaS foundation** (PostgreSQL multi-tenant schema, encrypted per-channel credentials, RBAC auth, unified inbox, DB-driven routing in progress).
+Evolved from a single Facebook bot → multi-tenant SaaS foundation (PostgreSQL multi-tenant schema,
+encrypted per-channel credentials, RBAC auth, unified inbox, DB-driven Meta routing, queue/worker
+processing, tenant/brand-scoped AI context, structured Knowledge Base management).
 
-## Current technology stack
-- **Runtime:** Node.js 18+ (ESM), Express 4
-- **DB:** PostgreSQL 16 + pgvector (multi-tenant schema, RLS-ready)
-- **Queue:** Redis (deployed, **not yet used** — queue/BullMQ deferred)
-- **LLM:** Google Gemini (OpenAI-compatible endpoint) — chain: `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-3.8-flash` with retry/backoff + localized fallback replies
-- **Deploy:** Docker + docker-compose, Portainer (git-pull redeploys)
-- **Ingress:** Cloudflare quick-tunnel (temporary; permanent `bot.lifewithcacao.com` planned — **UNKNOWN / NEEDS VERIFICATION** whether domain is configured yet)
-- **Meta:** Graph API **v21.0** (from `FB_GRAPH_VERSION` env)
-- **Auth (dashboard):** DB sessions + bcryptjs + RBAC (Company Admin / Supervisor / Agent) + brute-force lockout
-
-## Application structure (key files)
-- `server.js` — Express entry, mounts webhook + dashboard + users routers, runs DB migrations+seed on boot (guarded)
-- `src/webhook.js` — Meta webhook intake (GET verify, POST events), comment/DM processing
-- `src/agent.js` — AI engine (system prompt, model chain, JSON parse)
-- `src/facebook.js` — `createMetaClient({accessToken})` + backward-compat named exports (env fallback)
-- `src/services/channelResolver.js` — `resolveMetaChannel(pageId)` (Stage 4.1)
-- `src/services/routeContext.js` — `buildRouteContext(entry)` (Stage 4.3B.1, **local only, NOT wired, NOT committed**)
-- `src/services/conversations.js` — findOrCreateChannel/Customer/Conversation, persistMessage, createEscalationRecord
-- `src/dashboard.js` — admin dashboard (stats, events, escalations, inbox, team, auth)
-- `src/db/pg.js` — pg Pool (legacy JSON mode when DATABASE_URL unset)
-- `src/db/migrate.js` — migration runner (migrations/*.sql, tracked in `_migrations`)
-- `src/db/crypto.js` — AES-256-GCM encrypt/decrypt (provider credentials)
-- `src/db/seed.js` — first-tenant seed (ufc + lwc brand + branches + knowledge + encrypted page token + admin user + roles + teams)
-- `src/knowledge.js` — loads `knowledge.json` (currently LWC data, **temporary compatibility — KB isolation NOT complete**)
-- `scripts/` — `gh-push.mjs` (GitHub Contents API push), `create-admin.mjs`, `provision-meta-channel.mjs`, `test-channelResolver.mjs`, `test-metaClient.mjs`, `test-routeContext.mjs`
-
-## PostgreSQL usage
-Multi-tenant schema (~30 tables) with `tenant_id` on tenant-scoped tables. Tables: tenants, brands, branches, users, roles, user_roles, teams, team_members, channels, provider_credentials, integration_health, webhook_events (unused), customers, customer_identities, conversations, messages, internal_notes, tags, conversation_tags, assignments, ai_agents, ai_configs, knowledge_sources, knowledge_documents, knowledge_chunks (vector), escalations, notifications, audit_logs, automation_rules, sessions, login_attempts, `_migrations`.
-
-## Redis usage
-Deployed (`redis:7-alpine`, healthy). **Not yet used** — queue/BullMQ deferred to a later stage.
-
-## Docker/Portainer deployment structure
-docker-compose services: `restaurant-page-agent` (build from GitHub main), `restaurant-postgres` (pgvector/pgvector:pg16), `restaurant-redis`, `restaurant-tunnel` (cloudflared quick tunnel). Deploys via Portainer "Pull and redeploy". Cloudflare quick-tunnel is the temporary public ingress — **URL changes on every redeploy** (must re-update Meta webhook callback URL via API each time).
-
-## Current Meta/Facebook integration architecture
-- Meta App "Restaurant Bot" (App ID known in repo `.env.example`? — ID is non-sensitive; stored in env). App is **Live** mode.
-- Webhook callback points to the current Cloudflare tunnel URL.
-- Page routing now (Stage 4.3A) provisioned in PostgreSQL: routing channel `provider='meta'` for the test page with encrypted `page_access_token` in `provider_credentials`.
-- **Routing channel (`provider='meta'`) is SEPARATE from conversation channels (`meta_comment`/`meta_dm`)** — these must NOT be merged.
-
-## Current Unified Inbox / dashboard architecture
-- Dashboard (`src/dashboard.js`): login (email+password DB sessions), stats cards, activity log, escalations tab (resolve), **Inbox tab** (conversations list + message timeline bubbles), **Team tab** (add/disable users, roles — Company Admin only). RBAC enforced on API.
-- Conversations/messages persisted in Postgres (customers, customer_identities, conversations, messages) via `src/services/conversations.js`.
-- Escalations persisted in `escalations` table linked to conversations; also legacy JSON event log (`data/dashboard.json`) for stats.
-
-## Current multi-tenant architecture
-- Single tenant `ufc` + brand `lwc` seeded (Stage 1). All current data is under that tenant.
-- Meta routing is now DB-driven in progress (Stage 4): `channels(provider='meta')` per page + `provider_credentials` (encrypted) + `channelResolver` + `routeContext`.
-- Tenant isolation enforced by: routing resolution from DB (not defaults), the `channels_meta_external_uidx` partial unique index, and fail-closed behavior for unknown/inactive pages.
-
-## Evolution summary (single bot → multi-tenant foundation)
-1. Single-page Facebook bot (Express + Gemini + knowledge.json).
-2. Added Messenger channel, escalations, email alerts, dashboard v1.
-3. Moved to VPS/Docker/Portainer.
-4. Stage 1: PostgreSQL multi-tenant foundation + pgvector + Redis + seed.
-5. Stage 2: Auth (DB sessions, bcrypt, RBAC, team management, brute-force lockout, audit logs).
-6. Stage 3: Unified Inbox (conversation persistence + Inbox UI + escalations linked).
-7. Stage 4 (in progress): DB-driven Meta routing (channelResolver, routeContext) to support multiple pages/tenants without cross-tenant leakage.
+**Stack:** Node 18+ (ESM) / Express 4 · PostgreSQL 16 + pgvector · Redis 7 · BullMQ (queue/worker) ·
+Google Gemini via OpenAI-compatible endpoint · Meta Graph API v21.0 · Next.js 14 (App Router) +
+React 18 + TypeScript + Tailwind + shadcn/Radix · next-intl (AR/EN, RTL/LTR) · Docker/Compose ·
+Cloudflare quick tunnel (temporary ingress).
 
 ---
 
-# 2. CURRENT PRODUCTION STATE
+# 2. OFFICIAL ROADMAP (source of truth = Stage 0 audit; do NOT invent a replacement)
 
-What is ACTUALLY live now (verified against repository + GitHub):
+- **Stage 0** — Audit: **COMPLETE**
+- **Stage 1** — Foundation (PostgreSQL + Redis + tenant/brand seed): **COMPLETE**
+- **Stage 2** — Auth / Users / RBAC / Sessions: **COMPLETE**
+- **Stage 3** — Unified Inbox / normalized conversation+message persistence: **COMPLETE**
+- **Stage 4** — Meta provider abstraction + queue/worker: **COMPLETE**
+- **Stage 5** — SaaS Admin Platform: Knowledge Base + Dashboard + Inbox + Login:
+  **IMPLEMENTED AND DEPLOYED — WAITING_FOR_MANUAL_VISUAL_ACCEPTANCE**
 
-## Production containers/services (Portainer)
-- `restaurant-page-agent` (healthy)
-- `restaurant-postgres` (pgvector/pgvector:pg16, healthy)
-- `restaurant-redis` (healthy)
-- `restaurant-tunnel` (cloudflared quick tunnel, healthy)
-- **Verified manually:** containers healthy after the last redeploy.
+Remaining roadmap (do NOT start without instruction):
 
-## Current test/working Meta/Facebook page
-- **CV Elite Hub** (test/dev page) is the currently configured live page (production bot replies there).
-- **Life With Cacao (LWC)** is temporarily paused/disconnected — will be brought back as part of Stage 4 (later).
-
-## Current routing channel setup
-- CV Meta routing channel **already provisioned in PostgreSQL** (`provider='meta'`, `external_id` = the CV page's Meta Page ID, status `active`, correct tenant + brand).
-- CV page credential stored encrypted in `provider_credentials` (`page_access_token`, AES-256-GCM). **Verified via `resolveMetaChannel(CV_PAGE_ID, {includeCredential:true})` → credentialAvailable: true, credentialMatchesLegacyEnv: true.**
-
-## Current database state
-- Migrations applied in production (recorded in `_migrations`):
-  - `001_init.sql` (foundation schema ~30 tables)
-  - `002_auth.sql` (sessions + login_attempts)
-  - `003_meta_channel_unique.sql` (partial unique index) — **APPLIED in production**
-- Migration versions currently in the repo `migrations/`: `001_init.sql`, `002_auth.sql`, `003_meta_channel_unique.sql`.
-- Tenant `ufc` + brand `lwc` seeded. Admin user exists (Company Admin). Teams seeded (Marketing, Customer Service, Purchasing, IT, Management). Knowledge chunks seeded from LWC knowledge.json. Branches (9) seeded.
-- Conversations/messages being persisted for the current test page (CV) in Postgres.
-
-## Current Meta routing uniqueness index
-- Index `channels_meta_external_uidx` **verified in production**: `UNIQUE on external_id WHERE provider='meta'`. Purpose: one `provider='meta'` routing record per Meta Page ID across all tenants (one page = one routing owner at a time). Ownership transfer may happen later via a controlled workflow.
-
-## Important production facts already verified manually
-- `resolveMetaChannel` works against real DB (4.3A verification passed).
-- Dashboard login works (email + bcrypt password; admin user created via `scripts/create-admin.mjs` in container console).
-- Bot replies on the CV page work end-to-end (comment → reply → persisted conversation visible in Inbox).
-
-**DO NOT include actual credential/token values here (none are stored in this document).**
+- **Stage 6** — Per-tenant AI config + retrieval / pgvector
+- **Stage 7** — Handoff + assignments + notes + notifications
+- **Stage 8** — Instagram
+- **Stage 9** — WhatsApp
+- **Stage 10** — Additional providers
+- **Stage 11** — Automations engine
+- **Stage 12** — Analytics
+- **Stage 13** — SaaS readiness
+- **Stage 14** — Hardening / backup / DR / monitoring / load tests
 
 ---
 
-# 3. COMPLETED PROJECT STAGES
+# 3. CURRENT STAGE
 
-## Stage 0 — Repository/security audit (COMPLETE)
-- Purpose: full audit before SaaS transformation.
-- Implemented: full repo/security/audit report (architecture, preserve list, P0–P3 findings, security review, target architecture, DB plan, integration plan, AI plan, UI/UX plan, roadmap).
-- Files: report only (no code).
-- Status: **COMPLETE.**
+`STAGE_5_STATUS = WAITING_FOR_MANUAL_VISUAL_ACCEPTANCE`
 
-## Stage 1 — Foundation (COMPLETE)
-- Purpose: PostgreSQL multi-tenant foundation + Redis.
-- Implemented: `pgvector/pgvector:pg16` + `redis:7-alpine` in compose; ~30-table multi-tenant schema (`migrations/001_init.sql`); `src/db/pg.js` (pool, legacy mode when no DATABASE_URL), `src/db/migrate.js` (runner), `src/db/crypto.js` (AES-256-GCM), `src/db/seed.js` (first-tenant seed); server boots migrations+seed (guarded, no double-seed).
-- Architectural decisions: `pg` (pure JS) over Prisma (Alpine/native-binary reliability); dual-run (bot keeps working from knowledge.json while DB builds alongside).
-- Files added: migrations/001_init.sql, src/db/pg.js, src/db/migrate.js, src/db/crypto.js, src/db/seed.js; docker-compose.yml, package.json(+lock), .env.example, server.js (edited).
-- Tests: crypto roundtrip PASS; seed verified in production (tenant+branches+teams+roles+chunks+encrypted token+channels created).
-- Deployment: **DEPLOYED to production.** Status: **COMPLETE.**
-
-## Stage 2 — Auth + RBAC + Team Management (COMPLETE)
-- Purpose: real auth replacing the single shared dashboard password.
-- Implemented: `migrations/002_auth.sql` (sessions, login_attempts); `src/auth/passwords.js` (bcryptjs), `src/auth/sessions.js` (DB sessions, cookie, validate/revoke), `src/auth/ratelimit.js` (brute-force lockout 5 fails→15 min), `src/auth/audit.js` (fire-and-forget audit), `src/auth/middleware.js` (requireAuth, requireRole, legacy fallback), `src/routes/users.js` (admin user management API), `src/dashboard.js` (rewritten: email+password login, header user info, Team tab for admins, RBAC on API).
-- Roles: Company Admin / Supervisor / Agent.
-- Files added/changed: migrations/002_auth.sql, src/auth/*, src/routes/users.js, src/dashboard.js, server.js.
-- Tests: login verified end-to-end in production (debug proved `compare: true`); RBAC verified (admin-only Team tab).
-- Deployment: **DEPLOYED to production.** Status: **COMPLETE.**
-
-## Stage 3 — Unified Inbox (COMPLETE)
-- Purpose: persist conversations/messages in Postgres + Inbox UI.
-- Implemented: `src/services/conversations.js` (getDefaultTenantId, findOrCreateChannel with auto-provisioning per page, findOrCreateCustomer, findOrCreateConversation, persistMessage with ON CONFLICT dedupe, createEscalationRecord, escalationCategory); webhook.js persists customer/conversation/messages (inbound+outbound, best-effort) + escalations linked; dashboard Inbox tab (conversations list + message timeline bubbles) + 2 API endpoints.
-- Files added/changed: src/services/conversations.js, src/webhook.js, src/dashboard.js.
-- Tests: end-to-end verified in production (real comment → reply → persisted conversation visible in Inbox with timeline).
-- Notable bug fixed during stage: a `\'` inside a server template literal broke the entire client script (SyntaxError) — fixed by switching to event delegation (data-id + addEventListener).
-- Deployment: **DEPLOYED to production.** Status: **COMPLETE.**
-
-## Stage 4 (IN PROGRESS) — Provider Abstraction + Multi-Page Routing
-
-### Stage 4.1 — Channel Resolver (COMPLETE)
-- Purpose: resolve Meta Page ID → channel/tenant/brand/credential from DB.
-- Implemented: `src/services/channelResolver.js` (`resolveMetaChannel(pageId, {includeCredential, db})` — strict fail-closed: UNKNOWN_META_PAGE / CHANNEL_INACTIVE / CREDENTIAL_MISSING; credential scoped to channel_id+tenant_id; AES-256-GCM decrypt reused; no secret in errors/logs).
-- Files added: src/services/channelResolver.js, scripts/test-channelResolver.mjs; STATUS.md updated.
-- Tests: 11/11 passing (mocked db): known/unknown page, correct tenant/brand, credential, inactive, missing credential, cross-tenant isolation, no-secret-in-errors, not-wired.
-- Commit: created via GitHub Contents API (exact SHA not re-verified here — **NEEDS VERIFICATION**).
-- Deployment: files pushed to repo; NOT wired into webhook (CV bot unchanged). Status: **COMPLETE.**
-
-### Stage 4.2 — Meta/Facebook Outbound Provider Preparation (COMPLETE)
-- Purpose: prepare facebook.js for page-specific credentials.
-- Implemented: `createMetaClient({accessToken})` + backward-compat named exports (env fallback); explicit token preferred; `META_CREDENTIAL_MISSING` when both absent; Authorization header auth (no token in URLs); sanitized errors.
-- Files changed: src/facebook.js (rewritten); scripts/test-metaClient.mjs (added); STATUS.md updated.
-- Tests: 12/12 passing (mocked fetch): explicit>env, env fallback, missing cred, all operations, no-token-in-errors/URL/logs, backward compat, not-wired.
-- Commit: fdd180f (facebook.js), cdedf42 (test), 57c98ab (STATUS.md).
-- Deployment: files pushed to repo; NOT wired into webhook (routing unchanged; CV uses legacy env path). Status: **COMPLETE.**
-
-### Stage 4.3A — Provision & Verify CV Meta Routing Channel + uniqueness index (COMPLETE)
-- Purpose: provision CV as a `provider='meta'` routing channel + encrypted credential; enforce Meta routing uniqueness.
-- Implemented: `scripts/provision-meta-channel.mjs` (idempotent provisioning + verification + tenant isolation + integrity report); `migrations/003_meta_channel_unique.sql` (partial unique index `channels_meta_external_uidx` on external_id WHERE provider='meta').
-- DB changes: CV routing channel created (provider='meta', external_id=CV page id, status active, correct tenant+brand); CV credential stored encrypted in provider_credentials (AES-256-GCM). Migration 003 applied in production (recorded in `_migrations`; index verified).
-- Verification (real DB, in container console): tenantIdMatches: true, brandIdMatches: true, credentialAvailable: true, credentialMatchesLegacyEnv: true, unknown page → UNKNOWN_META_PAGE, disabled channel → CHANNEL_INACTIVE (rolled back).
-- Tests: provisioning idempotent; tenant isolation verified; integrity report (no unique constraint existed before 003; no duplicate active credentials).
-- Commit: `1f1e3b41913ad33ce0a0e7ae88c484f0f02be6e9` — "Stage 4.3A: enforce Meta routing channel uniqueness" (VERIFIED on GitHub main).
-- Deployment: migration applied in production; webhook.js NOT modified; CV uses legacy env path for the bot. Status: **COMPLETE.**
-
-### Stage 4.3B.1 — routeContext (DONE locally, NOT wired, NOT committed, NOT deployed)
-- Purpose: resolve a Meta webhook entry/pageId to a request-scoped routing context.
-- Files created (LOCAL ONLY — **uncommitted, unpushed**):
-  - `src/services/routeContext.js` — `buildRouteContext(entry)` → extract entry.id → resolveMetaChannel(pageId, {includeCredential:true}) → createMetaClient({accessToken: resolved DB credential}) → return `{pageId, channelId, tenantId, brandId, displayName, metaClient}`.
-  - `scripts/test-routeContext.mjs` — 9 unit tests.
-- Security: DB credential only; ZERO `FB_PAGE_ACCESS_TOKEN` env fallback in this routed path; fail-closed for missing pageId / unknown page / inactive channel / missing credential / resolver-decryption failure; generic errors sanitized; credential never in errors/logs.
-- Tests: **9/9 passing** (mocked resolver + client factory): known page → correct context; entry object uses entry.id; missing pageId → MISSING_PAGE_ID; unknown → UNKNOWN_META_PAGE; inactive → CHANNEL_INACTIVE; missing credential → CREDENTIAL_MISSING; generic failure → sanitized RESOLVE_FAILED; credential not in errors; clientFactory receives resolved DB credential (no env fallback).
-- Repository status: **LOCAL ONLY — not committed, not pushed, not deployed, NOT wired into webhook.js.**
-- Status: **DONE locally; awaiting approval to proceed to 4.3B.2.**
+Stage 6 **MUST NOT** be started. See §8.
 
 ---
 
-# 4. IMPORTANT ARCHITECTURAL DECISIONS
+# 4. COMPLETED ARCHITECTURE
 
-## A. CHANNEL TYPES
-- `provider='meta'` is the Meta **integration/routing channel** (owns the encrypted credential, resolves tenant/brand).
-- `meta_comment` and `meta_dm` are **conversation classification channels** (for Inbox grouping).
-- These concepts **MUST NOT be merged**.
+## Backend (Express, unchanged architecture in this handover)
+- `server.js` — entry; mounts webhook router, legacy dashboard router (+ `/legacy` mount),
+  users router, `/api/v1` router, and the **Stage 5 UI proxy** (`src/uiProxy.js`) that serves the
+  Next.js frontend from the same public hostname.
+- `src/webhook.js` — Meta webhook intake: signature verify → immediate HTTP 200 ACK →
+  `handlePayload` → per entry `buildRouteContext(entry)` **once** → `processComment` /
+  `processMessage` with request-scoped `ctx { pageId, channelId, tenantId, brandId, metaClient }`.
+  - Routed inbound persisted BEFORE AI (Stage 4.4.6), outbound `delivery_status`
+    (`pending|sent|failed`) + retry metadata + manual retry endpoint.
+  - Scoped AI via `analyzeAndDraft({ ..., ctx })` (Stage 4.4.3) + deterministic grounding guard.
+- `src/services/` — `channelResolver.js` (Page→channel/tenant/brand/credential, fail-closed),
+  `routeContext.js` (`buildRouteContext`), `aiContext.js` (tenant/brand-scoped AI context;
+  PUBLISHED knowledge only, newest version), `knowledge.js` (draft/validate/preview/atomic publish
+  + version history), `grounding.js` (URL/phone/price grounding), `webhookEvents.js`
+  (provider-level idempotency), `conversations.js` (persistence + delivery status + retry).
+- `src/providers/meta/` — normalizer + provider boundary (`sendMetaReply`).
+- `src/queues/`, `src/workers/` — BullMQ `meta-events` queue + worker (bounded retries, backoff).
+- `src/api/v1/` — versioned API: `index.js` (auth/CSRF/tenant-context/RBAC foundation),
+  `knowledge.js`, `dashboard.js` (real KPI summary), `conversations.js` (real Unified Inbox data).
+- `src/auth/` — DB sessions (httpOnly cookie), bcrypt, RBAC, rate-limited login.
+- `src/db/` — `pg.js` (pool), `migrate.js` (runner), `crypto.js` (AES-256-GCM), `seed.js`.
+- `migrations/` — `001_init.sql`, `002_auth.sql`, `003_meta_channel_unique.sql`,
+  `004_message_delivery_status.sql`, `005_message_retry_metadata.sql`,
+  `006_knowledge_drafts_versions.sql` — **all applied in production**.
 
-## B. META ROUTING SOURCE OF TRUTH
-- PostgreSQL is the source of truth for Meta Page routing: `channels` + `provider_credentials`.
-- **Do NOT introduce `FB_PAGES_JSON`** (or any env-based page list).
-
-## C. META PAGE OWNERSHIP INVARIANT
-- A Meta Page ID may have only one `provider='meta'` routing record across all tenants at a time. Ownership transfer may happen later through a controlled workflow.
-- DB enforcement: `channels_meta_external_uidx` — UNIQUE on external_id WHERE provider='meta'.
-
-## D. TARGET META WEBHOOK ROUTING FLOW
-```
-Meta webhook
-→ entry.id
-→ resolveMetaChannel(entry.id)
-→ routing channel → tenantId → brandId
-→ encrypted DB credential → decrypt
-→ createMetaClient({ accessToken })
-→ process event using request-scoped routing context (ctx)
-```
-
-## E. CREDENTIAL RULE
-- The new routed webhook path MUST use the credential resolved from PostgreSQL.
-- **NO `FB_PAGE_ACCESS_TOKEN` environment fallback inside the new routed webhook path.**
-- Legacy env variables may physically remain for rollback/backward compatibility OUTSIDE the routed path, but routeContext/webhook routing must not use them.
-- Unknown/inactive/unconfigured pages must FAIL CLOSED.
-
-## F. TENANT ROUTING
-- Once a Meta webhook entry has successfully resolved its routing context: do NOT use `getDefaultTenantId()` for that routed event. Use `ctx.tenantId`.
-
-## G. SECURITY
-- Credentials must never be: logged, returned in errors, exposed to dashboard, included in handover, committed to GitHub.
-
-## H. KNOWLEDGE BASE
-- Current `knowledge.json` / LWC knowledge behavior is **TEMPORARY compatibility only**. KB isolation is NOT complete.
-- Tenant/brand-specific Knowledge Base scoping will be implemented in Stage 4.4/5.
-- Stage 4.3B is ROUTING work only. Do not redesign the Knowledge Base during Stage 4.3B.
-
----
-
-# 5. DATABASE STATE
-
-## Current migrations (repo `migrations/`)
-- `001_init.sql` — foundation schema (~30 tables) — applied
-- `002_auth.sql` — sessions + login_attempts — applied
-- `003_meta_channel_unique.sql` — partial unique index — applied
-
-## channels_meta_external_uidx
-- `UNIQUE on external_id WHERE provider='meta'`. Purpose: one `provider='meta'` routing record per Meta Page ID across all tenants (one page = one routing owner at a time; ownership transfer later via controlled workflow). Defense-in-depth for multi-tenant isolation.
-
-## Current routing channel architecture
-- `channels` (id, tenant_id, brand_id, provider, external_id, display_name, status, metadata, created_at). Routing channels use `provider='meta'`; conversation channels use `meta_comment`/`meta_dm` (separate, not merged).
-- CV routing channel exists (provider='meta', status active, correct tenant+brand).
-
-## provider_credentials architecture
-- `provider_credentials` (id, tenant_id, channel_id, kind, value_encrypted bytea, iv bytea, expires_at, last_rotated_at, created_at).
-- Encryption strategy: AES-256-GCM (`src/db/crypto.js`) — value_encrypted = authTag(16B)‖ciphertext; iv = 12B nonce. ENCRYPTION_KEY env (64-hex). Verified from repository.
-- Resolver credential selection: `ORDER BY created_at DESC LIMIT 1` (latest-wins) — verified from `src/services/channelResolver.js` code.
-- **Why NO unique(channel_id, kind) constraint now:** token rotation needs a temporary overlap (new credential added before old removed). Latest-wins supports rotation naturally. A stricter "one current credential" design (e.g., is_active flag) is a future credential-management decision — not now.
-- Future rotation consideration: latest-wins already handles overlap; document that rotation = insert new → rely on latest-wins → optionally clean old later.
-
-## Known issue (deliberately deferred)
-- There is an existing `meta_comment` conversation channel for the current test page (CV) where `brand_id` is NULL. This was deliberately NOT fixed during Stage 4.3A. It is NOT the `provider='meta'` routing channel. Brand/conversation alignment is deferred to the appropriate routing/conversation/KB scoping work. Do not modify it during this handover.
+## Frontend (`apps/web/`, Next.js App Router)
+- Shell: `components/shell/` — sidebar (grouped nav, collapse, mobile drawer), topbar
+  (Company/Brand context chips, language, theme, user menu), `app-shell.tsx` / `session-gate.tsx`.
+- Dashboard: `components/dashboard/view.tsx` — executive header, 4 real KPI cards,
+  Recent Conversations, Platform Status, Knowledge status, Quick Actions, AI agent panel.
+- Inbox: `app/(app)/inbox/page.tsx` + `components/inbox/view.tsx` — real tenant-scoped data via
+  `/api/v1/conversations`, list + detail message timeline, loading/empty/error states.
+- Knowledge: `app/(app)/knowledge/page.tsx` + `components/kb/*` — Overview / Menu /
+  Branches / FAQs / Policies / Sources&Versions; draft → save → validate → preview → publish.
+- Login: `app/login/page.tsx` — split premium layout with local inline-SVG cacao hero,
+  language + theme toggles, validation/error/loading states.
+- i18n: `messages/en.json`, `messages/ar.json` (namespaces: common, nav, navGroups, auth, states,
+  shell, placeholder, inbox, dashboard) — EN/AR key parity enforced by tests.
+- API client `lib/api.ts` (same-origin, CSRF double-submit), `lib/navigation.ts`.
 
 ---
 
-# 6. STAGE 4.3B.1 — CURRENT IMPLEMENTATION STATE
+# 5. PRODUCTION DEPLOYMENT
 
-- Implemented LOCALLY: `src/services/routeContext.js` + `scripts/test-routeContext.mjs`.
-- Purpose: `buildRouteContext(entry)` resolves a Meta webhook entry/pageId into a request-scoped routing context `{pageId, channelId, tenantId, brandId, displayName, metaClient}`.
-- Flow: extract entry.id/pageId → resolveMetaChannel(pageId, {includeCredential:true}) → decrypted DB credential → createMetaClient({accessToken}) → return context.
-- Security: DB credential only; ZERO `FB_PAGE_ACCESS_TOKEN` env fallback in this routed path; missing pageId/unknown/inactive/missing credential/resolver-decryption failure all fail closed; generic resolver/decryption errors sanitized; credential never in errors/logs.
-- Tests: **9/9 passing** (mocked resolver + client factory) covering all 8 required scenarios + clientFactory credential receipt.
-- Repository status: **LOCAL ONLY — uncommitted, unpushed, not deployed, NOT wired into the live webhook.**
-- webhook.js has NOT been modified yet. No deployment performed for Stage 4.3B.1. No database changes for Stage 4.3B.1.
-- **Do NOT commit or push these files unless explicitly approved.**
+**Browser → public Cloudflare hostname → Express app (public entry)**
+**→ Next.js web for SaaS UI routes (proxied) → Express API for `/api/*` → Express webhook for `/webhook`**
 
----
-
-# 7. CURRENT STOPPING POINT
-
-- The project is stopped AFTER implementation/testing of **Stage 4.3B.1** and BEFORE **Stage 4.3B.2**.
-- Do NOT claim Stage 4.3B is complete. Do NOT claim DB-driven webhook routing is live yet.
-- The existing webhook.js is still the previous working implementation (env credential path) until Stage 4.3B.2 is implemented, reviewed, committed, deployed, and verified.
-
----
-
-# 8. NEXT EXACT STEP
-
-- The NEXT sub-stage is **Stage 4.3B.2**.
-- Goal: wire webhook.js to resolve the routing context ONCE per Meta webhook entry and pass that context into `processComment(...)` and `processMessage(...)`.
-- Expected architecture:
-```
-handlePayload(body)
-  for each entry:
-      buildRouteContext(entry) ONCE
-      ↓ ctx
-      processComment(value, ctx)
-      or
-      processMessage(event, ctx)
-```
-- Do NOT implement Stage 4.3B.2 as part of creating this handover.
-- The next session must first: read this handover, inspect repository state, verify Stage 4.3B.1 against actual code, report discrepancies, wait for approval, only then begin Stage 4.3B.2.
+- Compose project: `restaurant-agent` (stack dir `/root/stack` on the VPS).
+- Services (containers): `restaurant-page-agent` (Express, port 3000), `lwc-web` (Next.js, host port
+  3001), `restaurant-agent-worker` (BullMQ worker), `restaurant-postgres`, `restaurant-redis`,
+  `restaurant-tunnel` (cloudflared quick tunnel).
+- Routing mechanism: public tunnel → `restaurant-page-agent:3000`; Express `uiProxy` forwards
+  browser UI routes (`/`, `/login`, `/dashboard`, `/knowledge`, `/inbox`, `/_next/*`, …) to
+  `http://lwc-web:3000` (`WEB_UPSTREAM`); `/api/*` and `/webhook` stay on Express
+  (same-origin → cookies/CSRF keep working).
+- Processing mode: `WEBHOOK_QUEUE_MODE=queue` (inline fallback if Redis is unreachable).
+- Health endpoints: `/health` (Express), `/api/v1/_health` (API). `/webhook` returns 403 for an
+  invalid verify token (expected proof of reachability).
+- **Public URL is a temporary quick-tunnel hostname — it changes if the tunnel is recreated.
+  Do not recreate the tunnel.** The Meta webhook callback points at this hostname.
 
 ---
 
-# 9. REMAINING STAGE 4.3B PLAN
+# 6. IMPORTANT IDs / NON-SECRET REFERENCES
 
-- Resolve entry.id once per webhook entry.
-- Pass ctx through comment processing.
-- Pass ctx through Messenger processing.
-- Replace global PAGE_ID self-skip with ctx.pageId.
-- Use ctx.metaClient for outbound Meta operations.
-- Remove routed webhook dependency on global FB_PAGE_ACCESS_TOKEN.
-- Use ctx.tenantId for persistence.
-- Propagate brand context where appropriate.
-- Review findOrCreateChannel for optional brandId.
-- Preserve distinction between routing channel and conversation channels.
-- Implement fail-closed behavior.
-- Add/update tests.
-- Run CV regression tests.
-- Deploy only after explicit approval.
-- Verify production routing after deployment.
+- Meta Page (CV Elite Hub test page): `738688299520738`
+- Meta routing channel (provider='meta'): `19002b89-9884-42fa-8388-41cebb48af86`
+- Tenant: `82d867f0-8a52-42ab-a055-9267bdacd7f4` (slug `ufc`)
+- Brand: `50b669d9-008b-414b-b643-a01cddde0d01` (slug `lwc`)
+- Company Admin login identifier: `ibrahimmohamedahmed502@gmail.com` (password NOT stored anywhere
+  readable; reset only via `scripts/create-admin.mjs` with explicit approval)
 
 ---
 
-# 10. FAIL-CLOSED REQUIREMENTS
+# 7. STAGE 5 IMPLEMENTATION
 
-The routed webhook must fail closed for:
-- missing entry.id
-- unknown Meta Page ID
-- inactive routing channel
-- missing provider credential
-- credential decryption failure
-- malformed event
-- resolver failure
-
-No unknown page may fall through to: default tenant, CV, LWC, legacy FB_PAGE_ACCESS_TOKEN, another tenant, or another brand.
+- Structured Knowledge Base management (Overview / Menu / Branches / FAQs / Policies / Sources).
+- Draft → validate → preview → publish, atomic publish with version history
+  (`knowledge_drafts`, `knowledge_publications`, `knowledge_documents.status='published'`).
+- Tenant + brand scoping everywhere; RBAC (Company Admin publishes, Supervisor edits, Agent
+  read-only; enforced API-side).
+- Real dashboard KPIs and real Unified Inbox from persisted data. Premium shell/login/theme,
+  EN/AR + RTL/LTR, light/dark.
 
 ---
 
-# 11. DO-NOT-DO LIST
+# 8. CURRENT UI STATE
 
-- Do NOT change the Meta webhook URL unless explicitly instructed.
-- Do NOT add the LWC production Meta page yet.
-- Do NOT redesign Knowledge Base yet.
-- Do NOT expose secrets.
-- Do NOT expose tokens.
-- Do NOT manually modify production DB without approval.
-- Do NOT deploy automatically.
-- Do NOT merge routing channels with conversation channels.
-- Do NOT restore env-token fallback in the routed webhook flow.
-- Do NOT introduce FB_PAGES_JSON.
-- Do NOT use getDefaultTenantId() after successful Meta routing resolution.
-- Do NOT start later stages before the current sub-stage is reviewed.
-- Do NOT assume Stage 4.3B is live just because routeContext.js exists.
+`STAGE_5_STATUS = WAITING_FOR_MANUAL_VISUAL_ACCEPTANCE`
+
+The user will inspect: Login, Dashboard, Unified Inbox, Knowledge Base, sidebar/hamburger,
+English/Arabic, RTL/LTR, light/dark, desktop responsiveness. The next session must NOT assume the
+design is final and must NOT redesign proactively — only make focused corrections if requested.
 
 ---
 
-# 12. REPOSITORY STATUS
+# 9. SECURITY / SAFETY RULES
 
-**Verified against GitHub (Contents API) as of this handover:**
-
-- **Current branch:** `main`
-- **Latest commit SHA:** `1f1e3b41913ad33ce0a0e7ae88c484f0f02be6e9`
-- **Latest commit message:** "Stage 4.3A: enforce Meta routing channel uniqueness"
-- **Previous commit:** `df7af6f` — "Add scripts/provision-meta-channel.mjs" (verified)
-- **Git metadata:** the local workspace `restaurant-page-agent/` is **NOT a local git working tree** (no `.git`). We push to GitHub via the **GitHub Contents API** using `scripts/gh-push.mjs` (fine-grained PAT with Contents Read+write on this repo only). So "git status/diff" locally is unavailable; status is verified via the GitHub API.
-- **Migrations on GitHub main:** `001_init.sql`, `002_auth.sql`, `003_meta_channel_unique.sql`.
-- **Uncommitted/unpushed files (LOCAL ONLY):**
-  - `src/services/routeContext.js` — exists LOCALLY, NOT on GitHub (verified NOT FOUND on main)
-  - `scripts/test-routeContext.mjs` — exists LOCALLY, NOT on GitHub (verified NOT FOUND on main)
-  - `OPENCODE_HANDOVER.md` — this file, LOCAL ONLY, NOT pushed
-- **Whether routeContext.js is committed/pushed:** NOT committed, NOT pushed (local only).
-- **Whether test-routeContext.mjs is committed/pushed:** NOT committed, NOT pushed (local only).
-- **Files created/modified during this session (routeContext work):** only the two files above (verified via recent-modified-file check).
+- Never print secrets: no access tokens, PATs, API keys, DB passwords, encryption keys, decrypted
+  provider credentials, session cookies.
+- Never fabricate credentials; never log them; never put them in argv, files, or commits.
+- Do not modify Meta configuration unless explicitly requested; never change the webhook callback
+  casually.
+- Do not recreate PostgreSQL/Redis unnecessarily; never restart the Cloudflare tunnel casually.
+- Do not modify active LWC knowledge casually (draft/publish workflow only).
+- Preserve tenant isolation, queue/worker behavior, same-origin auth/session/CSRF.
+- Use official APIs only. Do not manufacture production Facebook events.
+- Do not start later roadmap stages without instruction.
+- Commits/pushes go through the GitHub Contents API workflow (no local git working tree).
 
 ---
 
-# 13. IMPORTANT KNOWN COMMITS
+# 10. KNOWN CONSTRAINTS
 
-**Verified against GitHub (Contents API) before documenting:**
-
-- **Stage 4.3A migration commit:** `1f1e3b41913ad33ce0a0e7ae88c484f0f02be6e9` — message "Stage 4.3A: enforce Meta routing channel uniqueness". **VERIFIED on GitHub main.**
-- **Previous known commit before that:** `df7af6f` — "Add scripts/provision-meta-channel.mjs". **VERIFIED on GitHub main.**
-- (Older commit before df7af6f: `57c98ab` — "Update STATUS.md", verified.)
-
----
-
-# 14. VALIDATION COMMANDS
-
-Safe commands the next session can use (NO credential decryption, NO secrets printed):
-
-```bash
-# routeContext focused tests (mocked resolver + client factory, no DB, no secrets)
-node scripts/test-routeContext.mjs
-
-# channelResolver tests (mocked db)
-node scripts/test-channelResolver.mjs
-
-# metaClient tests (mocked fetch)
-node scripts/test-metaClient.mjs
-
-# latest commits on GitHub main (read-only)
-# (uses GITHUB_TOKEN from .env — local dev only)
-node -e "fetch('https://api.github.com/repos/ibrahimmohamed502/restaurant-agent/commits?per_page=3',{headers:{Authorization:'Bearer '+process.env.GITHUB_TOKEN,Accept:'application/vnd.github+json'}}).then(r=>r.json()).then(c=>console.log(c.map(x=>({sha:x.sha.slice(0,7),msg:x.commit.message}))))"
-
-# verify routeContext.js is NOT yet on GitHub (should print NOT FOUND)
-node -e "fetch('https://api.github.com/repos/ibrahimmohamed502/restaurant-agent/contents/src/services/routeContext.js?ref=main',{headers:{Authorization:'Bearer '+process.env.GITHUB_TOKEN}}).then(r=>console.log(r.status===404?'NOT FOUND (local only)':'EXISTS'))"
-
-# check whether new files differ from GitHub (recent-modified check, local)
-# (PowerShell)
-Get-ChildItem . -Recurse -File | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-60) } | Select-Object FullName
-```
-
-(Do NOT run any command that decrypts or prints credentials, tokens, or secrets.)
+- No local `git` working tree — GitHub is the source of truth (Contents API pushes).
+- Production stack dir `/root/stack` holds compose + `.env` (secrets live only there / in Portainer).
+- Quick-tunnel hostname changes on recreation; a permanent domain (`app.<domain>`) is planned but
+  NOT configured.
+- No compose CLI locally — deployments run via the stack dir with Docker API access.
+- Seed/test data is single-tenant (UFC/LWC) plus the CV test page.
 
 ---
 
-# 15. PRODUCTION SAFETY NOTES
+# 11. LATEST COMMITS (verified)
 
-- Production currently works BEFORE webhook.js Stage 4.3B wiring (the bot runs the previous working env-credential path).
-- Stage 4.3B.1 is isolated and NOT deployed (verified: routeContext.js and test-routeContext.mjs are local only, NOT on GitHub).
-- Do not redeploy just to test local code.
-- Future webhook routing deployment requires explicit approval.
-- Database routing/credential configuration must remain the source of truth.
+- `a510e4ef3af8c612609591031bf64cc9ec070216` — "Stage 5: premium login artwork, real Unified
+  Inbox data, full EN/AR localization" (current HEAD / origin/main)
+- `3e10147257a3bc5128f7f247207b9f98abda2ce9` — "Stage 5: premium executive dashboard with real
+  tenant-scoped operational data"
+- `373d62a97a91b9196169fa738a1fbe0ae263ab93` — "Stage 5: premium SaaS UI polish for shell,
+  dashboard foundation and Knowledge Base workspace"
+- `add8bd87ee4bd1c51c7038a3236e31a7edff8ab1` — "Stage 5: route public SaaS UI through Next.js"
+- `81468ad1df2ed30fb8883959c324547f0772b206` — "Stage 5: add structured Knowledge Base management"
+- `60fa…/54c3…/2c76…` — Stage 4 completion (queue/worker), Stage 4.4.6/4.4.7 reliability work.
 
 ---
 
-# 16. NEXT SESSION START PROMPT
+# 12. IMMEDIATE NEXT ACTION
 
-**NEXT SESSION START PROMPT:**
-
-Read OPENCODE_HANDOVER.md completely before doing anything.
-
-Then inspect the current repository and verify the handover against the actual code/repository state.
-
-Do NOT modify anything yet.
-Do NOT deploy.
-Do NOT change the database.
-Do NOT change Meta configuration.
-
-Report only:
-
-1. Current completed stage.
-2. Current branch/latest commit.
-3. Current uncommitted/unpushed changes.
-4. Whether Stage 4.3B.1 files exist and their actual repository status.
-5. Whether webhook.js is still unchanged from before Stage 4.3B wiring.
-6. Last verified production state.
-7. Exact next step.
-8. Any mismatch between OPENCODE_HANDOVER.md and the actual repository.
-
-Then STOP and wait for approval before implementing Stage 4.3B.2.
+Wait for the user's manual visual review of the deployed Stage 5 UI. If UI corrections are requested,
+make only focused corrections. Do not start Stage 6 until Stage 5 receives final user acceptance.
