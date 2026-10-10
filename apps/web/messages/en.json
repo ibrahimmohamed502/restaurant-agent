@@ -16,7 +16,9 @@
     "dark": "Dark",
     "comingSoon": "Coming soon",
     "platformName": "LWC Platform",
-    "close": "Close"
+    "close": "Close",
+    "back": "Back",
+    "edit": "Edit"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -358,6 +360,51 @@
       "cancel": "Cancel",
       "delete": "Delete",
       "close": "Close"
+    }
+  },
+  "team": {
+    "nav": "Team & Access",
+    "description": "Manage who can access the console and what they can do",
+    "addUser": "Add user",
+    "editTitle": "Edit permissions",
+    "save": "Save",
+    "edit": "Edit",
+    "disable": "Disable",
+    "enable": "Enable",
+    "statusActive": "Active",
+    "statusDisabled": "Disabled",
+    "password": "Password",
+    "passwordHint": "At least 8 characters.",
+    "rolesHint": "Company Admin: full access · Supervisor: edits drafts · Agent: read-only.",
+    "rbacNote": "Permissions are enforced on the server — Company Admin only.",
+    "confirmDisable": "Disable \"{name}\"? They will be signed out immediately.",
+    "confirmEnable": "Re-enable \"{name}\"?",
+    "empty": {
+      "title": "No team members yet",
+      "description": "Add your first team member to get started."
+    },
+    "errors": {
+      "title": "Couldn't load the team",
+      "description": "An error occurred while fetching team members.",
+      "required": "Name and email are required.",
+      "passwordLength": "Password must be at least 8 characters.",
+      "failed": "Something went wrong. Please try again."
+    },
+    "forbidden": {
+      "title": "Admin access required",
+      "description": "Only Company Admins can manage the team. Contact your administrator."
+    },
+    "table": {
+      "name": "Name",
+      "email": "Email",
+      "roles": "Roles",
+      "status": "Status",
+      "actions": "Actions"
+    },
+    "roles": {
+      "admin": "Company Admin",
+      "supervisor": "Supervisor",
+      "agent": "Agent"
     }
   }
 }
