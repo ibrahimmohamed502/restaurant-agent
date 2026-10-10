@@ -132,6 +132,13 @@ function ExecutiveHeader({ data, greeting, welcome }: { data: DashboardData; gre
   const t = useTranslations('dashboard');
   return (
     <section className="enter-up relative overflow-hidden rounded-lg border border-border bg-gradient-to-b from-surface-2 to-surface p-5 shadow-sm">
+      {/* subtle local cacao-arcs motif (no external artwork, decoration only) */}
+      <svg className="pointer-events-none absolute inset-y-0 end-0 hidden h-full w-1/3 text-primary/[0.07] lg:block" viewBox="0 0 200 120" fill="none" aria-hidden>
+        {Array.from({ length: 7 }, (_, i) => (
+          <circle key={i} cx={170 - i * 26} cy={100 - i * 14} r={70 + i * 8} stroke="currentColor" strokeWidth="1" />
+        ))}
+        <path d="M120 96c-8-10-13-20-13-31 0-16 10-27 22-27 5 0 9 2 11 4 2-2 6-4 11-4 12 0 22 11 22 27 0 11-5 21-13 31l-20 12z" fill="currentColor" opacity="0.5" />
+      </svg>
       <div className="absolute inset-y-0 end-0 hidden w-1/3 bg-gradient-to-l from-primary/5 to-transparent lg:block" aria-hidden />
       <div className="relative flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">
@@ -140,8 +147,8 @@ function ExecutiveHeader({ data, greeting, welcome }: { data: DashboardData; gre
           <p className="mt-1 max-w-xl text-[13px] text-secondary-foreground">{welcome}</p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs text-secondary-foreground">
-            <Sparkles className="h-3.5 w-3.5 text-primary" aria-hidden />
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-primary/20 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary">
+            <Sparkles className="h-3.5 w-3.5" aria-hidden />
             {t('knowledgeVersion', { version: data.knowledge.version ?? '—' })}
           </span>
           <Button size="sm" variant="secondary" className="gap-1.5" asChild>
