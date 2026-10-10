@@ -17,12 +17,12 @@ import {
   ScrollText,
   Settings,
   Shield,
-  Sparkles,
   Tags,
   Users,
   X
 } from 'lucide-react';
 import { NAV_ITEMS } from '@/lib/navigation';
+import { BrandMark } from '@/components/brand/brand-mark';
 import { cn } from '@/lib/utils';
 
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -32,7 +32,7 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   'building-2': Building2,
   tags: Tags,
   radio: Radio,
-  sparkles: Sparkles,
+  sparkles: LayoutDashboard,
   'book-open': BookOpen,
   shield: Shield,
   plug: Plug,
@@ -49,6 +49,7 @@ export function Sidebar({
 }: {
   collapsed: boolean;
   isSuperAdmin: boolean;
+  /** drawer state — also hides the persistent sidebar on desktop when false */
   mobileOpen: boolean;
   onToggleCollapsed: () => void;
   onCloseMobile: () => void;
@@ -60,11 +61,21 @@ export function Sidebar({
   // RBAC: super-admin-only entries are hidden from non-super-admins
   const items = NAV_ITEMS.filter((i) => !i.superAdminOnly || isSuperAdmin);
 
+  // Escape closes the drawer (drawer width only — desktop keeps its sidebar)
+  React.useEffect(() => {
+    if (!mobileOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && typeof window !== 'undefined' && window.innerWidth < 1024) onCloseMobile();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [mobileOpen, onCloseMobile]);
+
   const brand = (
     <Link href="/dashboard" onClick={onCloseMobile} className="relative flex h-topbar items-center gap-2.5 overflow-hidden px-3" title={tCommon('platformName')}>
-      <span className="absolute inset-0 bg-gradient-to-e from-primary/12 via-primary/5 to-transparent" aria-hidden />
+      <span className="absolute inset-0 bg-gradient-to-e from-primary/15 via-primary/5 to-transparent" aria-hidden />
       <span className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary-hover text-primary-foreground shadow-sm">
-        <Sparkles className="h-4 w-4" aria-hidden />
+        <BrandMark size={18} />
       </span>
       {!collapsed ? (
         <span className="relative min-w-0">
@@ -77,14 +88,15 @@ export function Sidebar({
 
   return (
     <>
-      {mobileOpen ? <div className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={onCloseMobile} aria-hidden /> : null}
+      {mobileOpen ? <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] lg:hidden" onClick={onCloseMobile} aria-hidden /> : null}
 
       <aside
         aria-label={tCommon('platformName')}
         className={cn(
           'fixed inset-y-0 start-0 z-40 flex flex-col border-e border-border bg-surface transition-[width,transform] duration-[--dur-base] ease-[--ease-out] lg:static lg:z-auto',
           collapsed ? 'w-sidebar-collapsed' : 'w-sidebar',
-          mobileOpen ? 'translate-x-0' : 'ltr:-translate-x-full rtl:translate-x-full lg:translate-x-0'
+          // drawer/off-canvas on narrow widths; fully hidden (out of flow) on desktop when closed
+          mobileOpen ? 'translate-x-0' : 'ltr:-translate-x-full rtl:translate-x-full lg:hidden'
         )}
       >
         <div className="flex h-topbar items-center justify-between border-b border-border">
@@ -92,7 +104,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={onCloseMobile}
-            className="me-2 rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground lg:hidden"
+            className="me-2 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground lg:hidden"
             aria-label={tCommon('close')}
           >
             <X className="h-4 w-4" />
@@ -112,13 +124,15 @@ export function Sidebar({
                     title={collapsed ? tNav(item.key) : undefined}
                     aria-current={active ? 'page' : undefined}
                     className={cn(
-                      'group relative flex h-9 items-center gap-2.5 rounded-md px-3 text-[13px] font-medium transition-colors duration-[--dur-fast]',
-                      active ? 'bg-primary/10 text-primary' : 'text-secondary-foreground hover:bg-muted hover:text-foreground',
+                      'group relative flex h-9 items-center gap-2.5 rounded-md px-3 text-[13px] font-medium transition-[background-color,color,transform] duration-[--dur-fast]',
+                      active
+                        ? 'bg-primary/10 text-primary'
+                        : 'text-secondary-foreground hover:bg-muted hover:text-foreground',
                       collapsed && 'justify-center px-0'
                     )}
                   >
                     {active ? <span className="absolute inset-y-1.5 start-0 w-0.5 rounded-full bg-primary" aria-hidden /> : null}
-                    <Icon className="h-4 w-4 shrink-0" aria-hidden />
+                    <Icon className={cn('h-4 w-4 shrink-0 transition-transform duration-[--dur-fast]', active ? 'scale-110' : 'group-hover:scale-105')} aria-hidden />
                     <span className={cn('truncate', collapsed && 'sr-only')}>{tNav(item.key)}</span>
                   </Link>
                 </li>
