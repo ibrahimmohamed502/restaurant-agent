@@ -61,13 +61,15 @@ export function Sidebar({
   const items = NAV_ITEMS.filter((i) => !i.superAdminOnly || isSuperAdmin);
 
   const brand = (
-    <Link href="/dashboard" onClick={onCloseMobile} className="flex h-topbar items-center gap-2.5 px-3" title={tCommon('platformName')}>
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm">
+    <Link href="/dashboard" onClick={onCloseMobile} className="relative flex h-topbar items-center gap-2.5 overflow-hidden px-3" title={tCommon('platformName')}>
+      <span className="absolute inset-0 bg-gradient-to-e from-primary/12 via-primary/5 to-transparent" aria-hidden />
+      <span className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary-hover text-primary-foreground shadow-sm">
         <Sparkles className="h-4 w-4" aria-hidden />
       </span>
       {!collapsed ? (
-        <span className="min-w-0">
+        <span className="relative min-w-0">
           <span className="block truncate text-sm font-semibold leading-tight text-foreground">{tCommon('platformName')}</span>
+          <span className="block truncate text-2xs leading-tight text-muted-foreground">{tCommon('appName')}</span>
         </span>
       ) : null}
     </Link>
