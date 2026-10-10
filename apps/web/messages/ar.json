@@ -14,7 +14,9 @@
     "theme": "المظهر",
     "light": "فاتح",
     "dark": "داكن",
-    "comingSoon": "قريباً"
+    "comingSoon": "قريباً",
+    "platformName": "منصة LWC",
+    "close": "إغلاق"
   },
   "nav": {
     "dashboard": "لوحة التحكم",
@@ -116,7 +118,19 @@
     "loadErrorDescription": "حدث خطأ أثناء جلب البيانات المباشرة.",
     "signInRequired": "مطلوب تسجيل الدخول",
     "signInDescription": "انتهت صلاحية الجلسة. سجّل الدخول لعرض اللوحة.",
-    "retry": "إعادة المحاولة"
+    "retry": "إعادة المحاولة",
+    "welcome": "إليك ما يحدث في محادثات عملائك.",
+    "knowledgeVersion": "قاعدة المعرفة الإصدار {version}",
+    "queueWorker": "عامل الطوابير",
+    "queueFailed": "{count} فاشلة",
+    "dbScoped": "قناة مرتبطة بقاعدة البيانات",
+    "notConfigured": "غير مُهيَّأ",
+    "none": "لا شيء",
+    "statusHealthy": "سليم",
+    "statusAttention": "يحتاج انتباه",
+    "statusUnavailable": "غير متاح",
+    "dm": "رسالة",
+    "comment": "تعليق"
   },
   "dashboardFoundation": {
     "overview": "نظرة عامة",
