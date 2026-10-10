@@ -5,8 +5,8 @@ import { LoginForm } from '@/features/auth/login-form';
 import messages from '@/messages/en.json';
 
 const texts = {
-  title: 'Sign in',
-  subtitle: 'Enter your credentials',
+  loginTitle: 'Sign in',
+  loginSubtitle: 'Enter your credentials',
   email: 'Email',
   password: 'Password',
   submit: 'Sign in',
@@ -16,6 +16,7 @@ const texts = {
   invalidCredentials: 'Invalid email or password',
   rateLimited: 'Too many attempts.',
   unexpected: 'Something went wrong.',
+  csrfError: 'Security check failed. Please try again.',
   emailRequired: 'Email is required',
   emailInvalid: 'Invalid email format',
   passwordRequired: 'Password is required'
@@ -55,5 +56,18 @@ describe('LoginForm (rendering + accessibility)', () => {
   it('show/hide password control is present', () => {
     const html = render(<LoginForm texts={texts} />);
     expect(html).toContain(texts.showPassword);
+  });
+
+  it('renders the real auth loginTitle/loginSubtitle keys — no raw auth.title/auth.subtitle', () => {
+    // no injected texts → uses messages/en.json through the intl provider
+    const html = render(<LoginForm />);
+    expect(html).toContain('Sign in');
+    expect(html).not.toContain('auth.title');
+    expect(html).not.toContain('auth.subtitle');
+  });
+
+  it('honors injected loginTitle override', () => {
+    const html = render(<LoginForm texts={{ ...texts, loginTitle: 'WELCOME_BACK' }} />);
+    expect(html).toContain('WELCOME_BACK');
   });
 });
