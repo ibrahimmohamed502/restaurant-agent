@@ -60,7 +60,8 @@ export function Sidebar({
   onToggleCollapsed: () => void;
   onCloseMobile: () => void;
 }) {
-  const t = useTranslations('navGroups');
+  const tNav = useTranslations('nav');
+  const tGroups = useTranslations('navGroups');
   const pathname = usePathname();
   const items = NAV_ITEMS.filter((i) => !i.superAdminOnly || isSuperAdmin);
 
@@ -110,14 +111,14 @@ export function Sidebar({
           {groups.map((group) => (
             <div key={group.key} className="mb-4 last:mb-0">
               {!collapsed ? (
-                <p className="px-3 pb-1 text-2xs font-semibold uppercase tracking-wider text-muted-foreground">{t(GROUP_LABELS[group.key])}</p>
+                <p className="px-3 pb-1 text-2xs font-semibold uppercase tracking-wider text-muted-foreground">{tGroups(GROUP_LABELS[group.key])}</p>
               ) : (
                 <div className="mx-3 mb-2 border-t border-border" />
               )}
               <ul className="space-y-0.5">
                 {group.items.map((item) => {
                   const Icon = ICONS[item.icon] ?? LayoutDashboard;
-                  const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                  const active = pathname === item.href || (pathname != null && pathname.startsWith(`${item.href}/`));
                   return (
                     <li key={item.href}>
                       <Link
@@ -133,7 +134,7 @@ export function Sidebar({
                       >
                         {active ? <span className="absolute inset-y-1.5 start-0 w-0.5 rounded-full bg-primary" aria-hidden /> : null}
                         <Icon className="h-4 w-4 shrink-0" aria-hidden />
-                        <span className={cn('truncate', collapsed && 'sr-only')}>{t(item.key)}</span>
+                        <span className={cn('truncate', collapsed && 'sr-only')}>{tNav(item.key)}</span>
                       </Link>
                     </li>
                   );
