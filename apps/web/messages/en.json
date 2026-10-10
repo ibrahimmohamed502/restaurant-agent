@@ -48,6 +48,7 @@
     "invalidCredentials": "Invalid email or password",
     "rateLimited": "Too many attempts. Please try again later.",
     "unexpected": "Something went wrong. Please try again.",
+    "csrfError": "Security check failed. Please try again.",
     "emailRequired": "Email is required",
     "emailInvalid": "Invalid email format",
     "passwordRequired": "Password is required"
