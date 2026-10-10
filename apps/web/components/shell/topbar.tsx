@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 import { Languages, LogOut, Menu as MenuIcon, Moon, Sun } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
+import { BrandMark } from '@/components/brand/brand-mark';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { setLocaleCookie } from '@/lib/preferences';
@@ -59,9 +60,17 @@ export function Topbar({
 
   return (
     <header className="sticky top-0 z-30 flex h-topbar items-center gap-2 border-b border-border bg-surface/85 px-3 backdrop-blur lg:px-5">
-      <Button variant="ghost" size="icon" className="h-8 w-8 lg:hidden" onClick={onOpenMobile} aria-label={t('shell.menu')}>
+      {/* global nav toggle — visible and functional at EVERY width */}
+      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onOpenMobile} aria-label={t('shell.menu')}>
         <MenuIcon className="h-4 w-4" />
       </Button>
+      {/* compact brand for narrow widths (sidebar is a drawer there) */}
+      <span className="flex items-center gap-2 lg:hidden">
+        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary-hover text-primary-foreground shadow-sm">
+          <BrandMark size={15} />
+        </span>
+        <span className="truncate text-[13px] font-semibold text-foreground">{t('common.platformName')}</span>
+      </span>
       <Button variant="ghost" size="icon" className="hidden h-8 w-8 lg:inline-flex" onClick={onToggleCollapsed} aria-label={t('shell.collapse')}>
         <MenuIcon className="h-4 w-4" />
       </Button>
