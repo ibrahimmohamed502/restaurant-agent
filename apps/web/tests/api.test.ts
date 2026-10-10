@@ -55,6 +55,31 @@ describe('api client', () => {
     expect(csrfToken()).toBe('abc123');
   });
 
+  it('ensureCsrfToken returns the existing cookie without any request', async () => {
+    stubFetch(mockFetchOnce(200, { data: {} }));
+    const { ensureCsrfToken } = await import('@/lib/api');
+    await expect(ensureCsrfToken()).resolves.toBe('abc123');
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    expect(fetchMock.mock.calls.length).toBe(0);
+  });
+
+  it('ensureCsrfToken warms up the cookie via a first-touch GET when absent', async () => {
+    global.document = { cookie: '' };
+    stubFetch(mockFetchOnce(401, { error: { code: 'UNAUTHENTICATED', message: 'x' } }));
+    const { ensureCsrfToken } = await import('@/lib/api');
+    await ensureCsrfToken();
+    const call = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toContain('/auth/me');
+    expect(call[1].credentials).toBe('include');
+  });
+
+  it('ensureCsrfToken never throws when the warm-up request fails', async () => {
+    global.document = { cookie: '' };
+    stubFetch(vi.fn().mockRejectedValue(new Error('offline')));
+    const { ensureCsrfToken } = await import('@/lib/api');
+    await expect(ensureCsrfToken()).resolves.toBeNull();
+  });
+
   it('maps network failures to NETWORK_ERROR', async () => {
     stubFetch(vi.fn().mockRejectedValue(new Error('offline')));
     const { api, ApiError } = await import('@/lib/api');
