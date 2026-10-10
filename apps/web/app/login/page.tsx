@@ -31,9 +31,22 @@ function BrandArtwork({ className }: { className?: string }) {
       <g fill="none" stroke="hsl(36 44% 97%)" strokeOpacity="0.28" strokeWidth="1.2">
         {Array.from({ length: 9 }, (_, i) => <circle key={i} cx={400 - i * 34} cy={250 - i * 18} r={90 + i * 6} />)}
       </g>
-      <g fill="hsl(36 44% 97%)" fillOpacity="0.9">
-        <path d="M120 236c-14-16-22-33-22-52 0-26 16-44 36-44 8 0 14 3 18 7 4-4 10-7 18-7 20 0 36 18 36 44 0 19-8 36-22 52l-32 20z" />
-        <path d="M300 252v-96h34v10c8-7 17-10 26-10 19 0 33 13 33 33v63h-34v-56c0-8-5-13-12-13s-12 5-12 13z" />
+      {/* drifting accent orbs */}
+      <circle className="float-slow" cx="96" cy="72" r="7" fill="hsl(36 44% 97%)" fillOpacity="0.35" />
+      <circle className="float-slower" cx="420" cy="58" r="5" fill="hsl(36 44% 97%)" fillOpacity="0.3" />
+      <circle className="float-slow" cx="60" cy="250" r="4" fill="hsl(36 44% 97%)" fillOpacity="0.25" />
+      {/* heart mark with rising steam */}
+      <g transform="translate(110 218)">
+        <g stroke="hsl(36 44% 97%)" strokeWidth="3" strokeLinecap="round" fill="none" opacity="0.85">
+          <path className="steam" d="M22 -8c0-9 9-12 9-21" />
+          <path className="steam steam-2" d="M38 -10c0-9 9-12 9-21" />
+          <path className="steam steam-3" d="M54 -8c0-9 9-12 9-21" />
+        </g>
+        <path d="M38 66c-14-16-22-33-22-52 0-26 16-44 36-44 8 0 14 3 18 7 4-4 10-7 18-7 20 0 36 18 36 44 0 19-8 36-22 52l-32 20z" fill="hsl(36 44% 97%)" fillOpacity="0.9" />
+      </g>
+      {/* monogram */}
+      <g transform="translate(292 200)" className="float-slower">
+        <path d="M0 52V-44h34v10c8-7 17-10 26-10 19 0 33 13 33 33v63h-34V-6c0-8-5-13-12-13s-12 5-12 13v58z" fill="hsl(36 44% 97%)" fillOpacity="0.9" />
       </g>
     </svg>
   );
