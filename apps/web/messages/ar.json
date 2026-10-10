@@ -30,7 +30,12 @@
     "audit": "سجلات التدقيق",
     "settings": "الإعدادات"
   },
-  "navGroups": { "overview": "نظرة عامة", "engagement": "التفاعل", "organization": "المؤسسة", "configuration": "الإعدادات" },
+  "navGroups": {
+    "overview": "نظرة عامة",
+    "engagement": "التفاعل",
+    "organization": "المؤسسة",
+    "configuration": "الإعدادات"
+  },
   "auth": {
     "loginTitle": "تسجيل الدخول",
     "loginSubtitle": "أدخل بياناتك للوصول إلى لوحة الإدارة",
@@ -65,5 +70,40 @@
     "brand": "العلامة التجارية",
     "superAdmin": "مدير عام"
   },
-  "placeholder": "هذه الوحدة قيد التطوير ضمن خارطة الطريق."
+  "placeholder": "هذه الوحدة قيد التطوير ضمن خارطة الطريق.",
+  "dashboard": {
+    "greeting": "مرحبًا بعودتك",
+    "overview": "نظرة عامة",
+    "conversations": "المحادثات",
+    "messages": "الرسائل",
+    "activeChannels": "القنوات النشطة",
+    "escalations": "التصعيدات",
+    "allTime": "الإجمالي",
+    "inboundOutbound": "واردة + صادرة",
+    "routedChannels": "توجيه ميتا",
+    "needsAttention": "تحتاج انتباهك",
+    "recentConversations": "أحدث المحادثات",
+    "latestActivity": "آخر النشاطات على كل القنوات",
+    "viewAll": "عرض الكل",
+    "platformStatus": "حالة المنصة",
+    "verifiedState": "متحقق منها من نظامك المباشر",
+    "knowledge": "قاعدة المعرفة",
+    "currentBrand": "لايف وذ كاكاو",
+    "published": "نُشر",
+    "notPublished": "لم يُنشر بعد",
+    "manage": "إدارة",
+    "quickActions": "إجراءات سريعة",
+    "openInbox": "فتح الصندوق",
+    "manageKnowledge": "إدارة المعرفة",
+    "viewChannels": "عرض القنوات",
+    "manageTeam": "إدارة الفريق",
+    "aiAgent": "المساعد الذكي",
+    "aiAgentActive": "مساعد علامتك نشط ويرد على أحداث ميتا.",
+    "noConversations": "لا توجد محادثات بعد. ستظهر التعليقات والرسائل الجديدة هنا.",
+    "loadError": "تعذّر تحميل لوحة التحكم",
+    "loadErrorDescription": "حدث خطأ أثناء جلب البيانات المباشرة.",
+    "signInRequired": "مطلوب تسجيل الدخول",
+    "signInDescription": "انتهت صلاحية الجلسة. سجّل الدخول لعرض اللوحة.",
+    "retry": "إعادة المحاولة"
+  }
 }

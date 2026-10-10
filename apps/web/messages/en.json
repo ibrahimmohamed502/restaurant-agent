@@ -30,7 +30,12 @@
     "audit": "Audit Logs",
     "settings": "Settings"
   },
-  "navGroups": { "overview": "Overview", "engagement": "Engagement", "organization": "Organization", "configuration": "Configuration" },
+  "navGroups": {
+    "overview": "Overview",
+    "engagement": "Engagement",
+    "organization": "Organization",
+    "configuration": "Configuration"
+  },
   "auth": {
     "loginTitle": "Sign in",
     "loginSubtitle": "Enter your credentials to access the admin console",
@@ -65,5 +70,40 @@
     "brand": "Brand",
     "superAdmin": "Super admin"
   },
-  "placeholder": "This module is on the implementation roadmap."
+  "placeholder": "This module is on the implementation roadmap.",
+  "dashboard": {
+    "greeting": "Welcome back",
+    "overview": "Overview",
+    "conversations": "Conversations",
+    "messages": "Messages",
+    "activeChannels": "Active channels",
+    "escalations": "Escalations",
+    "allTime": "All time",
+    "inboundOutbound": "Inbound + outbound",
+    "routedChannels": "Meta routing",
+    "needsAttention": "Needs attention",
+    "recentConversations": "Recent conversations",
+    "latestActivity": "Latest activity across channels",
+    "viewAll": "View all",
+    "platformStatus": "Platform status",
+    "verifiedState": "Verified from your live system",
+    "knowledge": "Knowledge",
+    "currentBrand": "Life with Cacao",
+    "published": "Published",
+    "notPublished": "Not published yet",
+    "manage": "Manage",
+    "quickActions": "Quick actions",
+    "openInbox": "Open Inbox",
+    "manageKnowledge": "Manage Knowledge",
+    "viewChannels": "View Channels",
+    "manageTeam": "Manage Team",
+    "aiAgent": "AI agent",
+    "aiAgentActive": "Your brand agent is active and answering Meta events.",
+    "noConversations": "No conversations yet. New comments and messages will appear here.",
+    "loadError": "Could not load dashboard",
+    "loadErrorDescription": "An error occurred while fetching live data.",
+    "signInRequired": "Sign in required",
+    "signInDescription": "Your session expired. Sign in to view the dashboard.",
+    "retry": "Retry"
+  }
 }
