@@ -18,6 +18,7 @@ import { lockedSeconds, recordFailedLogin, resetLoginAttempts } from '../../auth
 import { createKnowledgeRouter } from './knowledge.js';
 import { getMetaEventQueue } from '../../queues/metaEvents.js';
 import { createDashboardRouter } from './dashboard.js';
+import { createConversationsRouter } from './conversations.js';
 
 const CSRF_COOKIE = 'csrf_token';
 const CSRF_HEADER = 'x-csrf-token';
@@ -223,6 +224,9 @@ export function createApiV1Router(deps = {}) {
   // Queue state is read lazily so the API boots fine even without Redis.
   const getQueue = () => { try { return getMetaEventQueue(); } catch { return null; } };
   router.use('/dashboard', createDashboardRouter({ pool, getQueue }));
+
+  /* --------------------- Stage 5: Unified Inbox (read-only, tenant-scoped) --------------------- */
+  router.use('/conversations', createConversationsRouter({ pool }));
 
   /* --------------------- Stage 5: Knowledge Base management --------------------- */
   router.use('/knowledge', createKnowledgeRouter({ pool }));

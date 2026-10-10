@@ -71,6 +71,17 @@
     "superAdmin": "Super admin"
   },
   "placeholder": "This module is on the implementation roadmap.",
+  "inbox": {
+    "subtitle": "All customer conversations in one place",
+    "comment": "Comment",
+    "dm": "Messenger",
+    "selectConversation": "Select a conversation to view its messages",
+    "emptyTitle": "No conversations yet",
+    "emptyDescription": "New comments and messages will appear here automatically.",
+    "loadError": "Could not load conversations",
+    "loadErrorDescription": "An error occurred while fetching conversations.",
+    "retry": "Retry"
+  },
   "dashboard": {
     "greeting": "Welcome back",
     "overview": "Overview",

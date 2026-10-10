@@ -1,16 +1,16 @@
-import { getTranslations } from 'next-intl/server';
-import { PageHeader } from '@/components/page-header';
-import { EmptyState } from '@/components/ui/states';
+'use client';
 
-/** Stage 5.0 placeholder route generator — professional empty states until each module ships. */
-export default async function PlaceholderPage() {
-  const t = await getTranslations('nav');
-  const ts = await getTranslations('states');
-  const tp = await getTranslations('placeholder');
+import { useTranslations } from 'next-intl';
+import { PageHeader } from '@/components/page-header';
+import { InboxView } from '@/components/inbox/view';
+
+export default function InboxPage() {
+  const t = useTranslations('nav');
+  const ti = useTranslations('inbox');
   return (
-    <div className="space-y-6">
-      <PageHeader title={t('inbox')} description={tp('')} />
-      <EmptyState title={ts('emptyTitle')} description={ts('emptyDescription')} />
+    <div className="space-y-5">
+      <PageHeader title={t('inbox')} description={ti('subtitle')} />
+      <InboxView />
     </div>
   );
 }
