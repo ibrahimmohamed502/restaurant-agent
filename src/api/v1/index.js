@@ -167,7 +167,7 @@ export function createApiV1Router(deps = {}) {
         return apiError(res, 429, 'RATE_LIMITED', 'too many attempts, try again later');
       }
       const { rows } = await pool.query(
-        `SELECT u.id, u.tenant_id, u.email, u.name, u.password_hash, u.is_active,
+        `SELECT u.id, u.tenant_id, u.email, u.name, u.password_hash, u.status,
                 COALESCE(array_agg(r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
            FROM users u
            LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -179,7 +179,7 @@ export function createApiV1Router(deps = {}) {
       const user = rows[0];
       // identical response for unknown email / wrong password / inactive account
       const invalid = () => apiError(res, 401, 'INVALID_CREDENTIALS', 'invalid email or password');
-      if (!user || !user.is_active || !(await verifyPasswordFn(password, user.password_hash))) {
+      if (!user || user.status !== 'active' || !(await verifyPasswordFn(password, user.password_hash))) {
         await recordFailedLoginFn(email, ip);
         return invalid();
       }
