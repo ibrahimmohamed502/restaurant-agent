@@ -1,1 +1,12 @@
-﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#6b4423"/><text x="16" y="21" font-family="sans-serif" font-size="14" fill="#f7f2ea" text-anchor="middle">L</text></svg>
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#4a2c1a"/>
+  <g fill="none" stroke="#f5ece1" stroke-width="1.6" stroke-linecap="round">
+    <path d="M12.4 6.6c0-1.2 1.2-1.6 1.2-2.8" opacity="0.9"/>
+    <path d="M16 5.6c0-1.2 1.2-1.6 1.2-2.8" opacity="0.7"/>
+    <path d="M19.6 6.6c0-1.2 1.2-1.6 1.2-2.8" opacity="0.5"/>
+  </g>
+  <path d="M8.5 13.5h13.5v4.8a6.75 6.75 0 0 1-6.75 6.75 6.75 6.75 0 0 1-6.75-6.75v-4.8Z" fill="#f5ece1" fill-opacity="0.16" stroke="#f5ece1" stroke-width="1.8"/>
+  <path d="M22 15h1.8a3.4 3.4 0 0 1 0 6.8H22" stroke="#f5ece1" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M6.5 26.5h17" stroke="#f5ece1" stroke-width="1.8" stroke-linecap="round"/>
+  <ellipse cx="15.25" cy="18.2" rx="2.1" ry="3.1" fill="#f5ece1" transform="rotate(-18 15.25 18.2)"/>
+</svg>
