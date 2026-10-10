@@ -133,5 +133,217 @@
     "inboxBody": "Conversation metrics arrive with the inbox module.",
     "knowledgeTitle": "Knowledge coverage",
     "knowledgeBody": "Track published versions across your brands."
+  },
+  "knowledge": {
+    "description": "Manage brand knowledge: menu, branches, FAQs and policies",
+    "back": "Back",
+    "backToInbox": "Back to Unified Inbox",
+    "errors": {
+      "title": "Couldn't load the knowledge base",
+      "description": "An error occurred while fetching data."
+    },
+    "empty": {
+      "title": "No published knowledge yet",
+      "description": "Create a draft to start managing content."
+    },
+    "status": {
+      "editingDraft": "Editing draft",
+      "viewingPublished": "Viewing published",
+      "validationHint": "Fix validation issues first"
+    },
+    "sections": {
+      "overview": "Overview",
+      "menu": "Menu",
+      "branches": "Branches",
+      "faq": "FAQs",
+      "policies": "Policies & Service",
+      "sources": "Sources & Versions"
+    },
+    "actions": {
+      "createDraft": "Create draft",
+      "draftReady": "Draft ready",
+      "saveDraft": "Save draft",
+      "validate": "Validate",
+      "preview": "Preview",
+      "publish": "Publish",
+      "discardDraft": "Discard draft"
+    },
+    "toast": {
+      "saved": "Draft saved",
+      "savedWithIssues": "Saved — validation issues remain",
+      "saveFailed": "Save failed",
+      "draftFailed": "Couldn't create the draft",
+      "validateOk": "Validation passed",
+      "validateIssues": "{count} issues need attention",
+      "validateFailed": "Validation failed",
+      "previewOk": "Draft is ready to publish",
+      "previewIssues": "Review validation issues before publishing",
+      "previewFailed": "Preview failed",
+      "published": "Published — v{version}",
+      "publishFailed": "Publish failed",
+      "discarded": "Draft discarded",
+      "discardFailed": "Discard failed"
+    },
+    "dialog": {
+      "publish": {
+        "title": "Publish new version?",
+        "description": "This version becomes the active knowledge for the AI assistant. The previous version stays in history.",
+        "confirm": "Confirm publish",
+        "publishing": "Publishing…",
+        "reviewSummary": "Added {added} · Modified {modified} · Removed {removed}",
+        "previewHint": "Use Preview before publishing for the full review."
+      },
+      "discard": {
+        "title": "Discard draft?",
+        "description": "All unpublished changes will be abandoned. Current published knowledge is not affected."
+      },
+      "unsaved": {
+        "title": "Unsaved changes",
+        "description": "You have unsaved edits. Save before continuing?",
+        "confirm": "Save and continue",
+        "cancel": "Discard changes"
+      }
+    },
+    "menu": {
+      "search": "Search the menu…",
+      "addCategory": "Add category",
+      "promptNewCategory": "New category name",
+      "confirmDeleteCategory": "Delete category \"{name}\" and all its items?",
+      "promptNewSubcategory": "New subcategory name",
+      "confirmDeleteSubcategory": "Delete \"{name}\" and all its items?",
+      "addSubcategory": "Subcategory",
+      "deleteCategory": "Delete category",
+      "deleteSubcategory": "Delete",
+      "addItem": "Add item",
+      "noCategories": "No categories yet. Start by adding one like «Breakfast».",
+      "noMatches": "No matching items.",
+      "counter": "{items} items · {categories} categories",
+      "editItem": "Edit item",
+      "newItem": "Add item",
+      "deleteItem": "Delete",
+      "field": {
+        "nameEn": "Name (English)",
+        "nameAr": "Name (Arabic)",
+        "desc": "Description",
+        "price": "Price (KD)",
+        "priceHint": "Example: 4.650"
+      },
+      "currency": "KD",
+      "priceError": "Enter a valid price, e.g. 4.650",
+      "categories": "Categories"
+    },
+    "branches": {
+      "count": "{count} branches",
+      "add": "Add branch",
+      "empty": "No branches yet. Add your first branch.",
+      "edit": "Edit",
+      "delete": "Delete",
+      "editTitle": "Edit branch",
+      "newTitle": "Add branch",
+      "field": {
+        "name": "Branch name",
+        "area": "Area",
+        "timings": "Opening hours",
+        "timingsHint": "Example: 8:00 AM – 11:30 PM",
+        "maps": "Map link",
+        "phone": "Phone"
+      },
+      "error": {
+        "name": "Name is required",
+        "maps": "Invalid link",
+        "phone": "Invalid phone number",
+        "duplicate": "A branch with this name already exists"
+      },
+      "confirmDelete": "Delete branch \"{name}\"?"
+    },
+    "faq": {
+      "empty": "No FAQs yet.",
+      "add": "Add question",
+      "count": "{count} questions",
+      "untitled": "Untitled question",
+      "field": {
+        "question": "Question",
+        "answer": "Answer"
+      },
+      "edit": "Edit",
+      "delete": "Delete"
+    },
+    "policies": {
+      "meatSources": "Meat sources",
+      "agentNotes": "Operational notes for the assistant"
+    },
+    "sources": {
+      "title": "Knowledge source",
+      "kind": "Type",
+      "versionCount": "Versions",
+      "currentVersion": "Current version",
+      "history": "Publish history",
+      "noHistory": "Not published yet."
+    },
+    "overview": {
+      "publishedNote": "You are viewing the published version. Create a draft to make changes.",
+      "group": {
+        "brand": "Brand information",
+        "menu": "Menu information",
+        "service": "Service information",
+        "reservations": "Reservations"
+      },
+      "field": {
+        "restaurantName": "Restaurant / brand name",
+        "about": "About the restaurant",
+        "menuUrl": "Menu link",
+        "currency": "Currency",
+        "halal": "Halal information",
+        "delivery": "Delivery / service",
+        "location": "Location",
+        "reservations": "Reservations policy"
+      }
+    },
+    "validation": {
+      "oneProblem": "1 issue",
+      "problems": "{count} issues",
+      "hide": "Hide",
+      "show": "Show",
+      "jump": "Go to",
+      "attention": "Validation needs attention"
+    },
+    "sectionLabel": {
+      "overview": "Overview",
+      "menu": "Menu",
+      "branches": "Branches",
+      "faq": "FAQs",
+      "policies": "Policies",
+      "sources": "Sources",
+      "root": "General"
+    },
+    "review": {
+      "empty": "No changes compared to the published version.",
+      "added": "Added",
+      "modified": "Modified",
+      "removed": "Removed"
+    },
+    "preview": {
+      "categories": "Menu categories",
+      "subcategories": "Subcategories",
+      "branches": "Branches",
+      "baseVersion": "Base version"
+    },
+    "statusBar": {
+      "draftUnsaved": "Draft · Unsaved changes",
+      "saving": "Saving…",
+      "saved": "Draft saved",
+      "saveFailed": "Save failed",
+      "draft": "Draft",
+      "published": "Published · v{version}",
+      "noPublished": "No published version",
+      "oneIssue": "One issue needs your attention",
+      "issues": "{count} issues need your attention"
+    },
+    "common": {
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "close": "Close"
+    }
   }
 }
