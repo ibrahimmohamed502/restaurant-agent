@@ -29,6 +29,8 @@ const UI_ROUTES = [
   '/audit',
   '/settings',
   '/_next',
+  '/favicon.svg',
+  '/manifest.webmanifest',
   '/favicon.ico',
   '/robots.txt'
 ];
