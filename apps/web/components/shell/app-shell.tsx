@@ -7,7 +7,7 @@ import { Sidebar } from './sidebar';
 import { Topbar } from './topbar';
 import { authApi, type MeResponse } from '@/lib/api';
 import { PageLoading } from '@/components/ui/states';
-import { setThemeCookie, directionFor, type Locale } from '@/lib/preferences';
+import { setThemeCookie, setLocaleCookie, directionFor, type Locale } from '@/lib/preferences';
 
 const COMPANY_ADMIN = 'Company Admin';
 
@@ -71,6 +71,8 @@ export function AppShell({
           onToggleCollapsed={() => setCollapsed((c) => !c)}
           onOpenMobile={() => setMobileOpen(true)}
           onLocaleChange={(l) => {
+            // persist the locale FIRST so the refreshed server render actually switches language
+            setLocaleCookie(l);
             document.documentElement.dir = directionFor(l);
             document.documentElement.lang = l;
             router.refresh();
