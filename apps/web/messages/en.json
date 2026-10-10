@@ -117,5 +117,21 @@
     "signInRequired": "Sign in required",
     "signInDescription": "Your session expired. Sign in to view the dashboard.",
     "retry": "Retry"
+  },
+  "dashboardFoundation": {
+    "overview": "Overview",
+    "description": "Your customer engagement overview will appear here once enabled.",
+    "gettingStarted": "Getting started",
+    "publishTitle": "Publish your brand knowledge",
+    "publishBody": "Menu, branches, FAQs and policies.",
+    "replyTitle": "Reply from the Unified Inbox",
+    "replyBody": "Comments and Messenger messages in one place.",
+    "connectTitle": "Connect another Meta page",
+    "connectBody": "Add routing channels without code deploys.",
+    "open": "Open",
+    "inboxTitle": "Unified Inbox",
+    "inboxBody": "Conversation metrics arrive with the inbox module.",
+    "knowledgeTitle": "Knowledge coverage",
+    "knowledgeBody": "Track published versions across your brands."
   }
 }
