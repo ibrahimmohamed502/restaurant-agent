@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { useLocale, useTranslations } from 'next-intl';
 import { AlertTriangle, CheckCircle2, Loader2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -125,6 +126,7 @@ export function Drawer({
   children: React.ReactNode;
   footer?: React.ReactNode;
 }) {
+  const tk = useTranslations('knowledge');
   React.useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -142,7 +144,7 @@ export function Drawer({
             <h2 className="text-base font-semibold text-foreground">{title}</h2>
             {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
           </div>
-          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label={tk('common.close')}>
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -156,6 +158,8 @@ export function Drawer({
 /* -------------------------------------------------------------- validation */
 
 export function ValidationPanel({ errors, title, onJump }: { errors: ValidationError[]; title: string; onJump?: (section: string) => void }) {
+  const tk = useTranslations('knowledge');
+  const locale = useLocale();
   const [open, setOpen] = React.useState(true);
   if (!errors.length) {
     return (
@@ -177,24 +181,24 @@ export function ValidationPanel({ errors, title, onJump }: { errors: ValidationE
           <AlertTriangle className="h-4 w-4 text-warning" aria-hidden />
           {title}
           <span className="text-xs text-muted-foreground">
-            {errors.length === 1 ? 'مشكلة واحدة' : `${errors.length} مشكلات`}
+            {errors.length === 1 ? tk('validation.oneProblem') : tk('validation.problems', { count: errors.length })}
           </span>
         </span>
-        <span className="text-xs text-muted-foreground">{open ? 'إخفاء' : 'عرض'}</span>
+        <span className="text-xs text-muted-foreground">{open ? tk('validation.hide') : tk('validation.show')}</span>
       </button>
       {open ? (
-        <ul className="divide-y divide-border border-t border-border">
+        <ul className="divide-y divide-border border-t">
           {errors.slice(0, 50).map((e, i) => (
             <li key={`${e.path}-${i}`} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
               <span className="text-foreground">
-                <span className="text-muted-foreground">{sectionLabel(e.section)}</span>
+                <span className="text-muted-foreground">{tk(`sectionLabel.${e.section}` as 'sectionLabel.root')}</span>
                 {e.field ? ` · ${e.field}` : ''}
                 {' — '}
-                {VALIDATION_MESSAGES[e.messageKey]?.ar ?? e.messageKey}
+                {locale === 'ar' ? (VALIDATION_MESSAGES[e.messageKey]?.ar ?? e.messageKey) : (VALIDATION_MESSAGES[e.messageKey]?.en ?? e.messageKey)}
               </span>
               {onJump ? (
                 <Button variant="ghost" size="sm" onClick={() => onJump(e.section)}>
-                  انتقال
+                  {tk('validation.jump')}
                 </Button>
               ) : null}
             </li>
@@ -206,7 +210,7 @@ export function ValidationPanel({ errors, title, onJump }: { errors: ValidationE
 }
 
 export function sectionLabel(section: string): string {
-  return ({ overview: 'نظرة عامة', menu: 'المنيو', branches: 'الفروع', faq: 'الأسئلة الشائعة', policies: 'السياسات', sources: 'المصادر', root: 'عام' } as Record<string, string>)[section] ?? section;
+  return ({ overview: 'overview', menu: 'menu', branches: 'branches', faq: 'faq', policies: 'policies', sources: 'sources', root: 'root' } as Record<string, string>)[section] ?? section;
 }
 
 /* ------------------------------------------------------------------ dialog */
@@ -216,7 +220,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel,
-  cancelLabel = 'إلغاء',
+  cancelLabel,
   destructive,
   busy,
   onConfirm,
@@ -228,12 +232,12 @@ export function ConfirmDialog({
   description?: string;
   confirmLabel: string;
   cancelLabel?: string;
-  destructive?: boolean;
-  busy?: boolean;
+  destructive?: boolean;  busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
   children?: React.ReactNode;
 }) {
+  const tk = useTranslations('knowledge');
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" role="alertdialog" aria-modal="true" aria-label={title}>
@@ -244,7 +248,7 @@ export function ConfirmDialog({
         {children ? <div className="mt-3 text-sm text-foreground">{children}</div> : null}
         <div className="mt-5 flex items-center justify-end gap-2">
           <Button variant="secondary" size="sm" onClick={onCancel} disabled={busy}>
-            {cancelLabel}
+            {cancelLabel ?? tk('common.cancel')}
           </Button>
           <Button
             variant={destructive ? 'destructive' : 'default'}
@@ -280,10 +284,11 @@ export function KbSkeleton() {
 /* ------------------------------------------------------------------ helpers */
 
 export function ReviewList({ review }: { review: Review }) {
+  const tk = useTranslations('knowledge');
   const rows = review.items ?? [];
-  if (!rows.length) return <p className="text-sm text-muted-foreground">لا توجد تغييرات مقارنة بالإصدار المنشور.</p>;
+  if (!rows.length) return <p className="text-sm text-muted-foreground">{tk('review.empty')}</p>;
   const tone = { added: 'text-success', modified: 'text-warning', removed: 'text-destructive' } as const;
-  const label = { added: 'إضافة', modified: 'تعديل', removed: 'حذف' } as const;
+  const label = { added: tk('review.added'), modified: tk('review.modified'), removed: tk('review.removed') };
   return (
     <ul className="divide-y divide-border">
       {rows.map((c, i) => (
@@ -300,6 +305,7 @@ export function ReviewList({ review }: { review: Review }) {
 }
 
 export function PreviewSummary({ draft }: { draft: Draft }) {
+  const tk = useTranslations('knowledge');
   const c = draft.content as Record<string, unknown>;
   const menus = (c?.menus ?? {}) as Record<string, unknown>;
   const menuCount = Object.values(menus).reduce<number>((n, subs) => {
@@ -309,10 +315,10 @@ export function PreviewSummary({ draft }: { draft: Draft }) {
   const branches = Array.isArray(c?.branches) ? (c.branches as unknown[]).length : 0;
   return (
     <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <Stat label="فئات المنيو" value={String(Object.keys(menus).length)} />
-      <Stat label="القوائم الفرعية" value={String(menuCount)} />
-      <Stat label="الفروع" value={String(branches)} />
-      <Stat label="إصدار الأساس" value={`v${draft.baseVersion}`} />
+      <Stat label={tk('preview.categories')} value={String(Object.keys(menus).length)} />
+      <Stat label={tk('preview.subcategories')} value={String(menuCount)} />
+      <Stat label={tk('preview.branches')} value={String(branches)} />
+      <Stat label={tk('preview.baseVersion')} value={`v${draft.baseVersion}`} />
     </dl>
   );
 }
