@@ -11,10 +11,13 @@ const users = new Map();
 const loginFails = new Map();
 const sessions = new Map();
 const tenants = new Map([['t1', { id: 't1', name: 'UFC', slug: 'ufc' }]]);
+let lastUsersSql = '';
+const verifyCalls = [];
 const db = {
   query: async (sql, params = []) => {
     const s = sql.replace(/\s+/g, ' ');
     if (/FROM users[\s\S]*WHERE u\.email = \$1/.test(s)) {
+      lastUsersSql = s;
       const u = users.get(params[0]);
       return { rows: u ? [{ ...u, roles: u.roles }] : [] };
     }
@@ -26,7 +29,7 @@ const db = {
 const { createApiV1Router } = await import('../src/api/v1/index.js');
 const router = createApiV1Router({
   pool: db,
-  verifyPasswordFn: async (plain, hash) => plain === hash,
+  verifyPasswordFn: async (plain, hash) => { verifyCalls.push({ plain, hash }); return plain === hash; },
   createSessionFn: async ({ tenantId, userId }) => { const t = crypto.randomBytes(16).toString('hex'); sessions.set(t, { tenantId, userId }); return t; },
   validateSessionFn: async (token) => sessions.has(token) ? { tenantId: sessions.get(token).tenantId, user: { id: sessions.get(token).userId, email: 'a@b.co', name: 'A' }, roles: ['Company Admin'] } : null,
   revokeSessionFn: async (token) => sessions.delete(token),
@@ -61,9 +64,10 @@ const bootCsrf = bootCsrfCookie?.split('=')[1];
 const post = (path, body, extra = {}) => call(path, { method: 'POST', body, cookie: bootCsrfCookie, csrf: bootCsrf, ...extra });
 
 console.log('\n🧪 Stage 5.0 — /api/v1 foundation\n');
-users.set('a@b.co', { id: 'u1', tenant_id: 't1', email: 'a@b.co', name: 'A', password_hash: 'secret123', is_active: true, roles: ['Company Admin'] });
-users.set('bad@b.co', { id: 'u2', tenant_id: 't1', email: 'bad@b.co', name: 'B', password_hash: 'other', is_active: true, roles: [] });
-users.set('off@b.co', { id: 'u3', tenant_id: 't1', email: 'off@b.co', name: 'C', password_hash: 'secret123', is_active: false, roles: [] });
+users.set('a@b.co', { id: 'u1', tenant_id: 't1', email: 'a@b.co', name: 'A', password_hash: 'secret123', status: 'active', roles: ['Company Admin'] });
+users.set('bad@b.co', { id: 'u2', tenant_id: 't1', email: 'bad@b.co', name: 'B', password_hash: 'other', status: 'active', roles: [] });
+users.set('off@b.co', { id: 'u3', tenant_id: 't1', email: 'off@b.co', name: 'C', password_hash: 'secret123', status: 'suspended', roles: [] });
+users.set('pending@b.co', { id: 'u4', tenant_id: 't1', email: 'pending@b.co', name: 'D', password_hash: 'secret123', status: 'pending', roles: [] });
 
 // login success
 const ok = await post('/auth/login', { email: 'a@b.co', password: 'secret123' });
@@ -89,6 +93,17 @@ let limited = null;
 for (let i = 0; i < 6; i++) { const r = await post('/auth/login', { email: 'x@y.co', password: 'z' }); if (r.status === 429) limited = r; }
 check('repeated failures → 429 RATE_LIMITED', limited?.status === 429 && limited.j.error.code === 'RATE_LIMITED');
 
+// --- schema regression: /auth/login must query the real users.status column ---
+check('login SQL selects users.status (matches migration 001 schema)', /u\.status/.test(lastUsersSql) && !/u\.is_active/.test(lastUsersSql) && !/is_active/.test(lastUsersSql));
+check('active user reaches password verification (hash passed to verifier)', verifyCalls.some((c) => c.hash === 'secret123'));
+verifyCalls.length = 0;
+const suspendedUser = await post('/auth/login', { email: 'off@b.co', password: 'secret123' });
+const nonActiveUser = await post('/auth/login', { email: 'pending@b.co', password: 'secret123' });
+check('non-active users (suspended/pending) → 401 INVALID_CREDENTIALS, not 500', suspendedUser.status === 401 && nonActiveUser.status === 401 && suspendedUser.j.error.code === 'INVALID_CREDENTIALS' && nonActiveUser.j.error.code === 'INVALID_CREDENTIALS');
+check('non-active users never reach password verification', verifyCalls.length === 0);
+const dummy = await post('/auth/login', { email: 'dummy-nonexistent@example.invalid', password: 'diagnostic-probe' });
+check('invalid dummy credentials → 401 INVALID_CREDENTIALS, never 500 INTERNAL', dummy.status === 401 && dummy.j.error.code === 'INVALID_CREDENTIALS');
+
 // me + logout
 const me = await call('/auth/me', { cookie });
 check('GET /auth/me → 200 with user+tenant (no secrets)', me.status === 200 && me.j.data.tenantId === 't1' && !JSON.stringify(me.j).includes('password_hash'));
@@ -103,6 +118,16 @@ const noCsrf = await call('/auth/logout', { method: 'POST', cookie });
 check('mutation without CSRF token → 403 CSRF_INVALID', noCsrf.status === 403 && noCsrf.j.error.code === 'CSRF_INVALID');
 const badCsrf = await call('/auth/logout', { method: 'POST', cookie, csrf: 'deadbeef' });
 check('mutation with wrong CSRF token → 403', badCsrf.status === 403 && badCsrf.j.error.code === 'CSRF_INVALID');
+
+// CSRF cold start (login blocker regression): protection stays enforced, but a
+// first-touch GET must issue the cookie so the login page can warm up.
+const coldLogin = await call('/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'secret123' } });
+check('cold login (no CSRF cookie/header) → 403 CSRF_INVALID (protection still enforced)', coldLogin.status === 403 && coldLogin.j.error.code === 'CSRF_INVALID');
+const bootstrap = await fetch(base + '/auth/me');
+const bootCookie = (bootstrap.headers.get('set-cookie') || '').match(/csrf_token=[^;]*/)?.[0];
+check('cold GET through API issues csrf_token cookie (bootstrap available)', Boolean(bootCookie));
+const warmLogin = await call('/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'secret123' }, cookie: bootCookie, csrf: bootCookie?.split('=')[1] });
+check('first login submit after CSRF bootstrap → 200 (no cold-start failure)', warmLogin.status === 200 && warmLogin.j.data?.user?.email === 'a@b.co');
 
 // tenant context from session only
 const relogin = await post('/auth/login', { email: 'a@b.co', password: 'secret123' });
