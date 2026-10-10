@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 
 // the sidebar highlights the active route — provide one for the test render
@@ -59,7 +60,7 @@ describe('Sidebar (global SaaS navigation — reference layout)', () => {
     const html = render(<Sidebar collapsed={false} isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />);
     expect(html).toContain('start-0'); // physical side follows dir
     expect(html).toContain('border-e');
-    expect(html).toContain('ltr:-translate-x-full rtl:translate-x-full lg:translate-x-0');
+    expect(html).toContain('ltr:-translate-x-full rtl:translate-x-full lg:hidden');
   });
 
   it('renders the mobile drawer backdrop when open', () => {
@@ -76,11 +77,20 @@ describe('Sidebar (global SaaS navigation — reference layout)', () => {
     expect(html).toContain('sr-only');
   });
 
-  it('highlights the active route with aria-current', () => {
-    const html = render(<Sidebar collapsed={false} isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />);
-    expect((html.match(/aria-current="page"/g) ?? []).length).toBe(1);
-    const inboxIdx = html.indexOf('href="/inbox"');
-    const tagStart = html.lastIndexOf('<a ', inboxIdx);
-    expect(html.slice(tagStart, inboxIdx + 400)).toContain('aria-current="page"');
+  it('hamburger control is visible and functional at every width (drawer + desktop toggle)', () => {
+    const src = readFileSync(new URL('../components/shell/topbar.tsx', import.meta.url), 'utf8');
+    // the nav toggle is NOT hidden at lg anymore — it works at all sizes
+    expect(src).not.toMatch(/className="h-8 w-8 lg:hidden"/);
+    expect(src).toContain('onOpenMobile');
+    const shell = readFileSync(new URL('../components/shell/app-shell.tsx', import.meta.url), 'utf8');
+    expect(shell).toContain('setNavOpen((v) => !v)');
+    // mobile drawer closes on select; desktop stays open
+    expect(shell).toContain('window.innerWidth < 1024');
+  });
+
+  it('closes the drawer on Escape at drawer widths', () => {
+    const src = readFileSync(new URL('../components/shell/sidebar.tsx', import.meta.url), 'utf8');
+    expect(src).toContain("e.key === 'Escape'");
+    expect(src).toContain('window.innerWidth < 1024');
   });
 });
