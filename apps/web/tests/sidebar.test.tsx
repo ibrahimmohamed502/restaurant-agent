@@ -20,30 +20,23 @@ function render(node: React.ReactNode, locale: 'en' | 'ar' = 'en') {
   );
 }
 
-describe('Sidebar (global SaaS navigation)', () => {
-  it('renders all primary navigation routes', () => {
+describe('Sidebar (global SaaS navigation — reference layout)', () => {
+  it('shows the product header', () => {
     const html = render(<Sidebar collapsed={false} isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />);
-    for (const href of ['/dashboard', '/inbox', '/knowledge', '/brands', '/channels', '/ai', '/team', '/integrations', '/settings', '/customers']) {
-      expect(html).toContain(`href="${href}"`);
+    expect(html).toContain('LWC Platform');
+  });
+
+  it('renders all navigation entries in the reference order with icons', () => {
+    const html = render(<Sidebar collapsed={false} isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />);
+    const order = ['/dashboard', '/inbox', '/customers', '/companies', '/brands', '/channels', '/ai', '/knowledge', '/team', '/integrations', '/audit', '/settings'];
+    const positions = order.map((h) => html.indexOf(`href="${h}"`));
+    expect(positions.every((p) => p >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions); // ascending = reference order
+    // every item has an icon (svg) and a visible label
+    expect((html.match(/<svg/g) ?? []).length).toBeGreaterThanOrEqual(order.length);
+    for (const label of ['Dashboard', 'Unified Inbox', 'Customers', 'Companies', 'Brands', 'Channels', 'AI', 'Knowledge Base', 'Team &amp; Access', 'Integrations', 'Audit Logs', 'Settings']) {
+      expect(html).toContain(label);
     }
-    expect(html).toContain('Unified Inbox');
-    expect(html).toContain('Knowledge Base');
-  });
-
-  it('renders grouped navigation with labels', () => {
-    const html = render(<Sidebar collapsed={false} isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />);
-    expect(html).toContain('Overview'); // group label (navGroups.overview)
-    expect(html).toContain('Engagement');
-    expect(html).toContain('Configuration');
-  });
-
-  it('highlights the active route with aria-current', () => {
-    const html = render(<Sidebar collapsed={false} isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />);
-    // pathname is mocked to /inbox → only the inbox link is current
-    expect((html.match(/aria-current="page"/g) ?? []).length).toBe(1);
-    const inboxIdx = html.indexOf('href="/inbox"');
-    const tagStart = html.lastIndexOf('<a ', inboxIdx);
-    expect(html.slice(tagStart, inboxIdx + 400)).toContain('aria-current="page"');
   });
 
   it('hides super-admin-only items from non-super-admins (RBAC)', () => {
@@ -59,6 +52,14 @@ describe('Sidebar (global SaaS navigation)', () => {
     const html = render(<Sidebar collapsed={false} isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />, 'ar');
     expect(html).toContain('صندوق الموحد');
     expect(html).toContain('قاعدة المعرفة');
+    expect(html).toContain('لوحة التحكم');
+  });
+
+  it('uses logical (direction-aware) positioning — left in LTR, right in RTL', () => {
+    const html = render(<Sidebar collapsed={false} isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />);
+    expect(html).toContain('start-0'); // physical side follows dir
+    expect(html).toContain('border-e');
+    expect(html).toContain('ltr:-translate-x-full rtl:translate-x-full lg:translate-x-0');
   });
 
   it('renders the mobile drawer backdrop when open', () => {
@@ -67,15 +68,19 @@ describe('Sidebar (global SaaS navigation)', () => {
     expect(html).toContain('translate-x-0');
   });
 
-  it('supports the collapsed state (icons only)', () => {
+  it('collapses to an icon rail (no giant blank column)', () => {
     const html = render(<Sidebar collapsed isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />);
     expect(html).toContain('w-sidebar-collapsed');
     expect(html).not.toContain('Engagement Platform');
+    // labels remain available to screen readers (sr-only), not removed
+    expect(html).toContain('sr-only');
   });
 
-  it('uses logical (direction-aware) positioning classes', () => {
+  it('highlights the active route with aria-current', () => {
     const html = render(<Sidebar collapsed={false} isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />);
-    expect(html).toContain('start-0'); // side-aware: left in LTR, right in RTL
-    expect(html).toContain('border-e');
+    expect((html.match(/aria-current="page"/g) ?? []).length).toBe(1);
+    const inboxIdx = html.indexOf('href="/inbox"');
+    const tagStart = html.lastIndexOf('<a ', inboxIdx);
+    expect(html.slice(tagStart, inboxIdx + 400)).toContain('aria-current="page"');
   });
 });
