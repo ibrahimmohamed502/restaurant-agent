@@ -171,8 +171,7 @@
     to { opacity: 1; transform: none; }
   }
   @keyframes enter-slide-rtl {
-    from { opacity: 0; transform: translateX(-12px); }
-    to { opacity: 1; transform: none; }
+    from { opacity: 0; transform: translateX(-12px); }    to { opacity: 1; transform: none; }
   }
 
   /* skeleton shimmer */
@@ -185,4 +184,69 @@
     from { background-position: 200% 0; }
     to { background-position: -200% 0; }
   }
+
+  /* staggered entrance for dashboard sections */
+  .stagger-1 { animation-delay: 40ms; }
+  .stagger-2 { animation-delay: 90ms; }
+  .stagger-3 { animation-delay: 140ms; }
+  .stagger-4 { animation-delay: 190ms; }
+  .stagger-5 { animation-delay: 240ms; }
+
+  /* soft diagonal light sweep for hero surfaces */
+  .shine-sweep { position: relative; overflow: hidden; }
+  .shine-sweep::after {
+    content: '';
+    position: absolute;
+    inset: -60% -20%;
+    background: linear-gradient(105deg, transparent 42%, hsl(36 44% 97% / 0.10) 50%, transparent 58%);
+    animation: shine 6.5s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes shine {
+    0%, 55% { transform: translateX(-120%); }
+    100% { transform: translateX(120%); }
+  }
+
+  /* gentle floating for decorative shapes */
+  .float-slow { animation: float 7s ease-in-out infinite; }
+  .float-slower { animation: float 11s ease-in-out infinite reverse; }
+  @keyframes float {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    50% { transform: translateY(-9px) rotate(1.5deg); }
+  }
+
+  /* warm ambient tint behind the app canvas */
+  .bg-warmth {
+    background-image:
+      radial-gradient(60rem 30rem at 100% -10%, hsl(var(--primary) / 0.07), transparent 60%),
+      radial-gradient(50rem 26rem at 0% 110%, hsl(var(--accent) / 0.06), transparent 60%);
+  }
+
+  /* fine dot grid texture */
+  .bg-dots {
+    background-image: radial-gradient(hsl(var(--muted-foreground) / 0.10) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+
+  /* gradient ring around avatars / marks */
+  .ring-brand {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.25), 0 0 0 4px hsl(var(--primary) / 0.10);
+  }
+
+  /* steam wisps for warm-drink motifs */
+  .steam {
+    animation: steam 3.2s ease-in-out infinite;
+    transform-origin: bottom center;
+  }
+  .steam-2 { animation-delay: 0.9s; }
+  .steam-3 { animation-delay: 1.8s; }
+  @keyframes steam {
+    0% { opacity: 0; transform: translateY(2px) scaleY(0.85); }
+    35% { opacity: 0.75; }
+    100% { opacity: 0; transform: translateY(-9px) scaleY(1.1); }
+  }
+
+  /* tactile press feedback for primary controls */
+  .press { transition: transform 120ms var(--ease-out); }
+  .press:active { transform: scale(0.97); }
 }
