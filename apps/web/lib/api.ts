@@ -94,3 +94,25 @@ export const authApi = {
   logout: () => api.post<{ ok: true }>('/auth/logout'),
   me: () => api.get<MeResponse>('/auth/me')
 };
+
+/* ----------------------------------- users (Team & Access) */
+
+export type TeamUser = {
+  id: string;
+  email: string;
+  name: string;
+  status: 'active' | 'disabled';
+  created_at: string;
+  last_login_at: string | null;
+  roles: string[];
+};
+
+export const usersApi = {
+  list: () => api.get<TeamUser[]>('/users'),
+  create: (payload: { email: string; name: string; password: string; roles: string[] }) =>
+    api.post<TeamUser>('/users', payload),
+  setStatus: (id: string, status: 'active' | 'disabled') =>
+    api.post<TeamUser>(`/users/${id}/status`, { status }),
+  setRoles: (id: string, roles: string[]) =>
+    api.post<{ ok: true; roles: string[] }>(`/users/${id}/roles`, { roles })
+};
