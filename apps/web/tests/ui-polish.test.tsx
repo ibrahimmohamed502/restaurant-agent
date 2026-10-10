@@ -28,7 +28,8 @@ const VALUE = {
 describe('Stage 5 UI polish', () => {
   it('overview read-mode renders grouped sections (not a flat form)', () => {
     const html = render(<OverviewWorkspace value={VALUE} groups={OVERVIEW_GROUPS} editing={false} onChange={() => {}} />);
-    for (const g of OVERVIEW_GROUPS) expect(html).toContain(g.title);
+    // group titles resolve via i18n keys (titleKey), not hardcoded strings
+    for (const g of OVERVIEW_GROUPS) expect(html).toContain(g.titleKey.includes('brand') ? 'Brand information' : g.titleKey.includes('menu') ? 'Menu information' : g.titleKey.includes('service') ? 'Service information' : 'Reservations');
     // read mode: no editable textarea/input for published values
     expect(html).not.toContain('<textarea');
     expect(html).toContain('Life with Cacao');
@@ -53,10 +54,10 @@ describe('Stage 5 UI polish', () => {
 
   it('status bar distinguishes published (v3) from draft states', () => {
     const published = render(<KbStatusBar brandLabel="LWC KB" publishedVersion={3} draftState="none" saveState="idle" errorCount={null} />);
-    expect(published).toContain('منشور · الإصدار 3');
+    expect(published).toContain('Published · v3'); // localized via knowledge.statusBar.published
     const draft = render(<KbStatusBar brandLabel="LWC KB" publishedVersion={3} draftState="draft" saveState="dirty" errorCount={2} />);
-    expect(draft).toContain('مسودة');
-    expect(draft).toContain('مشكلات تحتاج انتباهك');
+    expect(draft).toContain('Draft');
+    expect(draft).toContain('issues need your attention');
   });
 
   it('action bar renders a single primary action for published mode', () => {
@@ -89,13 +90,13 @@ describe('Stage 5 UI polish', () => {
     const html = render(<BranchEditor branches={VALUE.branches} readOnly onChange={() => {}} />);
     expect(html).toContain('LWC 360');
     expect(html).toContain('8:00 AM – 11:30 PM');
-    expect(html).toContain('1 فرع');
+    expect(html).toContain('1 branches'); // localized count
   });
 
   it('policy editor renders structured sections', () => {
     const html = render(<PolicyEditor value={VALUE} editing={false} onChange={() => {}} />);
-    expect(html).toContain('مصادر اللحوم');
-    expect(html).toContain('ملاحظات تشغيلية');
+    expect(html).toContain('Meat sources');
+    expect(html).toContain('Operational notes for the assistant');
   });
 
   it('sources panel renders publication history with current version', () => {
