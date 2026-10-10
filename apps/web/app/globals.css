@@ -185,6 +185,15 @@
     to { background-position: -200% 0; }
   }
 
+  /* route-change progress bar */
+  .top-loader-bar {
+    animation: top-loader 550ms var(--ease-out) forwards;
+  }
+  @keyframes top-loader {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(400%); }
+  }
+
   /* staggered entrance for dashboard sections */
   .stagger-1 { animation-delay: 40ms; }
   .stagger-2 { animation-delay: 90ms; }
