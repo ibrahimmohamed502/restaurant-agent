@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { useTranslations } from 'next-intl';
 import { ChevronDown, ChevronRight, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Field, TextArea, TextInput } from './kb-parts';
@@ -12,6 +13,7 @@ import { Drawer } from './kb-parts';
 export type Faq = { question?: string; answer?: string; q?: string; a?: string; [k: string]: unknown };
 
 export function FaqEditor({ faqs, readOnly, onChange, label }: { faqs: Faq[]; readOnly?: boolean; onChange: (faqs: Faq[]) => void; label: string }) {
+  const tk = useTranslations('knowledge');
   const [open, setOpen] = React.useState<number | null>(null);
   const add = () => onChange([...faqs, { question: '', answer: '' }]);
   const update = (i: number, patch: Faq) => onChange(faqs.map((f, idx) => (idx === i ? { ...f, ...patch } : f)));
@@ -20,8 +22,8 @@ export function FaqEditor({ faqs, readOnly, onChange, label }: { faqs: Faq[]; re
   if (!faqs.length) {
     return (
       <div className="rounded-lg border border-dashed border-border px-4 py-12 text-center">
-        <p className="text-sm text-muted-foreground">لا توجد أسئلة شائعة بعد.</p>
-        {!readOnly ? <Button size="sm" variant="secondary" className="mt-3 gap-1.5" onClick={add}><Plus className="h-3.5 w-3.5" aria-hidden /> إضافة سؤال</Button> : null}
+        <p className="text-sm text-muted-foreground">{tk('faq.empty')}</p>
+        {!readOnly ? <Button size="sm" variant="secondary" className="mt-3 gap-1.5" onClick={add}><Plus className="h-3.5 w-3.5" aria-hidden /> {tk('faq.add')}</Button> : null}
       </div>
     );
   }
@@ -29,8 +31,8 @@ export function FaqEditor({ faqs, readOnly, onChange, label }: { faqs: Faq[]; re
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">{faqs.length} سؤال</p>
-        {!readOnly ? <Button size="sm" variant="secondary" className="gap-1.5" onClick={add}><Plus className="h-3.5 w-3.5" aria-hidden /> إضافة سؤال</Button> : null}
+        <p className="text-xs text-muted-foreground">{tk('faq.count', { count: faqs.length })}</p>
+        {!readOnly ? <Button size="sm" variant="secondary" className="gap-1.5" onClick={add}><Plus className="h-3.5 w-3.5" aria-hidden /> {tk('faq.add')}</Button> : null}
       </div>
       <ul className="space-y-2">
         {faqs.map((f, i) => {
@@ -47,12 +49,12 @@ export function FaqEditor({ faqs, readOnly, onChange, label }: { faqs: Faq[]; re
                   className="flex min-w-0 flex-1 items-center gap-2 text-start"
                 >
                   {isOpen ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground rtl:rotate-180" aria-hidden />}
-                  <span className="min-w-0 flex-1 text-[13px] font-medium text-foreground">{question || 'سؤال بدون عنوان'}</span>
+                  <span className="min-w-0 flex-1 text-[13px] font-medium text-foreground">{question || tk('faq.untitled')}</span>
                 </button>
                 {!readOnly ? (
                   <div className="flex shrink-0 items-center gap-1">
-                    <Button size="sm" variant="ghost" className="h-7 w-7" onClick={() => setOpen(isOpen ? null : i)} aria-label="Edit"><Pencil className="h-3.5 w-3.5" /></Button>
-                    <Button size="sm" variant="ghost" className="h-7 w-7 text-destructive" onClick={() => remove(i)} aria-label="Delete"><Trash2 className="h-3.5 w-3.5" /></Button>
+                    <Button size="sm" variant="ghost" className="h-7 w-7" onClick={() => setOpen(isOpen ? null : i)} aria-label={tk('faq.edit')}><Pencil className="h-3.5 w-3.5" /></Button>
+                    <Button size="sm" variant="ghost" className="h-7 w-7 text-destructive" onClick={() => remove(i)} aria-label={tk('faq.delete')}><Trash2 className="h-3.5 w-3.5" /></Button>
                   </div>
                 ) : null}
               </div>
@@ -61,7 +63,7 @@ export function FaqEditor({ faqs, readOnly, onChange, label }: { faqs: Faq[]; re
                   <Field label={label} htmlFor={`faq-q-${i}`}>
                     <TextInput id={`faq-q-${i}`} value={question} readOnly={readOnly} onChange={(v) => update(i, f.question !== undefined ? { question: v } : { q: v })} />
                   </Field>
-                  <Field label="الإجابة" htmlFor={`faq-a-${i}`}>
+                  <Field label={tk('faq.field.answer')} htmlFor={`faq-a-${i}`}>
                     <TextArea id={`faq-a-${i}`} rows={3} value={answer} readOnly={readOnly} onChange={(v) => update(i, f.answer !== undefined ? { answer: v } : { a: v })} />
                   </Field>
                 </div>
@@ -81,6 +83,7 @@ export function FaqEditor({ faqs, readOnly, onChange, label }: { faqs: Faq[]; re
 export type Branch = { name?: string; area?: string; timings?: string; maps?: string; phone?: string; [k: string]: unknown };
 
 export function BranchEditor({ branches, readOnly, onChange }: { branches: Branch[]; readOnly?: boolean; onChange: (branches: Branch[]) => void }) {
+  const tk = useTranslations('knowledge');
   const [editingIndex, setEditingIndex] = React.useState<number | null>(null);
   const [draft, setDraft] = React.useState<Branch | null>(null);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
@@ -91,10 +94,10 @@ export function BranchEditor({ branches, readOnly, onChange }: { branches: Branc
     if (!draft) return;
     const e: Record<string, string> = {};
     const name = String((draft as Branch).name ?? (draft as Branch).name_en ?? '').trim();
-    if (!name) e.name = 'الاسم مطلوب';
-    if ((draft as Branch).maps && String((draft as Branch).maps).trim() && !/^https?:\/\/[^\s<>"')]+\.[^\s<>"')]+$/i.test(String((draft as Branch).maps).trim())) e.maps = 'رابط غير صحيح';
-    if ((draft as Branch).phone && String((draft as Branch).phone).trim() && !/^\+?[\d\s().-]{7,20}$/.test(String((draft as Branch).phone).trim())) e.phone = 'رقم هاتف غير صحيح';
-    if (branches.some((b, i) => i !== editingIndex && String(b.name ?? b.name_en ?? '').trim().toLowerCase() === name.toLowerCase())) e.name = 'يوجد فرع بنفس الاسم';
+    if (!name) e.name = tk('branches.error.name');
+    if ((draft as Branch).maps && String((draft as Branch).maps).trim() && !/^https?:\/\/[^\s<>"')]+\.[^\s<>"')]+$/i.test(String((draft as Branch).maps).trim())) e.maps = tk('branches.error.maps');
+    if ((draft as Branch).phone && String((draft as Branch).phone).trim() && !/^\+?[\d\s().-]{7,20}$/.test(String((draft as Branch).phone).trim())) e.phone = tk('branches.error.phone');
+    if (branches.some((b, i) => i !== editingIndex && String(b.name ?? b.name_en ?? '').trim().toLowerCase() === name.toLowerCase())) e.name = tk('branches.error.duplicate');
     setErrors(e);
     if (Object.keys(e).length) return;
     const next = [...branches];
@@ -105,18 +108,18 @@ export function BranchEditor({ branches, readOnly, onChange }: { branches: Branc
     setDraft(null);
   };
 
-  const remove = (index: number) => { if (!window.confirm(`حذف الفرع "${branches[index]?.name ?? ''}"؟`)) return; onChange(branches.filter((_, i) => i !== index)); };
+  const remove = (index: number) => { if (!window.confirm(tk('branches.confirmDelete', { name: branches[index]?.name ?? '' }))) return; onChange(branches.filter((_, i) => i !== index)); };
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">{branches.length} فرع</p>
-        {!readOnly ? <Button size="sm" variant="secondary" className="gap-1.5" onClick={() => open(-1)}><Plus className="h-3.5 w-3.5" aria-hidden /> إضافة فرع</Button> : null}
+        <p className="text-xs text-muted-foreground">{tk('branches.count', { count: branches.length })}</p>
+        {!readOnly ? <Button size="sm" variant="secondary" className="gap-1.5" onClick={() => open(-1)}><Plus className="h-3.5 w-3.5" aria-hidden /> {tk('branches.add')}</Button> : null}
       </div>
 
       {branches.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border px-4 py-12 text-center">
-          <p className="text-sm text-muted-foreground">لا توجد فروع بعد. أضف أول فرع.</p>
+          <p className="text-sm text-muted-foreground">{tk('branches.empty')}</p>
         </div>
       ) : (
         <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface shadow-sm">
@@ -127,8 +130,8 @@ export function BranchEditor({ branches, readOnly, onChange }: { branches: Branc
               <span className="text-xs text-muted-foreground">{String(b.timings ?? '')}</span>
               {!readOnly ? (
                 <div className="flex items-center gap-1">
-                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => open(i)}>تعديل</Button>
-                  <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => remove(i)}>حذف</Button>
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => open(i)}>{tk('branches.edit')}</Button>
+                  <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => remove(i)}>{tk('branches.delete')}</Button>
                 </div>
               ) : null}
             </li>
@@ -138,26 +141,26 @@ export function BranchEditor({ branches, readOnly, onChange }: { branches: Branc
 
       <Drawer
         open={editingIndex !== null}
-        title={editingIndex !== null && editingIndex >= 0 ? 'تعديل فرع' : 'إضافة فرع'}
+        title={editingIndex !== null && editingIndex >= 0 ? tk('branches.editTitle') : tk('branches.newTitle')}
         onClose={() => { setEditingIndex(null); setDraft(null); }}
         footer={<>
-          <Button variant="secondary" size="sm" onClick={() => { setEditingIndex(null); setDraft(null); }}>إلغاء</Button>
-          <Button size="sm" onClick={save}>حفظ</Button>
+          <Button variant="secondary" size="sm" onClick={() => { setEditingIndex(null); setDraft(null); }}>{tk('common.cancel')}</Button>
+          <Button size="sm" onClick={save}>{tk('common.save')}</Button>
         </>}
       >
-        <Field label="اسم الفرع" htmlFor="b-name" error={errors.name}>
+        <Field label={tk('branches.field.name')} htmlFor="b-name" error={errors.name}>
           <TextInput id="b-name" value={String(draft?.name ?? '')} onChange={(v) => setDraft({ ...(draft ?? {}), name: v })} invalid={Boolean(errors.name)} />
         </Field>
-        <Field label="المنطقة">
+        <Field label={tk('branches.field.area')}>
           <TextInput value={String(draft?.area ?? '')} onChange={(v) => setDraft({ ...(draft ?? {}), area: v })} />
         </Field>
-        <Field label="مواعيد العمل" hint="مثال: 8:00 AM – 11:30 PM">
+        <Field label={tk('branches.field.timings')} hint={tk('branches.field.timingsHint')}>
           <TextInput value={String(draft?.timings ?? '')} onChange={(v) => setDraft({ ...(draft ?? {}), timings: v })} />
         </Field>
-        <Field label="رابط الخريطة" error={errors.maps}>
+        <Field label={tk('branches.field.maps')} error={errors.maps}>
           <TextInput dir="ltr" inputMode="url" value={String(draft?.maps ?? '')} onChange={(v) => setDraft({ ...(draft ?? {}), maps: v })} invalid={Boolean(errors.maps)} />
         </Field>
-        <Field label="الهاتف" error={errors.phone}>
+        <Field label={tk('branches.field.phone')} error={errors.phone}>
           <TextInput dir="ltr" inputMode="tel" value={String(draft?.phone ?? '')} onChange={(v) => setDraft({ ...(draft ?? {}), phone: v })} invalid={Boolean(errors.phone)} />
         </Field>
       </Drawer>
@@ -170,11 +173,12 @@ export function BranchEditor({ branches, readOnly, onChange }: { branches: Branc
 export type PolicyField = { key: string; label: string; kind: 'text' | 'long' | 'bool'; help?: string };
 
 const POLICY_FIELDS: PolicyField[] = [
-  { key: 'meatSources', label: 'مصادر اللحوم', kind: 'long' },
-  { key: 'agentNotes', label: 'ملاحظات تشغيلية للمساعد', kind: 'long' }
+  { key: 'meatSources', label: 'policies.meatSources', kind: 'long' },
+  { key: 'agentNotes', label: 'policies.agentNotes', kind: 'long' }
 ];
 
 export function PolicyEditor({ value, editing, onChange }: { value: Record<string, unknown>; editing: boolean; onChange: (next: Record<string, unknown>) => void }) {
+  const tk = useTranslations('knowledge');
   return (
     <div className="space-y-5">
       {POLICY_FIELDS.map((f) => {
@@ -183,7 +187,7 @@ export function PolicyEditor({ value, editing, onChange }: { value: Record<strin
         return (
           <section key={f.key} className="overflow-hidden rounded-lg border border-border bg-surface shadow-sm">
             <header className="border-b border-border px-4 py-2.5">
-              <h3 className="text-[13px] font-semibold text-foreground">{f.label}</h3>
+              <h3 className="text-[13px] font-semibold text-foreground">{tk(f.label as 'policies.meatSources')}</h3>
             </header>
             <div className="px-4 py-3">
               {editing ? <PolicyEditorBody value={str} onChange={(nv) => onChange({ ...value, [f.key]: nv })} rows={5} /> : (
@@ -200,24 +204,25 @@ export function PolicyEditor({ value, editing, onChange }: { value: Record<strin
 /* ---------------------------------------------------------------- sources */
 
 export function SourcesPanel({ source, versions }: { source: { kind: string; title: string } | null; versions: Array<{ version: number; created_at: string; published_by_name: string | null }> }) {
+  const tk = useTranslations('knowledge');
   return (
     <div className="space-y-5">
       {source ? (
         <section className="rounded-lg border border-border bg-surface p-4 shadow-sm">
-          <h3 className="text-sm font-semibold text-foreground">مصدر المعرفة</h3>
+          <h3 className="text-sm font-semibold text-foreground">{tk('sources.title')}</h3>
           <p className="mt-1 text-[13px] text-muted-foreground">{source.title}</p>
           <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
-            <div><dt className="text-xs text-muted-foreground">النوع</dt><dd className="mt-0.5 text-foreground">{source.kind}</dd></div>
-            <div><dt className="text-xs text-muted-foreground">عدد الإصدارات</dt><dd className="mt-0.5 text-foreground">{versions.length}</dd></div>
-            <div><dt className="text-xs text-muted-foreground">الإصدار الحالي</dt><dd className="mt-0.5 text-foreground">{versions[0] ? `v${versions[0].version}` : '—'}</dd></div>
+            <div><dt className="text-xs text-muted-foreground">{tk('sources.kind')}</dt><dd className="mt-0.5 text-foreground">{source.kind}</dd></div>
+            <div><dt className="text-xs text-muted-foreground">{tk('sources.versionCount')}</dt><dd className="mt-0.5 text-foreground">{versions.length}</dd></div>
+            <div><dt className="text-xs text-muted-foreground">{tk('sources.currentVersion')}</dt><dd className="mt-0.5 text-foreground">{versions[0] ? `v${versions[0].version}` : '—'}</dd></div>
           </dl>
         </section>
       ) : null}
 
       <section>
-        <h3 className="mb-2 text-sm font-semibold text-foreground">سجل النشر</h3>
+        <h3 className="mb-2 text-sm font-semibold text-foreground">{tk('sources.history')}</h3>
         {versions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">لم يتم النشر بعد.</p>
+          <p className="text-sm text-muted-foreground">{tk('sources.noHistory')}</p>
         ) : (
           <ol className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface shadow-sm">
             {versions.map((v, i) => (
