@@ -25,7 +25,8 @@ export async function loadAiConfig({ tenantId, db = pool }) {
   return {
     agentId: agent.id,
     agentName: agent.name,
-    tone: cfg.tone ?? 'professional',
+    // legacy seeded value maps onto the proper preset (keeps the Kuwaiti dialect)
+    tone: cfg.tone === 'kuwaiti-friendly' ? 'kuwaiti' : (cfg.tone ?? 'professional'),
     languages: Array.isArray(cfg.languages) ? cfg.languages : ['ar', 'en'],
     rules: cfg.rules ?? {},
     workingHours: cfg.working_hours ?? {},
@@ -37,5 +38,6 @@ export async function loadAiConfig({ tenantId, db = pool }) {
 export const TONE_INSTRUCTIONS = {
   professional: 'Use a clear, professional and helpful tone.',
   friendly: 'Use a warm, friendly and conversational tone.',
+  kuwaiti: 'Reply in a warm KUWAITI/GULF dialect (اللهجة الكويتية) for Arabic replies: هلا والله، حياك، تسلم، يعطيك العافية، زين. English replies stay warm and natural.',
   custom: 'Follow the custom instructions below exactly.'
 };
