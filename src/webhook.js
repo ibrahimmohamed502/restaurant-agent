@@ -4,6 +4,7 @@ import { buildRouteContext } from './services/routeContext.js';
 import { analyzeAndDraft } from './agent.js';
 import { enforceGrounding, localize, NOT_CONFIRMED_REPLY } from './services/grounding.js';
 import { runShadowRetrieval } from './services/shadowRetrieval.js';
+import { generateWithRetrieval } from './services/activeGeneration.js';
 import { notifyStaff } from './notify.js';
 import { logEvent, addEscalation } from './db.js';
 import { enabled } from './db/pg.js';
@@ -242,9 +243,11 @@ async function processMessage(event, ctx, deps = {}) {
   }
 
   // Stage 4.4.3: scoped AI path — ctx is mandatory. No legacy/global retry.
+  // Stage 6 Batch 3B: active mode → retrieval-grounded generation (safe fallback
+  // on failure — never the legacy Path A).
   let draft;
   try {
-    draft = await analyze({ text, authorName, channel: 'dm', ctx });
+    draft = (await generateWithRetrieval({ text, authorName, channel: 'dm', ctx, analyzeFn: analyze })).draft;
   } catch (err) {
     if (err?.code === 'AI_CONTEXT_UNAVAILABLE') {
       console.warn(`⛔ [${ctx.pageId}] scoped AI context unavailable — DM not answered (fail closed)`);
@@ -289,7 +292,6 @@ async function processMessage(event, ctx, deps = {}) {
     text, tenantId: ctx.tenantId, brandId: ctx.brandId,
     messageId: outboundRow?.id ?? null, conversationId
   }).catch(() => {});
-
   console.log(
     `✅ DM replied to ${psid} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
   );
@@ -395,9 +397,11 @@ async function processComment(value, ctx, deps = {}) {
   }
 
   // Stage 4.4.3: scoped AI path — ctx is mandatory. No legacy/global retry.
+  // Stage 6 Batch 3B: active mode → retrieval-grounded generation (safe fallback
+  // on failure — never the legacy Path A).
   let draft;
   try {
-    draft = await analyze({ text: message, authorName: from.name, channel: 'comment', ctx });
+    draft = (await generateWithRetrieval({ text: message, authorName: from.name, channel: 'comment', ctx, analyzeFn: analyze })).draft;
   } catch (err) {
     if (err?.code === 'AI_CONTEXT_UNAVAILABLE') {
       console.warn(`⛔ [${ctx.pageId}] scoped AI context unavailable — comment not answered (fail closed)`);
