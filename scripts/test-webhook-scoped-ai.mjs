@@ -53,8 +53,10 @@ console.log('\n🧪 Stage 4.4.3 — webhook scoped-AI wiring\n');
 {
   const fs = await import('node:fs');
   const src = fs.readFileSync(new URL('../src/webhook.js', import.meta.url), 'utf8');
-  const analyzeCalls = src.split('\n').filter(l => /await analyze\(/.test(l));
-  check('G. every analyze call passes ctx (static)', analyzeCalls.length === 2 && analyzeCalls.every(l => /\bctx\b/.test(l)));
+  // Stage 6: analyze runs behind generateWithRetrieval (shadow/active modes);
+  // every generation call must still pass ctx.
+  const analyzeCalls = src.split('\n').filter(l => /await analyze\(|generateWithRetrieval\(\{/.test(l));
+  check('G. every generate call passes ctx (static)', analyzeCalls.length === 2 && analyzeCalls.every(l => /\bctx\b/.test(l)));
 }
 
 // H/I: AI_CONTEXT_UNAVAILABLE → no reply sent
