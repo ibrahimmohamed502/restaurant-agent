@@ -20,6 +20,11 @@ export const RETRIEVAL_MODE = RETRIEVAL_MODES.includes(process.env.KNOWLEDGE_RET
   ? process.env.KNOWLEDGE_RETRIEVAL_MODE
   : 'shadow';
 
+/** PostgreSQL-safe vector literal: toFixed avoids exponent notation (1e-7). */
+export function vecLiteral(values) {
+  return `[${values.map((v) => (Number.isFinite(v) ? Number(v).toFixed(10).replace(/\.?0+$/, '') : 0)).join(',')}]`;
+}
+
 /**
  * Retrieve context for a customer message (no generation).
  * @returns {Promise<{intent, confidence, retrieval, facts, chunks, activeVersion, fallback}>}
@@ -71,10 +76,10 @@ export async function retrieveContext({ text, tenantId, brandId = null, db }) {
             AND k.tenant_id = $3
             AND ($4::uuid IS NULL OR (k.metadata->>'brandId')::uuid = $4)
             AND k.embedding IS NOT NULL
-            AND k.embedding <=> $1::vector <= (1 - $5)
+            AND k.embedding <=> $1::vector <= (1 - ($5)::float)
           ORDER BY k.embedding <=> $1::vector
           LIMIT $6`,
-        ['[' + vec.join(',') + ']', active.id, tenantId, brandId, MIN_SCORE, TOP_K]
+        [vecLiteral(vec), active.id, tenantId, brandId, MIN_SCORE, TOP_K]
       );
       ctx.chunks = rows.map((r) => ({
         id: r.id,
