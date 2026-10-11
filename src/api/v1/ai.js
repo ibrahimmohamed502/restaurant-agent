@@ -8,7 +8,7 @@
 import express from 'express';
 import { requireV1Auth, requireV1Role } from './index.js';
 
-export const AI_TONES = ['professional', 'friendly', 'custom'];
+export const AI_TONES = ['professional', 'friendly', 'kuwaiti', 'custom'];
 export const AI_LANGUAGES = ['ar', 'en'];
 /** Backend-managed safety limits — never editable from the UI. */
 export const AI_FALLBACK_POLICY = {
