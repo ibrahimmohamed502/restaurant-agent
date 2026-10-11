@@ -80,6 +80,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
+  put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
   del: <T>(path: string) => request<T>('DELETE', path)
 };
 
@@ -114,6 +115,47 @@ export type ChannelInfo = {
 
 export const channelsApi = {
   list: () => api.get<ChannelInfo[]>('/channels')
+};
+
+/* ----------------------------------- AI config (Stage 6) */
+
+export type AiConfig = {
+  agentName: string;
+  brandId: string | null;
+  tone: 'professional' | 'friendly' | 'custom';
+  languages: string[];
+  rules: Record<string, unknown>;
+  workingHours: Record<string, unknown>;
+  customInstructions: string;
+  updatedAt: string | null;
+  fallbackPolicy: { minSimilarity: number; note: string };
+};
+
+export const aiApi = {
+  config: () => api.get<AiConfig | null>('/ai/config'),
+  saveConfig: (payload: Partial<AiConfig>) => api.put<AiConfig>('/ai/config', payload),
+  replySources: (messageId: string) => api.get<ReplySource[]>(`/ai/reply-sources?messageId=${messageId}`)
+};
+
+export type ReplySource = {
+  id: string;
+  intent: string;
+  retrieval: string;
+  confidence: number;
+  fallbackUsed: boolean;
+  knowledgeVersion: number | null;
+  indexStatus: string | null;
+  createdAt: string;
+  sources: Array<{
+    type: 'chunk' | 'fact';
+    id?: string;
+    section: string | null;
+    entityKey?: string | null;
+    score?: number;
+    content: string | null;
+    resolved: boolean;
+    source?: string;
+  }>;
 };
 
 /* ----------------------------------- users (Team & Access) */
