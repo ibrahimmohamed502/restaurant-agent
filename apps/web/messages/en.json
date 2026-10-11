@@ -464,7 +464,8 @@
     "tone": {
       "professional": "Professional",
       "friendly": "Friendly",
-      "custom": "Custom instructions"
+      "custom": "Custom instructions",
+      "kuwaiti": "Kuwaiti dialect"
     },
     "toneHint": "Use Custom instructions for a specific dialect (e.g. Kuwaiti).",
     "customInstructions": "Custom instructions",
