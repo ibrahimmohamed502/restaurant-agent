@@ -412,7 +412,9 @@
       "admin": "Company Admin",
       "supervisor": "Supervisor",
       "agent": "Agent"
-    }
+    },
+    "delete": "Delete",
+    "confirmDelete": "Permanently delete \"{name}\" ({email})? This removes the account and all their sessions. This cannot be undone."
   },
   "command": {
     "title": "Quick navigation",
