@@ -59,7 +59,7 @@ export function createConversationsRouter({ pool }) {
       );
       if (!conv) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'conversation not found' } });
       const { rows: messages } = await pool.query(
-        `SELECT direction, sender_type, text, created_at, provider_ts
+        `SELECT id, direction, sender_type, text, created_at, provider_ts
            FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 200`,
         [conv.id]
       );
@@ -75,6 +75,7 @@ export function createConversationsRouter({ pool }) {
             createdAt: conv.created_at
           },
           messages: messages.map((m) => ({
+            id: m.id,
             direction: m.direction,
             senderType: m.sender_type,
             text: m.text,
