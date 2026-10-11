@@ -12,6 +12,7 @@ import { getRedisConnection } from '../queues/redis.js';
 import { closeRedisConnection } from '../queues/redis.js';
 import { META_EVENT_QUEUE } from '../queues/metaEvents.js';
 import { processQueuedMetaEvent } from './metaEventPipeline.js';
+import { createKnowledgeIndexWorker } from './knowledgeIndexWorker.js';
 
 const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY || 5);
 
@@ -38,6 +39,17 @@ async function main() {
   console.log(`👷 meta event worker starting (queue=${META_EVENT_QUEUE}, concurrency=${CONCURRENCY})`);
   const worker = createMetaEventWorker();
 
+  // Stage 6: the knowledge-index worker shares the process but uses its OWN
+  // queue + concurrency — embedding/index jobs never mix with Meta events.
+  const indexWorker = createKnowledgeIndexWorker();
+  indexWorker.on('completed', (job) => console.log(`✅ index job done: ${job.id}`));
+  indexWorker.on('failed', (job, err) => {
+    if (!job) return;
+    const attempts = job.attemptsMade ?? 0;
+    const max = job.opts?.attempts ?? 3;
+    console.warn(`⚠️ index job ${job.id} failed (attempt ${attempts}/${max}): ${(err?.code ?? err?.message ?? 'error').toString().slice(0, 140)}`);
+  });
+
   worker.on('completed', (job) => console.log(`✅ job done: ${job.id}`));
   worker.on('failed', (job, err) => {
     if (!job) return;
@@ -49,6 +61,7 @@ async function main() {
   const shutdown = async (sig) => {
     console.log(`\n${sig} received — draining worker…`);
     await worker.close().catch(() => undefined);
+    await indexWorker.close().catch(() => undefined);
     await closeRedisConnection().catch(() => undefined);
     process.exit(0);
   };
