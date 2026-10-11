@@ -23,7 +23,7 @@ const MODEL_CHAIN = [
  * NEVER a scoped → global/LWC fallback: if resolution fails the scoped path
  * throws AiContextUnavailableError so the caller (Stage 4.4.3) can fail closed.
  */
-export async function analyzeAndDraft({ text, authorName, channel = 'comment', ctx = null }, deps = {}) {
+export async function analyzeAndDraft({ text, authorName, channel = 'comment', ctx = null, retrieval = null, aiConfig = null }, deps = {}) {
   const { resolveFn = resolveAiContext, llmFn = callLLMResilient } = deps;
   const lang = detectLanguage(text);
   const channelLabel = channel === 'dm' ? 'private Messenger DM' : 'public page comment';
@@ -45,6 +45,10 @@ export async function analyzeAndDraft({ text, authorName, channel = 'comment', c
     promptCtx = { knowledge: knowledgeBase, config: null, scoped: false }; // legacy compat only
   }
 
+  // Stage 6 active mode: the retrieved compact context REPLACES the full
+  // knowledge dump in the prompt; the AI config drives tone/languages.
+  const retrievalMode = Boolean(retrieval && ctx);
+
   const userContent = text?.trim()
     ? `Channel: ${channelLabel}\nComment author: ${authorName || 'Guest'}\nComment language hint: ${lang}\nComment text: """${text}"""`
     : `Channel: ${channelLabel}\nComment author: ${authorName || 'Guest'}\nComment language hint: ${lang}\nThe comment has NO text (media-only: photo/sticker/GIF). Write a warm, generic welcome reply.`;
@@ -53,7 +57,7 @@ export async function analyzeAndDraft({ text, authorName, channel = 'comment', c
   try {
     const raw = await llmFn(
       [
-        { role: 'system', content: buildSystemPrompt(lang, channel, promptCtx) },
+        { role: 'system', content: retrievalMode ? buildRetrievalSystemPrompt(lang, channel, retrieval, aiConfig, promptCtx) : buildSystemPrompt(lang, channel, promptCtx) },
         { role: 'user', content: userContent }
       ],
       promptCtx
@@ -176,6 +180,68 @@ ${JSON.stringify(knowledge, null, 2)}
 
 OUTPUT — strict JSON only, no markdown fences, no extra text:
 {"intent": "<short label>", "inScope": true|false, "escalate": true|false, "reply": "<reply written fully in the user's language>"}`;
+}
+
+/**
+ * Stage 6 active mode — retrieval-grounded prompt (Batch 3B).
+ * Uses ONLY the retrieved compact context (structured facts + top chunks) plus
+ * the tenant's AI config (tone / languages / custom instructions). The full
+ * knowledge dump is NEVER in the prompt; deterministic grounding still verifies
+ * every price/phone/URL against the full published knowledge afterwards.
+ */
+function buildRetrievalSystemPrompt(lang, channel, retrieval, aiConfig, promptCtx) {
+  const brandName = promptCtx?.knowledge?.restaurantName || promptCtx?.knowledge?.brandName || promptCtx?.knowledge?.name || 'the business';
+  const tone = aiConfig?.tone ?? 'professional';
+  const languages = aiConfig?.languages ?? ['ar', 'en'];
+  const custom = String(aiConfig?.customInstructions ?? '').trim();
+  const menuLinkRule =
+    channel === 'dm'
+      ? '• Include the menu link ONLY when the conversation involves food/menu/ordering/branches — skip it in pure greetings or small talk (this is a private DM conversation).'
+      : '• The VERY LAST line of every reply is ALWAYS a short friendly closing line — never add links that are not in the RETRIEVED CONTEXT.';
+
+  const facts = (retrieval.facts ?? [])
+    .map((f) => `- [EXACT FACT · ${f._source}] ${Object.entries(f).filter(([k]) => !k.startsWith('_')).map(([k, v]) => `${k}: ${v}`).join(' · ')}`)
+    .join('\n');
+  const chunks = (retrieval.chunks ?? []).map((c) => `- [${c.section}${c.entityKey ? ' · ' + c.entityKey : ''} · match ${Math.round(Number(c.score) * 100)}%] ${c.content}`).join('\n');
+  const context = [facts, chunks].filter(Boolean).join('\n');
+
+  return `You are the official AI Agent managing the Facebook Page of "${brandName}".
+You reply to EVERY page comment — helpfully, politely, and fast.
+
+RESPONSE STYLE (tenant-configurable):
+- Tone: ${TONE_INSTRUCTION_FOR(tone)}
+- Enabled reply languages: ${languages.join(', ')}. Reply in the commenter's language if enabled; otherwise use the tenant's primary enabled language.
+${custom ? `- CUSTOM INSTRUCTIONS (tenant-specific, follow exactly):\n${custom}\n` : ''}
+STRICT RULES (never break them):
+1. LANGUAGE MATCHING — Write the ENTIRE reply in the SAME language as the user's comment (detected hint: "${lang}"). Arabic → warm natural dialect; English → English. Never mix languages, except dish/brand names.
+2. NATURAL HUMAN TONE — Write like a warm member of the business's social media team. Never robotic. Do NOT introduce yourself as an AI/bot; if asked directly, answer honestly that you're the page's automated assistant.
+3. TONE & FORMATTING — FORMAT for easy reading:
+   • Open with a short warm greeting using the commenter's FIRST name if available.
+   • USE LINE BREAKS — never one dense block.
+   • ${menuLinkRule}
+   • NO hashtags. The ONLY links allowed are links found in the RETRIEVED CONTEXT.
+4. ACCURACY (CRITICAL) — You may ONLY state facts from the RETRIEVED CONTEXT below. Never invent or guess:
+   menu items, dish names, prices, opening hours, branches, locations, maps links, phone numbers, URLs, offers,
+   delivery options, reservation policies, or any other business fact. If the RETRIEVED CONTEXT does not contain
+   the answer, clearly say the information is not confirmed yet and that our team will confirm it shortly — do NOT guess.
+5. SCOPE — If the customer message is unrelated to the business (politics, sports, other businesses, spam, personal topics),
+   set "inScope": false, politely clarify that you are the business's AI Agent and can only help with business topics,
+   warmly welcome the user, and assure them the page staff will follow up.
+6. ESCALATION — set "escalate": true for: complex reservations (large groups/private events), serious complaints,
+   business/collaboration inquiries, or when a customer shares contact details expecting follow-up.
+7. NEVER include "@mentions", user IDs, or placeholders — the mention is added automatically.
+8. Keep the reply under ~90 words (excluding item lines).
+RETRIEVED CONTEXT (authoritative, from this tenant's published knowledge):
+${context || '(no relevant context retrieved — say the information is not confirmed yet)'}
+
+OUTPUT — strict JSON only, no markdown fences, no extra text:
+{"intent": "<short label>", "inScope": true|false, "escalate": true|false, "reply": "<reply written fully in the user's language>"}`;
+}
+
+function TONE_INSTRUCTION_FOR(tone) {
+  if (tone === 'friendly') return 'Warm, friendly and conversational (e.g. "هلا والله، حياك، تسلم").';
+  if (tone === 'custom') return 'Follow the CUSTOM INSTRUCTIONS below exactly.';
+  return 'Clear, professional and helpful.';
 }
 
 /** Legacy prompt (unchanged global knowledge.json behavior) — non-routed callers only. */
