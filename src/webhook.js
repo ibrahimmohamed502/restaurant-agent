@@ -417,7 +417,9 @@ async function processComment(value, ctx, deps = {}) {
   // mention syntax with "Graph API 500 (code 1)" for this app/page; a reply posted
   // to /{comment-id}/comments is already threaded under the comment and notifies
   // the commenter.
-  const finalMessage = draft.reply;
+  // Meta ALSO rejects public comment replies that contain URLs (Graph error code 1,
+  // "An unknown error has occurred") — links are delivered via Messenger instead.
+  const finalMessage = sanitizeCommentMessage(draft.reply);
 
   // ---- Publish via the request-scoped routed Meta client (ctx.metaClient) ----
   let replyResp = null;
@@ -488,6 +490,25 @@ async function persistOutboundFailure(conversationId, ctx, { pgEnabled, text = n
 /** Safety net: catches phone numbers / emails / social handles even if the LLM missed them. */
 function containsContactData(text = '') {
   return /(\+?\d[\d\s-]{6,}\d)|([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/.test(text);
+}
+
+/**
+ * Meta rejects PUBLIC comment replies that contain URLs (Graph error code 1,
+ * "An unknown error has occurred") while Messenger accepts them. For comments we
+ * drop the whole line carrying the link so the reply stays clean and delivers.
+ * Phone numbers and business text are preserved.
+ */
+export function sanitizeCommentMessage(text = '') {
+  const lines = String(text)
+    .split('\n')
+    .filter((line) => !/https?:\/\/\S/i.test(line));
+  const cleaned = lines
+    .join('\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  // never post an empty comment — fall back to a short safe line
+  return cleaned.length > 0 ? cleaned : localize(NOT_CONFIRMED_REPLY, 'ar');
 }
 
 // notifyStaff lives in ./notify.js (webhook + email channels)
