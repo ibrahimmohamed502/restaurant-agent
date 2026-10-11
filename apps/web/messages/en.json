@@ -92,7 +92,13 @@
     "emptyDescription": "New comments and messages will appear here automatically.",
     "loadError": "Could not load conversations",
     "loadErrorDescription": "An error occurred while fetching conversations.",
-    "retry": "Retry"
+    "retry": "Retry",
+    "sources": "Reply sources",
+    "sections.menu": "Menu",
+    "sections.branches": "Branch",
+    "sections.faq": "FAQ",
+    "sections.policies": "Policy",
+    "sections.overview": "Brand info"
   },
   "dashboard": {
     "greeting": "Welcome back",
@@ -446,6 +452,30 @@
       "status": "Status",
       "health": "Health",
       "lastEvent": "Last event"
+    }
+  },
+  "ai": {
+    "nav": "AI Agent",
+    "description": "Configure how the AI agent responds for your workspace",
+    "agentName": "AI agent",
+    "agentSubtitle": "Answers customer conversations from your published knowledge",
+    "tone": "Response tone",
+    "tone.professional": "Professional",
+    "tone.friendly": "Friendly",
+    "tone.custom": "Custom instructions",
+    "toneHint": "Use Custom instructions for a specific dialect (e.g. Kuwaiti).",
+    "customInstructions": "Custom instructions",
+    "customPlaceholder": "e.g. Reply in Kuwaiti dialect, keep it warm and short…",
+    "customHint": "Optional. Applied on top of the selected tone for this workspace only.",
+    "languages": "Reply languages",
+    "fallbackPolicy": "Safety fallback",
+    "fallbackPolicyNote": "Managed automatically by the server — low-confidence answers fall back to a safe reply.",
+    "readOnly": "Read-only — Company Admin can edit these settings.",
+    "save": "Save changes",
+    "saved": "Saved",
+    "errors": {
+      "title": "Couldn't load AI settings",
+      "description": "An error occurred while fetching the AI configuration."
     }
   }
 }
