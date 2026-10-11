@@ -14,6 +14,7 @@ import { aiApi, type AiConfig } from '@/lib/api';
 const TONES: Array<{ value: AiConfig['tone']; labelKey: string }> = [
   { value: 'professional', labelKey: 'tone.professional' },
   { value: 'friendly', labelKey: 'tone.friendly' },
+  { value: 'kuwaiti', labelKey: 'tone.kuwaiti' },
   { value: 'custom', labelKey: 'tone.custom' }
 ];
 
