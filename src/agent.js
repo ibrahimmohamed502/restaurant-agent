@@ -240,6 +240,7 @@ OUTPUT — strict JSON only, no markdown fences, no extra text:
 
 function TONE_INSTRUCTION_FOR(tone) {
   if (tone === 'friendly') return 'Warm, friendly and conversational (e.g. "هلا والله، حياك، تسلم").';
+  if (tone === 'kuwaiti') return 'Warm Kuwaiti/Gulf dialect for Arabic replies (هلا والله، حياك، تسلم، يعطيك العافية); warm and natural for English.';
   if (tone === 'custom') return 'Follow the CUSTOM INSTRUCTIONS below exactly.';
   return 'Clear, professional and helpful.';
 }
