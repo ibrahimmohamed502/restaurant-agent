@@ -17,6 +17,7 @@ import { verifyPassword, hashPassword } from '../../auth/passwords.js';
 import { lockedSeconds, recordFailedLogin, resetLoginAttempts } from '../../auth/ratelimit.js';
 import { createKnowledgeRouter } from './knowledge.js';
 import { createUsersRouter } from './users.js';
+import { createAiRouter } from './ai.js';
 import { getMetaEventQueue } from '../../queues/metaEvents.js';
 import { createDashboardRouter } from './dashboard.js';
 import { createConversationsRouter } from './conversations.js';
@@ -298,6 +299,9 @@ export function createApiV1Router(deps = {}) {
 
   /* --------------------- Stage 5: Team & Access (tenant users + roles) --------------------- */
   router.use('/users', createUsersRouter());
+
+  /* --------------------- Stage 6: AI config + reply sources --------------------- */
+  router.use('/ai', createAiRouter());
 
   // error envelope for anything unexpected
   router.use((err, _req, res, _next) => {
