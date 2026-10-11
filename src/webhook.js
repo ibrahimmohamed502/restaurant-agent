@@ -286,7 +286,7 @@ async function processMessage(event, ctx, deps = {}) {
   // Stage 6 Batch 2 — SHADOW retrieval (AFTER the reply is delivered).
   // Fire-and-forget + fail-safe: never blocks, never changes the reply path.
   void runShadowRetrieval({
-    text: message, tenantId: ctx.tenantId, brandId: ctx.brandId,
+    text, tenantId: ctx.tenantId, brandId: ctx.brandId,
     messageId: outboundRow?.id ?? null, conversationId
   }).catch(() => {});
 
