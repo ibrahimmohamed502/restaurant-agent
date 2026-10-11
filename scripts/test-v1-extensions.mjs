@@ -5,6 +5,7 @@
  */
 process.env.DATABASE_URL = 'postgres://stub:stub@127.0.0.1:1/stub';
 import express from 'express';
+import { readFileSync } from 'node:fs';
 
 const users = new Map([
   ['a@b.co', { id: 'u1', tenant_id: 't1', email: 'a@b.co', name: 'A', status: 'active' }]
@@ -90,6 +91,17 @@ check('channels SQL never touches provider_credentials', !chSql.includes('provid
 const chAnon = await call('/channels');
 check('GET /channels unauthenticated → 401', chAnon.status === 401 && chAnon.j.error.code === 'UNAUTHENTICATED');
 
+// users — /api/v1 envelope contract ({ data } on success, { error } on failure)
+// users handlers are tenant-scoped (static contract check on the shared handlers)
+const usersSrc = readFileSync(new URL('../src/routes/users.js', import.meta.url), 'utf8')
+  .replace(/\s+/g, ' ');
+check('users SQL is tenant-scoped', usersSrc.includes('WHERE u.tenant_id = $1') && usersSrc.includes('$2 AND tenant_id = $3'));
+
+const pwNoCsrf0 = await call('/users', { method: 'POST', body: { email: 'a@b.co', name: 'A', password: 'longer-password', roles: [] } });
+check('POST /users without CSRF → 403 (envelope router is CSRF-guarded)', pwNoCsrf0.status === 403 && pwNoCsrf0.j.error.code === 'CSRF_INVALID');
+const usersAnon = await call('/users');
+check('GET /users unauthenticated → 401 JSON (never HTML redirect)', usersAnon.status === 401 && usersAnon.j.error?.code === 'UNAUTHENTICATED');
+
 // password change
 const pwNoCsrf = await call('/auth/password', { method: 'POST', body: { currentPassword: 'a', newPassword: 'b' } });
 check('POST /auth/password without CSRF → 403 (protection enforced)', pwNoCsrf.status === 403 && pwNoCsrf.j.error.code === 'CSRF_INVALID');
@@ -107,6 +119,28 @@ check('password change updates the hash (no plaintext stored)', sqlLog.some((s) 
 
 const pwAnon = await call('/auth/password', { method: 'POST', cookie: bootCookie, csrf: bootCsrf, body: { currentPassword: 'a', newPassword: 'longer-password' } });
 check('POST /auth/password unauthenticated → 401', pwAnon.status === 401);
+
+// RBAC: a non-admin session is rejected by the v1 users router (server authoritative)
+const SUPERVISOR = { tenantId: 't1', user: { id: 'u2', email: 'sup@b.co', name: 'S' }, roles: ['Supervisor'], sessionId: 'sess-2' };
+const rbApp = express();
+rbApp.use(express.json());
+rbApp.use('/api/v1', createApiV1Router({
+  pool: db,
+  verifyPasswordFn: async (p, h) => p === h,
+  validateSessionFn: async (token) => (token === 'sup-session' ? SUPERVISOR : null),
+  revokeSessionFn: async () => {},
+  revokeOtherSessionsFn: async () => {},
+  lockedSecondsFn: async () => 0,
+  recordFailedLoginFn: async () => {},
+  resetLoginAttemptsFn: async () => {},
+  createSessionFn: async () => ({ token: 'x', expiresAt: new Date() })
+}));
+const rbServer = await new Promise((r) => { const s = rbApp.listen(0, '127.0.0.1', () => r(s)); });
+const rbBase = `http://127.0.0.1:${rbServer.address().port}/api/v1`;
+const rbUsers = await fetch(rbBase + '/users', { headers: { Cookie: 'lwc_session=sup-session' } });
+const rbBody = await rbUsers.json();
+check('Supervisor session → 403 FORBIDDEN on /users (RBAC authoritative)', rbUsers.status === 403 && rbBody.error?.code === 'FORBIDDEN');
+rbServer.close();
 
 console.log(`\n${failed === 0 ? '🎉' : '💥'} ${passed} passed, ${failed} failed\n`);
 app._server.close();
