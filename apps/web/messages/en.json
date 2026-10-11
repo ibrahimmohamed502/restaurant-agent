@@ -94,11 +94,13 @@
     "loadErrorDescription": "An error occurred while fetching conversations.",
     "retry": "Retry",
     "sources": "Reply sources",
-    "sections.menu": "Menu",
-    "sections.branches": "Branch",
-    "sections.faq": "FAQ",
-    "sections.policies": "Policy",
-    "sections.overview": "Brand info"
+    "sections": {
+      "menu": "Menu",
+      "branches": "Branch",
+      "faq": "FAQ",
+      "policies": "Policy",
+      "overview": "Brand info"
+    }
   },
   "dashboard": {
     "greeting": "Welcome back",
@@ -459,10 +461,11 @@
     "description": "Configure how the AI agent responds for your workspace",
     "agentName": "AI agent",
     "agentSubtitle": "Answers customer conversations from your published knowledge",
-    "tone": "Response tone",
-    "tone.professional": "Professional",
-    "tone.friendly": "Friendly",
-    "tone.custom": "Custom instructions",
+    "tone": {
+      "professional": "Professional",
+      "friendly": "Friendly",
+      "custom": "Custom instructions"
+    },
     "toneHint": "Use Custom instructions for a specific dialect (e.g. Kuwaiti).",
     "customInstructions": "Custom instructions",
     "customPlaceholder": "e.g. Reply in Kuwaiti dialect, keep it warm and short…",
