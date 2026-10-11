@@ -118,14 +118,15 @@ console.log('\n🧪 Stage 4.4.3 — webhook scoped-AI wiring\n');
   check('R3. invented URL/price rejected → safe fallback reply only', calls.length === 1 && !calls[0].m.includes('evil.example') && /confirmed information/i.test(calls[0].m));
 }
 
-// R4: KB-grounded URL + hours pass through untouched
+// R4: KB-grounded content passes through — but comment replies strip URL LINES
+// (Meta rejects public comment replies containing links; Messenger keeps them)
 {
   const calls = [];
   const ctx = makeCtx();
   ctx.metaClient.replyToComment = async (id, m) => { calls.push({ id, m }); return { id: 'r1' }; };
-  const d = { ...baseDeps(), analyze: async () => ({ reply: 'Hours: 8:00 AM - 11:30 PM weekdays. Menu: https://link.lifewithcacao.com/', intent: 'hours', inScope: true, lang: 'en', escalate: false, _knowledge: { hours: '8:00 AM – 11:30 PM weekdays', menuUrl: 'https://link.lifewithcacao.com/' } }) };
+  const d = { ...baseDeps(), analyze: async () => ({ reply: 'Hours: 8:00 AM - 11:30 PM weekdays.\nMenu: https://link.lifewithcacao.com/', intent: 'hours', inScope: true, lang: 'en', escalate: false, _knowledge: { hours: '8:00 AM – 11:30 PM weekdays', menuUrl: 'https://link.lifewithcacao.com/' } }) };
   await processComment({ comment_id: 'cR4', message: 'hi', from: { id: 'u1' } }, ctx, d);
-  check('R4. KB-grounded URL passes through unchanged', calls.length === 1 && calls[0].m.includes('https://link.lifewithcacao.com/'));
+  check('R4. KB-grounded facts kept, URL line stripped for comments', calls.length === 1 && calls[0].m.includes('8:00 AM') && !calls[0].m.includes('https://'));
 }
 
 // O: ctx.pageId self-skip
