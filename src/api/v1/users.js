@@ -30,20 +30,20 @@ export function createUsersRouter() {
   const router = express.Router();
   const admin = requireV1Role('Company Admin');
 
-  // The shared handlers return RAW bodies (legacy dashboard contract). The /api/v1
-  // contract wraps success in { data } and errors in { error } — adapt here so the
-  // legacy routes stay byte-for-byte unchanged.
+  // Mounted under /users by the API router. The shared handlers return RAW
+  // bodies (legacy dashboard contract); wrap success in { data } / keep
+  // { error } as-is — scoped to this router only.
   router.use((req, res, next) => {
     const json = res.json.bind(res);
     res.json = (body) => (res.statusCode < 400 ? json({ data: body }) : json(body));
     next();
   });
 
-  router.get('/users', requireV1Auth, adaptAuth, admin, listUsers);
-  router.post('/users', requireV1Auth, adaptAuth, admin, createUser);
-  router.post('/users/:id/status', requireV1Auth, adaptAuth, admin, setUserStatus);
-  router.post('/users/:id/roles', requireV1Auth, adaptAuth, admin, setUserRoles);
-  router.delete('/users/:id', requireV1Auth, adaptAuth, admin, deleteUser);
+  router.get('/', requireV1Auth, adaptAuth, admin, listUsers);
+  router.post('/', requireV1Auth, adaptAuth, admin, createUser);
+  router.post('/:id/status', requireV1Auth, adaptAuth, admin, setUserStatus);
+  router.post('/:id/roles', requireV1Auth, adaptAuth, admin, setUserRoles);
+  router.delete('/:id', requireV1Auth, adaptAuth, admin, deleteUser);
 
   return router;
 }
