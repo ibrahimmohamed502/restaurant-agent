@@ -45,6 +45,8 @@ services:
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
       DATA_DIR: ${DATA_DIR:-/tmp/lwc-data}
       WEBHOOK_QUEUE_MODE: ${WEBHOOK_QUEUE_MODE:-inline}
+      # Stage 6: knowledge retrieval mode (off | shadow | active)
+      KNOWLEDGE_RETRIEVAL_MODE: ${KNOWLEDGE_RETRIEVAL_MODE:-shadow}
       # Stage 5: the public tunnel keeps targeting this service; browser UI
       # routes are proxied to the Next.js web service (hostname unchanged, so
       # the Meta webhook callback keeps working). /webhook and /api/* stay here.
