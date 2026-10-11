@@ -13,7 +13,9 @@ import { getActiveIndexVersion } from './knowledgeIndexing.js';
 import { getPublishedKnowledge } from './knowledge.js';
 
 const TOP_K = Number(process.env.KNOWLEDGE_RETRIEVAL_TOPK || 3);
-const MIN_SCORE = Number(process.env.KNOWLEDGE_RETRIEVAL_MIN_SCORE || 0.3);
+// 0.6 separates valid LWC questions (0.62–0.84 observed) from off-topic
+// questions (0.57 observed) without dropping valid cases.
+const MIN_SCORE = Number(process.env.KNOWLEDGE_RETRIEVAL_MIN_SCORE || 0.6);
 
 export const RETRIEVAL_MODES = ['off', 'shadow', 'active'];
 export const RETRIEVAL_MODE = RETRIEVAL_MODES.includes(process.env.KNOWLEDGE_RETRIEVAL_MODE)
