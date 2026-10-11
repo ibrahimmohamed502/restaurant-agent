@@ -113,6 +113,23 @@ export async function setUserRoles(req, res) {
   }
 }
 
+/* --------------------- DELETE /dashboard/api/users/:id --------------------- */
+// Hard-delete. Dependent rows are handled by FK actions: sessions/user_roles/
+// team_members/notifications CASCADE; messages/notes/assignments/audit SET NULL.
+export async function deleteUser(req, res) {
+  if (req.params.id === req.auth.user.id) {
+    return res.status(400).json({ error: 'you cannot delete your own account' });
+  }
+  const { rows } = await pool.query(
+    `DELETE FROM users WHERE id = $1 AND tenant_id = $2 RETURNING id, email`,
+    [req.params.id, req.auth.tenantId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'user not found' });
+
+  audit({ tenantId: req.auth.tenantId, actorUserId: req.auth.user.id, action: 'users.delete', objectType: 'user', objectId: rows[0].id, ip: req.ip, metadata: { email: rows[0].email } });
+  res.json({ ok: true, id: rows[0].id });
+}
+
 /* ------------------------- legacy dashboard router ------------------------- */
 
 export const usersRouter = express.Router();
@@ -121,3 +138,4 @@ usersRouter.get('/dashboard/api/users', requireAuth, ADMIN, listUsers);
 usersRouter.post('/dashboard/api/users', requireAuth, ADMIN, createUser);
 usersRouter.post('/dashboard/api/users/:id/status', requireAuth, ADMIN, setUserStatus);
 usersRouter.post('/dashboard/api/users/:id/roles', requireAuth, ADMIN, setUserRoles);
+usersRouter.delete('/dashboard/api/users/:id', requireAuth, ADMIN, deleteUser);
