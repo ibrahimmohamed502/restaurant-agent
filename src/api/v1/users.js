@@ -6,7 +6,8 @@
  * tunnel reaches them (the UI proxy owns /dashboard/* for the Next.js app).
  *
  * Auth uses the /api/v1 session contract (JSON 401/403 — never an HTML
- * redirect) so the frontend receives proper error envelopes.
+ * redirect) so the frontend receives proper error envelopes. Success bodies are
+ * wrapped in { data } to match the /api/v1 contract; errors keep { error }.
  */
 import express from 'express';
 import { requireV1Auth, requireV1Role } from './index.js';
@@ -28,6 +29,15 @@ function adaptAuth(req, _res, next) {
 export function createUsersRouter() {
   const router = express.Router();
   const admin = requireV1Role('Company Admin');
+
+  // The shared handlers return RAW bodies (legacy dashboard contract). The /api/v1
+  // contract wraps success in { data } and errors in { error } — adapt here so the
+  // legacy routes stay byte-for-byte unchanged.
+  router.use((req, res, next) => {
+    const json = res.json.bind(res);
+    res.json = (body) => (res.statusCode < 400 ? json({ data: body }) : json(body));
+    next();
+  });
 
   router.get('/users', requireV1Auth, adaptAuth, admin, listUsers);
   router.post('/users', requireV1Auth, adaptAuth, admin, createUser);
