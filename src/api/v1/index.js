@@ -297,7 +297,7 @@ export function createApiV1Router(deps = {}) {
   router.use('/knowledge', createKnowledgeRouter({ pool }));
 
   /* --------------------- Stage 5: Team & Access (tenant users + roles) --------------------- */
-  router.use(createUsersRouter());
+  router.use('/users', createUsersRouter());
 
   // error envelope for anything unexpected
   router.use((err, _req, res, _next) => {
