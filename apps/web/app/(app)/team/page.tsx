@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { useTranslations } from 'next-intl';
-import { Pencil, Plus, ShieldCheck, Trash2, UserPlus, Users } from 'lucide-react';
+import { Pencil, Plus, ShieldCheck, Trash2, UserPlus, Users, XCircle } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -97,6 +97,17 @@ export default function TeamPage() {
     }
   };
 
+  const removeUser = async (u: TeamUser) => {
+    const ok = window.confirm(t('confirmDelete', { name: u.name, email: u.email }));
+    if (!ok) return;
+    try {
+      await usersApi.remove(u.id);
+      setUsers((list) => (list ?? []).filter((x) => x.id !== u.id));
+    } catch (err: unknown) {
+      window.alert((err as { message?: string })?.message ?? t('errors.failed'));
+    }
+  };
+
   if (loading) {
     return (
       <div className="space-y-5">
@@ -186,6 +197,9 @@ export default function TeamPage() {
                       </Button>
                       <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs text-destructive" onClick={() => toggleStatus(u)}>
                         <Trash2 className="h-3 w-3" aria-hidden /> {u.status === 'active' ? t('disable') : t('enable')}
+                      </Button>
+                      <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs text-destructive" onClick={() => removeUser(u)}>
+                        <XCircle className="h-3 w-3" aria-hidden /> {t('delete')}
                       </Button>
                     </span>
                   </td>
