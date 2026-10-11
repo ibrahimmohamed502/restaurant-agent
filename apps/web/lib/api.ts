@@ -122,7 +122,7 @@ export const channelsApi = {
 export type AiConfig = {
   agentName: string;
   brandId: string | null;
-  tone: 'professional' | 'friendly' | 'custom';
+  tone: 'professional' | 'friendly' | 'kuwaiti' | 'custom';
   languages: string[];
   rules: Record<string, unknown>;
   workingHours: Record<string, unknown>;
