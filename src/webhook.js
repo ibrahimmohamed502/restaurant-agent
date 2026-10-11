@@ -3,6 +3,7 @@ import express from 'express';
 import { buildRouteContext } from './services/routeContext.js';
 import { analyzeAndDraft } from './agent.js';
 import { enforceGrounding, localize, NOT_CONFIRMED_REPLY } from './services/grounding.js';
+import { runShadowRetrieval } from './services/shadowRetrieval.js';
 import { notifyStaff } from './notify.js';
 import { logEvent, addEscalation } from './db.js';
 import { enabled } from './db/pg.js';
@@ -282,6 +283,13 @@ async function processMessage(event, ctx, deps = {}) {
   }
   mark(msg.mid, psid);
 
+  // Stage 6 Batch 2 — SHADOW retrieval (AFTER the reply is delivered).
+  // Fire-and-forget + fail-safe: never blocks, never changes the reply path.
+  void runShadowRetrieval({
+    text: message, tenantId: ctx.tenantId, brandId: ctx.brandId,
+    messageId: outboundRow?.id ?? null, conversationId
+  }).catch(() => {});
+
   console.log(
     `✅ DM replied to ${psid} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
   );
@@ -441,6 +449,13 @@ async function processComment(value, ctx, deps = {}) {
   console.log(
     `✅ Replied to ${commentId} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
   );
+
+  // Stage 6 Batch 2 — SHADOW retrieval (AFTER the reply is delivered).
+  // Fire-and-forget + fail-safe: never blocks, never changes the reply path.
+  void runShadowRetrieval({
+    text: message, tenantId: ctx.tenantId, brandId: ctx.brandId,
+    messageId: outboundRow?.id ?? null, conversationId
+  }).catch(() => {});
 
   // ---- Dashboard activity log ----
   logEvt({
