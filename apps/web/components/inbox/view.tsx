@@ -6,6 +6,8 @@ import { useTranslations } from 'next-intl';
 import { Inbox as InboxIcon, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/states';
+import { ReplySources } from './reply-sources';
+import { authApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 type Conversation = {
@@ -20,7 +22,7 @@ type Conversation = {
 };
 type Detail = {
   conversation: { id: string; customerName: string | null; provider: string | null; channelName: string | null; state: string | null; language: string | null; createdAt: string | null };
-  messages: Array<{ direction: string; senderType: string; text: string | null; createdAt: string | null }>;
+  messages: Array<{ id?: string; direction: string; senderType: string; text: string | null; createdAt: string | null }>;
 };
 
 function relTime(iso: string | null): string {
@@ -43,6 +45,7 @@ export function InboxView() {
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const [isAdmin, setIsAdmin] = React.useState(false);
 
   React.useEffect(() => {
     let alive = true;
@@ -55,6 +58,8 @@ export function InboxView() {
         if (!alive) return;
         setItems(body.data ?? []);
         setError(null);
+        // Stage 6: reply sources are admin-only (server enforces too)
+        authApi.me().then((me) => { if (alive) setIsAdmin((me?.roles ?? []).includes('Company Admin')); }).catch(() => {});
       } catch {
         if (alive) setError('failed');
       } finally {
@@ -168,6 +173,8 @@ export function InboxView() {
                   <div className={cn('max-w-[80%] rounded-lg px-3 py-2 text-[13px] shadow-sm', m.direction === 'inbound' ? 'bg-muted text-foreground' : 'bg-primary text-primary-foreground')}>
                     <p className="whitespace-pre-wrap">{m.text ?? ''}</p>
                     <p className="mt-1 text-2xs opacity-70">{relTime(m.createdAt)}</p>
+                    {/* Stage 6: admin-only reply sources (outbound messages only) */}
+                    {m.direction !== 'inbound' ? <ReplySources messageId={m.id} canView={isAdmin} /> : null}
                   </div>
                 </li>
               ))}
