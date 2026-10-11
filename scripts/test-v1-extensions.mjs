@@ -120,6 +120,20 @@ check('password change updates the hash (no plaintext stored)', sqlLog.some((s) 
 const pwAnon = await call('/auth/password', { method: 'POST', cookie: bootCookie, csrf: bootCsrf, body: { currentPassword: 'a', newPassword: 'longer-password' } });
 check('POST /auth/password unauthenticated → 401', pwAnon.status === 401);
 
+// delete user — guards + envelope
+const delNoCsrf = await call('/users/u9', { method: 'DELETE' });
+check('DELETE /users/:id without CSRF → 403 (protection enforced)', delNoCsrf.status === 403 && delNoCsrf.j.error.code === 'CSRF_INVALID');
+
+const delSelf = await asAdmin('/users/u1', { method: 'DELETE' });
+check('deleting your OWN account → 400 (guarded)', delSelf.status === 400 && /own account/i.test(String(delSelf.j.error ?? '')));
+
+const delAnon = await call('/users/u9', { method: 'DELETE', cookie: bootCookie, csrf: bootCsrf });
+check('DELETE unauthenticated → 401 JSON', delAnon.status === 401 && delAnon.j.error.code === 'UNAUTHENTICATED');
+
+// delete handler is tenant-scoped + hard-delete (static contract check)
+const usersSrc2 = readFileSync(new URL('../src/routes/users.js', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+check('delete is tenant-scoped hard delete', usersSrc2.includes('DELETE FROM users WHERE id = $1 AND tenant_id = $2'));
+
 // RBAC: a non-admin session is rejected by the v1 users router (server authoritative)
 const SUPERVISOR = { tenantId: 't1', user: { id: 'u2', email: 'sup@b.co', name: 'S' }, roles: ['Supervisor'], sessionId: 'sess-2' };
 const rbApp = express();
@@ -139,7 +153,10 @@ const rbServer = await new Promise((r) => { const s = rbApp.listen(0, '127.0.0.1
 const rbBase = `http://127.0.0.1:${rbServer.address().port}/api/v1`;
 const rbUsers = await fetch(rbBase + '/users', { headers: { Cookie: 'lwc_session=sup-session' } });
 const rbBody = await rbUsers.json();
-check('Supervisor session → 403 FORBIDDEN on /users (RBAC authoritative)', rbUsers.status === 403 && rbBody.error?.code === 'FORBIDDEN');
+check(
+  'Supervisor session → 403 FORBIDDEN on /users (RBAC authoritative)',
+  rbUsers.status === 403 && rbBody.error?.code === 'FORBIDDEN'
+);
 rbServer.close();
 
 console.log(`\n${failed === 0 ? '🎉' : '💥'} ${passed} passed, ${failed} failed\n`);
