@@ -79,7 +79,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const api = {
   get: <T>(path: string) => request<T>('GET', path),
-  post: <T>(path: string, body?: unknown) => request<T>('POST', path, body)
+  post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
+  del: <T>(path: string) => request<T>('DELETE', path)
 };
 
 export type MeResponse = {
@@ -134,5 +135,6 @@ export const usersApi = {
   setStatus: (id: string, status: 'active' | 'disabled') =>
     api.post<TeamUser>(`/users/${id}/status`, { status }),
   setRoles: (id: string, roles: string[]) =>
-    api.post<{ ok: true; roles: string[] }>(`/users/${id}/roles`, { roles })
+    api.post<{ ok: true; roles: string[] }>(`/users/${id}/roles`, { roles }),
+  remove: (id: string) => api.del<{ ok: true; id: string }>(`/users/${id}`)
 };
