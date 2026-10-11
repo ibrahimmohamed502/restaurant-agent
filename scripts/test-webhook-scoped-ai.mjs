@@ -2,7 +2,10 @@
  * Stage 4.4.3 — webhook scoped-AI wiring tests (mocked, zero DB/LLM/network).
  * Run: node scripts/test-webhook-scoped-ai.mjs
  */
-import { processComment, processMessage, handlePayload } from '../src/webhook.js';
+// Pin the retrieval mode to shadow so the mocked analyze path is exercised
+// regardless of the environment the tests run in.
+process.env.KNOWLEDGE_RETRIEVAL_MODE = 'shadow';
+const { processComment, processMessage, handlePayload } = await import('../src/webhook.js');
 
 let passed = 0, failed = 0;
 function check(name, ok) { if (ok) { passed++; console.log(`  ✅ ${name}`); } else { failed++; console.log(`  ❌ ${name}`); } }
