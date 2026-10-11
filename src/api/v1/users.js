@@ -11,7 +11,7 @@
  */
 import express from 'express';
 import { requireV1Auth, requireV1Role } from './index.js';
-import { listUsers, createUser, setUserStatus, setUserRoles } from '../../routes/users.js';
+import { listUsers, createUser, setUserStatus, setUserRoles, deleteUser } from '../../routes/users.js';
 
 /** Adapts the v1 session context (req.v1) to the shared handler contract (req.auth). */
 function adaptAuth(req, _res, next) {
@@ -43,6 +43,7 @@ export function createUsersRouter() {
   router.post('/users', requireV1Auth, adaptAuth, admin, createUser);
   router.post('/users/:id/status', requireV1Auth, adaptAuth, admin, setUserStatus);
   router.post('/users/:id/roles', requireV1Auth, adaptAuth, admin, setUserRoles);
+  router.delete('/users/:id', requireV1Auth, adaptAuth, admin, deleteUser);
 
   return router;
 }
