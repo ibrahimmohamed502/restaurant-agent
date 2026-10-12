@@ -1,0 +1,31 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "LWC SaaS API", "version": "1.0.0", "description": "Stage 5.0 /api/v1 foundation" },
+  "servers": [{ "url": "/api/v1" }],
+  "security": [{ "sessionCookie": [] }],
+  "components": {
+    "securitySchemes": { "sessionCookie": { "type": "apiKey", "in": "cookie", "name": "lwc_session" } },
+    "schemas": {
+      "Error": { "type": "object", "properties": { "error": { "type": "object", "properties": { "code": { "type": "string" }, "message": { "type": "string" }, "details": { "type": "object", "additionalProperties": true } }, "required": ["code", "message"] } } },
+      "User": { "type": "object", "properties": { "id": { "type": "string" }, "email": { "type": "string" }, "name": { "type": ["string", "null"] }, "roles": { "type": "array", "items": { "type": "string" } } } }
+    }
+  },
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "summary": "Login with email + password",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["email", "password"], "properties": { "email": { "type": "string", "format": "email" }, "password": { "type": "string", "minLength": 1, "maxLength": 200 } } } } } },
+        "responses": {
+          "200": { "description": "Session established" },
+          "401": { "description": "Invalid credentials" },
+          "422": { "description": "Validation error" },
+          "429": { "description": "Rate limited" }
+        }
+      }
+    },
+    "/auth/logout": { "post": { "summary": "Revoke current session", "responses": { "200": { "description": "Logged out" } } } },
+    "/auth/me": { "get": { "summary": "Current authenticated user + tenant", "responses": { "200": { "description": "OK" }, "401": { "description": "Unauthenticated" } } } },
+    "/tenants/current": { "get": { "summary": "Session tenant (tenant context is never client-supplied)", "responses": { "200": { "description": "OK" }, "403": { "description": "Tenant required" } } } },
+    "/_health": { "get": { "summary": "API health", "responses": { "200": { "description": "OK" } } } }
+  }
+}

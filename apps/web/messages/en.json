@@ -1,0 +1,553 @@
+{
+  "common": {
+    "appName": "Customer Engagement Platform",
+    "company": "Life with Cacao",
+    "loading": "Loading…",
+    "retry": "Retry",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "search": "Search",
+    "logout": "Sign out",
+    "profile": "Profile",
+    "language": "Language",
+    "theme": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "comingSoon": "Coming soon",
+    "platformName": "LWC Platform",
+    "close": "Close",
+    "back": "Back",
+    "edit": "Edit"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "inbox": "Unified Inbox",
+    "customers": "Customers",
+    "companies": "Companies",
+    "brands": "Brands",
+    "channels": "Channels",
+    "ai": "AI",
+    "knowledge": "Knowledge Base",
+    "team": "Team & Access",
+    "integrations": "Integrations",
+    "audit": "Audit Logs",
+    "settings": "Settings"
+  },
+  "navGroups": {
+    "overview": "Overview",
+    "engagement": "Engagement",
+    "organization": "Organization",
+    "configuration": "Configuration"
+  },
+  "auth": {
+    "loginTitle": "Sign in",
+    "loginSubtitle": "Enter your credentials to access the admin console",
+    "email": "Email",
+    "password": "Password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "submit": "Sign in",
+    "signingIn": "Signing in…",
+    "invalidCredentials": "Invalid email or password",
+    "rateLimited": "Too many attempts. Please try again later.",
+    "unexpected": "Something went wrong. Please try again.",
+    "csrfError": "Security check failed. Please try again.",
+    "emailRequired": "Email is required",
+    "emailInvalid": "Invalid email format",
+    "passwordRequired": "Password is required",
+    "changePassword": "Change password",
+    "changePasswordHint": "You will stay signed in on this device; other devices will be signed out.",
+    "currentPassword": "Current password",
+    "newPassword": "New password",
+    "confirmPassword": "Confirm new password",
+    "passwordTooShort": "New password must be at least 8 characters.",
+    "passwordMismatch": "The two new passwords do not match."
+  },
+  "states": {
+    "emptyTitle": "No data",
+    "emptyDescription": "Content will appear here once available.",
+    "errorTitle": "Couldn't load content",
+    "errorDescription": "An error occurred while fetching data. Please try again.",
+    "unauthorizedTitle": "You don't have access",
+    "unauthorizedDescription": "This page requires elevated permissions.",
+    "notFoundTitle": "Page not found",
+    "notFoundDescription": "The link you opened is incorrect or has moved."
+  },
+  "shell": {
+    "collapse": "Collapse sidebar",
+    "expand": "Expand sidebar",
+    "menu": "Menu",
+    "company": "Company",
+    "brand": "Brand",
+    "superAdmin": "Super admin"
+  },
+  "placeholder": "This module is on the implementation roadmap.",
+  "inbox": {
+    "subtitle": "All customer conversations in one place",
+    "comment": "Comment",
+    "dm": "Messenger",
+    "selectConversation": "Select a conversation to view its messages",
+    "emptyTitle": "No conversations yet",
+    "emptyDescription": "New comments and messages will appear here automatically.",
+    "loadError": "Could not load conversations",
+    "loadErrorDescription": "An error occurred while fetching conversations.",
+    "retry": "Retry",
+    "sources": "Reply sources",
+    "sections": {
+      "menu": "Menu",
+      "branches": "Branch",
+      "faq": "FAQ",
+      "policies": "Policy",
+      "overview": "Brand info"
+    },
+    "filters": "Filters",
+    "filter": {
+      "all": "All",
+      "needs_human": "Needs Human",
+      "assigned_me": "Assigned to me",
+      "resolved": "Resolved"
+    },
+    "state": {
+      "AI_ACTIVE": "AI Active",
+      "HUMAN_REQUIRED": "Human Required",
+      "QUEUED": "Queued",
+      "ASSIGNED": "Assigned",
+      "HUMAN_ACTIVE": "Human Active",
+      "RESOLVED": "Resolved"
+    },
+    "needsHuman": "Needs Human",
+    "aiHandling": "AI Handling",
+    "timeline": "Timeline",
+    "notes": "Notes",
+    "notesStaffOnly": "Internal notes — staff only, never sent to the customer",
+    "notePlaceholder": "Add an internal note for the team…",
+    "notesEmpty": "No internal notes yet",
+    "noteFailed": "Failed to save note",
+    "addNote": "Add note",
+    "unknownAuthor": "Unknown author",
+    "deleteNote": "Delete note",
+    "requestHuman": "Request Human",
+    "assignToMe": "Assign to me",
+    "assign": "Assign",
+    "unassign": "Unassign",
+    "markResolved": "Mark Resolved",
+    "resumeAi": "Resume AI",
+    "conflict": "Conversation state changed — please reload and try again",
+    "actionFailed": "Action failed",
+    "requestHumanTitle": "Request Human Handoff",
+    "requestHumanDescription": "This will stop the AI and queue the conversation for a human agent.",
+    "assignTitle": "Assign Conversation",
+    "assignDescription": "Select a team member to handle this conversation.",
+    "resumeAiTitle": "Resume AI Handling",
+    "resumeAiDescription": "The AI will resume handling this conversation. This action requires a reason.",
+    "handoffReasonPlaceholder": "Why does this conversation need a human?",
+    "claimReason": "Self-assigned from queue",
+    "assignReason": "Assigned by supervisor",
+    "unassignReason": "Unassigned by supervisor",
+    "resumeReasonPlaceholder": "Why should the AI resume handling this conversation?",
+    "confirmHandoff": "Confirm Handoff",
+    "confirmResume": "Confirm Resume",
+    "noEligibleMembers": "No eligible team members found",
+    "humanReply": "Human Reply",
+    "humanReplyPlaceholder": "Type your reply to the customer…",
+    "humanReplyHint": "Sent directly to the customer via the original channel (Messenger or Facebook comment).",
+    "send": "Send",
+    "sending": "Sending…",
+    "replySent": "Reply sent successfully",
+    "replyFailed": "Failed to send reply",
+    "duplicateIgnored": "Duplicate reply ignored",
+    "failedRetry": "Retry",
+    "sender": {
+      "ai": "AI",
+      "employee": "Employee"
+    },
+    "emptyFilter": "No conversations match this filter"
+  },
+  "dashboard": {
+    "greeting": "Welcome back",
+    "overview": "Overview",
+    "conversations": "Conversations",
+    "messages": "Messages",
+    "activeChannels": "Active channels",
+    "escalations": "Escalations",
+    "allTime": "All time",
+    "inboundOutbound": "Inbound + outbound",
+    "routedChannels": "Meta routing",
+    "needsAttention": "Needs attention",
+    "recentConversations": "Recent conversations",
+    "latestActivity": "Latest activity across channels",
+    "viewAll": "View all",
+    "platformStatus": "Platform status",
+    "verifiedState": "Verified from your live system",
+    "knowledge": "Knowledge",
+    "currentBrand": "Life with Cacao",
+    "published": "Published",
+    "notPublished": "Not published yet",
+    "manage": "Manage",
+    "quickActions": "Quick actions",
+    "openInbox": "Open Inbox",
+    "manageKnowledge": "Manage Knowledge",
+    "viewChannels": "View Channels",
+    "manageTeam": "Manage Team",
+    "aiAgent": "AI agent",
+    "aiAgentActive": "Your brand agent is active and answering Meta events.",
+    "noConversations": "No conversations yet. New comments and messages will appear here.",
+    "loadError": "Could not load dashboard",
+    "loadErrorDescription": "An error occurred while fetching live data.",
+    "signInRequired": "Sign in required",
+    "signInDescription": "Your session expired. Sign in to view the dashboard.",
+    "retry": "Retry",
+    "welcome": "Here's what's happening across your customer conversations.",
+    "knowledgeVersion": "Knowledge v{version}",
+    "queueWorker": "Queue worker",
+    "queueFailed": "{count} failed",
+    "dbScoped": "DB-scoped channel",
+    "notConfigured": "Not configured",
+    "none": "None",
+    "statusHealthy": "Healthy",
+    "statusAttention": "Attention",
+    "statusUnavailable": "Unavailable",
+    "dm": "DM",
+    "comment": "Comment"
+  },
+  "dashboardFoundation": {
+    "overview": "Overview",
+    "description": "Your customer engagement overview will appear here once enabled.",
+    "gettingStarted": "Getting started",
+    "publishTitle": "Publish your brand knowledge",
+    "publishBody": "Menu, branches, FAQs and policies.",
+    "replyTitle": "Reply from the Unified Inbox",
+    "replyBody": "Comments and Messenger messages in one place.",
+    "connectTitle": "Connect another Meta page",
+    "connectBody": "Add routing channels without code deploys.",
+    "open": "Open",
+    "inboxTitle": "Unified Inbox",
+    "inboxBody": "Conversation metrics arrive with the inbox module.",
+    "knowledgeTitle": "Knowledge coverage",
+    "knowledgeBody": "Track published versions across your brands."
+  },
+  "knowledge": {
+    "description": "Manage brand knowledge: menu, branches, FAQs and policies",
+    "back": "Back",
+    "backToInbox": "Back to Unified Inbox",
+    "errors": {
+      "title": "Couldn't load the knowledge base",
+      "description": "An error occurred while fetching data."
+    },
+    "empty": {
+      "title": "No published knowledge yet",
+      "description": "Create a draft to start managing content."
+    },
+    "status": {
+      "editingDraft": "Editing draft",
+      "viewingPublished": "Viewing published",
+      "validationHint": "Fix validation issues first"
+    },
+    "sections": {
+      "overview": "Overview",
+      "menu": "Menu",
+      "branches": "Branches",
+      "faq": "FAQs",
+      "policies": "Policies & Service",
+      "sources": "Sources & Versions"
+    },
+    "actions": {
+      "createDraft": "Create draft",
+      "draftReady": "Draft ready",
+      "saveDraft": "Save draft",
+      "validate": "Validate",
+      "preview": "Preview",
+      "publish": "Publish",
+      "discardDraft": "Discard draft"
+    },
+    "toast": {
+      "saved": "Draft saved",
+      "savedWithIssues": "Saved — validation issues remain",
+      "saveFailed": "Save failed",
+      "draftFailed": "Couldn't create the draft",
+      "validateOk": "Validation passed",
+      "validateIssues": "{count} issues need attention",
+      "validateFailed": "Validation failed",
+      "previewOk": "Draft is ready to publish",
+      "previewIssues": "Review validation issues before publishing",
+      "previewFailed": "Preview failed",
+      "published": "Published — v{version}",
+      "publishFailed": "Publish failed",
+      "discarded": "Draft discarded",
+      "discardFailed": "Discard failed"
+    },
+    "dialog": {
+      "publish": {
+        "title": "Publish new version?",
+        "description": "This version becomes the active knowledge for the AI assistant. The previous version stays in history.",
+        "confirm": "Confirm publish",
+        "publishing": "Publishing…",
+        "reviewSummary": "Added {added} · Modified {modified} · Removed {removed}",
+        "previewHint": "Use Preview before publishing for the full review."
+      },
+      "discard": {
+        "title": "Discard draft?",
+        "description": "All unpublished changes will be abandoned. Current published knowledge is not affected."
+      },
+      "unsaved": {
+        "title": "Unsaved changes",
+        "description": "You have unsaved edits. Save before continuing?",
+        "confirm": "Save and continue",
+        "cancel": "Discard changes"
+      }
+    },
+    "menu": {
+      "search": "Search the menu…",
+      "addCategory": "Add category",
+      "promptNewCategory": "New category name",
+      "confirmDeleteCategory": "Delete category \"{name}\" and all its items?",
+      "promptNewSubcategory": "New subcategory name",
+      "confirmDeleteSubcategory": "Delete \"{name}\" and all its items?",
+      "addSubcategory": "Subcategory",
+      "deleteCategory": "Delete category",
+      "deleteSubcategory": "Delete",
+      "addItem": "Add item",
+      "noCategories": "No categories yet. Start by adding one like «Breakfast».",
+      "noMatches": "No matching items.",
+      "counter": "{items} items · {categories} categories",
+      "editItem": "Edit item",
+      "newItem": "Add item",
+      "deleteItem": "Delete",
+      "field": {
+        "nameEn": "Name (English)",
+        "nameAr": "Name (Arabic)",
+        "desc": "Description",
+        "price": "Price (KD)",
+        "priceHint": "Example: 4.650"
+      },
+      "currency": "KD",
+      "priceError": "Enter a valid price, e.g. 4.650",
+      "categories": "Categories"
+    },
+    "branches": {
+      "count": "{count} branches",
+      "add": "Add branch",
+      "empty": "No branches yet. Add your first branch.",
+      "edit": "Edit",
+      "delete": "Delete",
+      "editTitle": "Edit branch",
+      "newTitle": "Add branch",
+      "field": {
+        "name": "Branch name",
+        "area": "Area",
+        "timings": "Opening hours",
+        "timingsHint": "Example: 8:00 AM – 11:30 PM",
+        "maps": "Map link",
+        "phone": "Phone"
+      },
+      "error": {
+        "name": "Name is required",
+        "maps": "Invalid link",
+        "phone": "Invalid phone number",
+        "duplicate": "A branch with this name already exists"
+      },
+      "confirmDelete": "Delete branch \"{name}\"?"
+    },
+    "faq": {
+      "empty": "No FAQs yet.",
+      "add": "Add question",
+      "count": "{count} questions",
+      "untitled": "Untitled question",
+      "field": {
+        "question": "Question",
+        "answer": "Answer"
+      },
+      "edit": "Edit",
+      "delete": "Delete"
+    },
+    "policies": {
+      "meatSources": "Meat sources",
+      "agentNotes": "Operational notes for the assistant"
+    },
+    "sources": {
+      "title": "Knowledge source",
+      "kind": "Type",
+      "versionCount": "Versions",
+      "currentVersion": "Current version",
+      "history": "Publish history",
+      "noHistory": "Not published yet."
+    },
+    "overview": {
+      "publishedNote": "You are viewing the published version. Create a draft to make changes.",
+      "group": {
+        "brand": "Brand information",
+        "menu": "Menu information",
+        "service": "Service information",
+        "reservations": "Reservations"
+      },
+      "field": {
+        "restaurantName": "Restaurant / brand name",
+        "about": "About the restaurant",
+        "menuUrl": "Menu link",
+        "currency": "Currency",
+        "halal": "Halal information",
+        "delivery": "Delivery / service",
+        "location": "Location",
+        "reservations": "Reservations policy"
+      }
+    },
+    "validation": {
+      "oneProblem": "1 issue",
+      "problems": "{count} issues",
+      "hide": "Hide",
+      "show": "Show",
+      "jump": "Go to",
+      "attention": "Validation needs attention"
+    },
+    "sectionLabel": {
+      "overview": "Overview",
+      "menu": "Menu",
+      "branches": "Branches",
+      "faq": "FAQs",
+      "policies": "Policies",
+      "sources": "Sources",
+      "root": "General"
+    },
+    "review": {
+      "empty": "No changes compared to the published version.",
+      "added": "Added",
+      "modified": "Modified",
+      "removed": "Removed"
+    },
+    "preview": {
+      "categories": "Menu categories",
+      "subcategories": "Subcategories",
+      "branches": "Branches",
+      "baseVersion": "Base version"
+    },
+    "statusBar": {
+      "draftUnsaved": "Draft · Unsaved changes",
+      "saving": "Saving…",
+      "saved": "Draft saved",
+      "saveFailed": "Save failed",
+      "draft": "Draft",
+      "published": "Published · v{version}",
+      "noPublished": "No published version",
+      "oneIssue": "One issue needs your attention",
+      "issues": "{count} issues need your attention"
+    },
+    "common": {
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "close": "Close"
+    }
+  },
+  "team": {
+    "nav": "Team & Access",
+    "description": "Manage who can access the console and what they can do",
+    "addUser": "Add user",
+    "editTitle": "Edit permissions",
+    "save": "Save",
+    "edit": "Edit",
+    "disable": "Disable",
+    "enable": "Enable",
+    "statusActive": "Active",
+    "statusDisabled": "Disabled",
+    "password": "Password",
+    "passwordHint": "At least 8 characters.",
+    "rolesHint": "Company Admin: full access · Supervisor: edits drafts · Agent: read-only.",
+    "rbacNote": "Permissions are enforced on the server — Company Admin only.",
+    "confirmDisable": "Disable \"{name}\"? They will be signed out immediately.",
+    "confirmEnable": "Re-enable \"{name}\"?",
+    "empty": {
+      "title": "No team members yet",
+      "description": "Add your first team member to get started."
+    },
+    "errors": {
+      "title": "Couldn't load the team",
+      "description": "An error occurred while fetching team members.",
+      "required": "Name and email are required.",
+      "passwordLength": "Password must be at least 8 characters.",
+      "failed": "Something went wrong. Please try again."
+    },
+    "forbidden": {
+      "title": "Admin access required",
+      "description": "Only Company Admins can manage the team. Contact your administrator."
+    },
+    "table": {
+      "name": "Name",
+      "email": "Email",
+      "roles": "Roles",
+      "status": "Status",
+      "actions": "Actions"
+    },
+    "roles": {
+      "admin": "Company Admin",
+      "supervisor": "Supervisor",
+      "agent": "Agent"
+    },
+    "delete": "Delete",
+    "confirmDelete": "Permanently delete \"{name}\" ({email})? This removes the account and all their sessions. This cannot be undone."
+  },
+  "command": {
+    "title": "Quick navigation",
+    "placeholder": "Search pages and actions…",
+    "noResults": "No matching pages.",
+    "hint": "↑↓ to navigate · Enter to open",
+    "shortcut": "⌘K"
+  },
+  "channels": {
+    "nav": "Channels",
+    "description": "Meta routing channels connected to this workspace (read-only)",
+    "readonlyNote": "Read-only view. Connecting and reconnecting providers arrives with the Integrations stage.",
+    "statusActive": "Active",
+    "health.ok": "Healthy",
+    "health.degraded": "Degraded",
+    "health.down": "Down",
+    "empty": {
+      "title": "No channels yet",
+      "description": "Routing channels appear here once a Meta page is connected."
+    },
+    "errors": {
+      "title": "Couldn't load channels",
+      "description": "An error occurred while fetching routing channels."
+    },
+    "table": {
+      "channel": "Channel",
+      "provider": "Provider",
+      "brand": "Brand",
+      "status": "Status",
+      "health": "Health",
+      "lastEvent": "Last event"
+    }
+  },
+  "ai": {
+    "nav": "AI Agent",
+    "description": "Configure how the AI agent responds for your workspace",
+    "agentName": "AI agent",
+    "agentSubtitle": "Answers customer conversations from your published knowledge",
+    "tone": {
+      "professional": "Professional",
+      "friendly": "Friendly",
+      "custom": "Custom instructions",
+      "kuwaiti": "Kuwaiti dialect"
+    },
+    "toneHint": "Use Custom instructions for a specific dialect (e.g. Kuwaiti).",
+    "customInstructions": "Custom instructions",
+    "customPlaceholder": "e.g. Reply in Kuwaiti dialect, keep it warm and short…",
+    "customHint": "Optional. Applied on top of the selected tone for this workspace only.",
+    "languages": "Reply languages",
+    "fallbackPolicy": "Safety fallback",
+    "fallbackPolicyNote": "Managed automatically by the server — low-confidence answers fall back to a safe reply.",
+    "readOnly": "Read-only — Company Admin can edit these settings.",
+    "save": "Save changes",
+    "saved": "Saved",
+    "errors": {
+      "title": "Couldn't load AI settings",
+      "description": "An error occurred while fetching the AI configuration."
+    }
+  },
+  "notifications": {
+    "title": "Notifications",
+    "loading": "Loading…",
+    "empty": "No notifications",
+    "markAllRead": "Mark all as read"
+  }
+}

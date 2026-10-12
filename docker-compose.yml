@@ -1,0 +1,140 @@
+# =============================================================================
+# LWC Customer Engagement Platform - production stack (project: restaurant-agent)
+#
+# Managed by Portainer. Secrets are NEVER stored here: values come from the
+# server-side .env next to this file, or from Portainer -> Stack -> Environment
+# variables. See .env.example for the full list of variable NAMES.
+#
+# Usage: docker compose -p restaurant-agent up -d --build
+#
+# Processing modes (WEBHOOK_QUEUE_MODE):
+#   inline (default) - webhook processed in the API process (current behavior)
+#   queue           - webhook ACKs fast, processing moves to the worker service
+# =============================================================================
+
+services:
+  # ----- API + Facebook bot + legacy dashboard (Stage 5: also /api/v1) -----
+  restaurant-agent:
+    build: .
+    container_name: restaurant-page-agent
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: ${PORT:-3000}
+      WEBHOOK_VERIFY_TOKEN: ${WEBHOOK_VERIFY_TOKEN}
+      FB_APP_ID: ${FB_APP_ID}
+      FB_APP_SECRET: ${FB_APP_SECRET}
+      FB_GRAPH_VERSION: ${FB_GRAPH_VERSION:-v21.0}
+      FB_PAGE_ID: ${FB_PAGE_ID}
+      FB_PAGE_ACCESS_TOKEN: ${FB_PAGE_ACCESS_TOKEN}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-gemini-3.8-flash}
+      LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-}
+      MAX_REPLIES_PER_USER_PER_HOUR: ${MAX_REPLIES_PER_USER_PER_HOUR:-30}
+      STAFF_ALERT_WEBHOOK_URL: ${STAFF_ALERT_WEBHOOK_URL:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      STAFF_EMAIL_TO: ${STAFF_EMAIL_TO:-}
+      STAFF_EMAIL_FROM: ${STAFF_EMAIL_FROM:-}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://lwc:${POSTGRES_PASSWORD}@postgres:5432/lwc_saas}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      DATA_DIR: ${DATA_DIR:-/tmp/lwc-data}
+      WEBHOOK_QUEUE_MODE: ${WEBHOOK_QUEUE_MODE:-inline}
+      # Stage 6: knowledge retrieval mode (off | shadow | active)
+      KNOWLEDGE_RETRIEVAL_MODE: ${KNOWLEDGE_RETRIEVAL_MODE:-shadow}
+      # Stage 5: the public tunnel keeps targeting this service; browser UI
+      # routes are proxied to the Next.js web service (hostname unchanged, so
+      # the Meta webhook callback keeps working). /webhook and /api/* stay here.
+      WEB_UPSTREAM: ${WEB_UPSTREAM:-http://lwc-web:3000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # --------------------------------- PostgreSQL + pgvector ----------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: restaurant-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lwc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-lwc_saas}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------- Redis -------------
+  redis:
+    image: redis:7-alpine
+    container_name: restaurant-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------ Stage 4 completion: queue worker ---
+  worker:
+    build: .
+    container_name: restaurant-agent-worker
+    restart: unless-stopped
+    command: ["node", "src/workers/metaEventWorker.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://lwc:${POSTGRES_PASSWORD}@postgres:5432/lwc_saas}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-gemini-3.8-flash}
+      LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
+      DATA_DIR: ${DATA_DIR:-/tmp/lwc-data}
+
+  # ------------------------------- Cloudflare quick tunnel (public URL) ----
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: restaurant-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://restaurant-agent:3000
+    depends_on:
+      - restaurant-agent
+
+  # --------------------------- Stage 5 frontend (INTERNAL ONLY, port 3001) --
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: lwc-web
+    hostname: lwc-web
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      API_UPSTREAM: http://restaurant-agent:3000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
+    depends_on:
+      restaurant-agent:
+        condition: service_started
+
+volumes:
+  pg_data:

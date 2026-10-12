@@ -1,0 +1,25 @@
+{
+  "name": "LWC Platform — Restaurant AI",
+  "short_name": "LWC Platform",
+  "description": "AI customer engagement platform for restaurant brands",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#faf6f1",
+  "theme_color": "#4a2c1a",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -1,0 +1,553 @@
+{
+  "common": {
+    "appName": "منصة إدارة العملاء",
+    "company": "لايف وذ كاكاو",
+    "loading": "جارٍ التحميل…",
+    "retry": "إعادة المحاولة",
+    "cancel": "إلغاء",
+    "confirm": "تأكيد",
+    "save": "حفظ",
+    "search": "بحث",
+    "logout": "تسجيل الخروج",
+    "profile": "الملف الشخصي",
+    "language": "اللغة",
+    "theme": "المظهر",
+    "light": "فاتح",
+    "dark": "داكن",
+    "comingSoon": "قريباً",
+    "platformName": "منصة LWC",
+    "close": "إغلاق",
+    "back": "رجوع",
+    "edit": "تعديل"
+  },
+  "nav": {
+    "dashboard": "لوحة التحكم",
+    "inbox": "صندوق الموحد",
+    "customers": "العملاء",
+    "companies": "الشركات",
+    "brands": "العلامات التجارية",
+    "channels": "القنوات",
+    "ai": "الذكاء الاصطناعي",
+    "knowledge": "قاعدة المعرفة",
+    "team": "الفريق والصلاحيات",
+    "integrations": "التكاملات",
+    "audit": "سجلات التدقيق",
+    "settings": "الإعدادات"
+  },
+  "navGroups": {
+    "overview": "نظرة عامة",
+    "engagement": "التفاعل",
+    "organization": "المؤسسة",
+    "configuration": "الإعدادات"
+  },
+  "auth": {
+    "loginTitle": "تسجيل الدخول",
+    "loginSubtitle": "أدخل بياناتك للوصول إلى لوحة الإدارة",
+    "email": "البريد الإلكتروني",
+    "password": "كلمة المرور",
+    "showPassword": "إظهار كلمة المرور",
+    "hidePassword": "إخفاء كلمة المرور",
+    "submit": "دخول",
+    "signingIn": "جارٍ تسجيل الدخول…",
+    "invalidCredentials": "البريد الإلكتروني أو كلمة المرور غير صحيحة",
+    "rateLimited": "محاولات كثيرة. حاول مرة أخرى لاحقاً.",
+    "unexpected": "حدث خطأ غير متوقع. حاول مرة أخرى.",
+    "csrfError": "فشل التحقق الأمني. حاول مرة أخرى.",
+    "emailRequired": "البريد الإلكتروني مطلوب",
+    "emailInvalid": "صيغة البريد الإلكتروني غير صحيحة",
+    "passwordRequired": "كلمة المرور مطلوبة",
+    "changePassword": "تغيير كلمة المرور",
+    "changePasswordHint": "سيبقى تسجيل دخولك على هذا الجهاز، وسيتم تسجيل خروج الأجهزة الأخرى.",
+    "currentPassword": "كلمة المرور الحالية",
+    "newPassword": "كلمة المرور الجديدة",
+    "confirmPassword": "تأكيد كلمة المرور الجديدة",
+    "passwordTooShort": "كلمة المرور الجديدة يجب أن تكون 8 أحرف على الأقل.",
+    "passwordMismatch": "كلمتا المرور الجديدتان غير متطابقتين."
+  },
+  "states": {
+    "emptyTitle": "لا توجد بيانات",
+    "emptyDescription": "سيظهر المحتوى هنا عند توفره.",
+    "errorTitle": "تعذّر تحميل المحتوى",
+    "errorDescription": "حدث خطأ أثناء جلب البيانات. يرجى المحاولة مرة أخرى.",
+    "unauthorizedTitle": "لا تملك صلاحية الوصول",
+    "unauthorizedDescription": "هذه الصفحة تتطلب صلاحيات أعلى.",
+    "notFoundTitle": "الصفحة غير موجودة",
+    "notFoundDescription": "الرابط الذي فتحته غير صحيح أو تم نقله."
+  },
+  "shell": {
+    "collapse": "تصغير القائمة",
+    "expand": "توسيع القائمة",
+    "menu": "القائمة",
+    "company": "الشركة",
+    "brand": "العلامة التجارية",
+    "superAdmin": "مدير عام"
+  },
+  "placeholder": "هذه الوحدة قيد التطوير ضمن خارطة الطريق.",
+  "inbox": {
+    "subtitle": "كل محادثات العملاء في مكان واحد",
+    "comment": "تعليق",
+    "dm": "ماسنجر",
+    "selectConversation": "اختر محادثة لعرض الرسائل",
+    "emptyTitle": "لا توجد محادثات",
+    "emptyDescription": "ستظهر التعليقات والرسائل الجديدة هنا تلقائيًا.",
+    "loadError": "تعذّر تحميل المحادثات",
+    "loadErrorDescription": "حدث خطأ أثناء جلب المحادثات.",
+    "retry": "إعادة المحاولة",
+    "sources": "مصادر الرد",
+    "sections": {
+      "menu": "المنيو",
+      "branches": "فرع",
+      "faq": "سؤال شائع",
+      "policies": "سياسة",
+      "overview": "معلومات العلامة"
+    },
+    "filters": "المرشحات",
+    "filter": {
+      "all": "الكل",
+      "needs_human": "يحتاج بشري",
+      "assigned_me": "مُسنَد إليّ",
+      "resolved": "مُحَلّ"
+    },
+    "state": {
+      "AI_ACTIVE": "الذكاء الاصطناعي نشط",
+      "HUMAN_REQUIRED": "مطلوب بشري",
+      "QUEUED": "في الطابور",
+      "ASSIGNED": "مُسند",
+      "HUMAN_ACTIVE": "بشري نشط",
+      "RESOLVED": "مُحَلّ"
+    },
+    "needsHuman": "يحتاج بشري",
+    "aiHandling": "معالجة بالذكاء الاصطناعي",
+    "timeline": "الجدول الزمني",
+    "notes": "ملاحظات",
+    "notesStaffOnly": "ملاحظات داخلية — للفريق فقط، لا تُرسَل للعميل",
+    "notePlaceholder": "أضف ملاحظة داخلية للفريق…",
+    "notesEmpty": "لا توجد ملاحظات داخلية بعد",
+    "noteFailed": "فشل حفظ الملاحظة",
+    "addNote": "إضافة ملاحظة",
+    "unknownAuthor": "مؤلف غير معروف",
+    "deleteNote": "حذف الملاحظة",
+    "requestHuman": "طلب بشري",
+    "assignToMe": "أسند إليّ",
+    "assign": "إسناد",
+    "unassign": "إلغاء الإسناد",
+    "markResolved": "تعيين كمُحَلّ",
+    "resumeAi": "استئناف الذكاء الاصطناعي",
+    "conflict": "تغيّر حالة المحادثة — يرجى إعادة التحميل والمحاولة مرة أخرى",
+    "actionFailed": "فشل الإجراء",
+    "requestHumanTitle": "طلب تحويل لبشري",
+    "requestHumanDescription": "سيتوقف الذكاء الاصطناعي وسيتم وضع المحادثة في الطابور لوكيل بشري.",
+    "assignTitle": "إسناد محادثة",
+    "assignDescription": "اختر عضو فريق للتعامل مع هذه المحادثة.",
+    "resumeAiTitle": "استئناف معالجة الذكاء الاصطناعي",
+    "resumeAiDescription": "سيعاود الذكاء الاصطناعي التعامل مع هذه المحادثة. يتطلب هذا الإجراء سببًا.",
+    "handoffReasonPlaceholder": "لماذا تحتاج هذه المحادثة لوكيل بشري؟",
+    "claimReason": "إسناد ذاتي من الطابور",
+    "assignReason": "أُسند من قبل مشرف",
+    "unassignReason": "ألغي الإسناد من قبل مشرف",
+    "resumeReasonPlaceholder": "لماذا يجب أن يعاود الذكاء الاصطناعي التعامل مع هذه المحادثة؟",
+    "confirmHandoff": "تأكيد التحويل",
+    "confirmResume": "تأكيد الاستئناف",
+    "noEligibleMembers": "لم يتم العثور على أعضاء فريق مؤهلين",
+    "humanReply": "رد بشري",
+    "humanReplyPlaceholder": "اكتب ردك للعميل…",
+    "humanReplyHint": "يُرسَل مباشرة إلى العميل عبر القناة الأصلية (ماسنجر أو تعليق فيسبوك).",
+    "send": "إرسال",
+    "sending": "جاري الإرسال…",
+    "replySent": "تم إرسال الرد بنجاح",
+    "replyFailed": "فشل إرسال الرد",
+    "duplicateIgnored": "تم تجاهل رد مكرر",
+    "failedRetry": "إعادة المحاولة",
+    "sender": {
+      "ai": "ذكاء اصطناعي",
+      "employee": "موظف"
+    },
+    "emptyFilter": "لا توجد محادثات تطابق هذا المرشح"
+  },
+  "dashboard": {
+    "greeting": "مرحبًا بعودتك",
+    "overview": "نظرة عامة",
+    "conversations": "المحادثات",
+    "messages": "الرسائل",
+    "activeChannels": "القنوات النشطة",
+    "escalations": "التصعيدات",
+    "allTime": "الإجمالي",
+    "inboundOutbound": "واردة + صادرة",
+    "routedChannels": "توجيه ميتا",
+    "needsAttention": "تحتاج انتباهك",
+    "recentConversations": "أحدث المحادثات",
+    "latestActivity": "آخر النشاطات على كل القنوات",
+    "viewAll": "عرض الكل",
+    "platformStatus": "حالة المنصة",
+    "verifiedState": "متحقق منها من نظامك المباشر",
+    "knowledge": "قاعدة المعرفة",
+    "currentBrand": "لايف وذ كاكاو",
+    "published": "نُشر",
+    "notPublished": "لم يُنشر بعد",
+    "manage": "إدارة",
+    "quickActions": "إجراءات سريعة",
+    "openInbox": "فتح الصندوق",
+    "manageKnowledge": "إدارة المعرفة",
+    "viewChannels": "عرض القنوات",
+    "manageTeam": "إدارة الفريق",
+    "aiAgent": "المساعد الذكي",
+    "aiAgentActive": "مساعد علامتك نشط ويرد على أحداث ميتا.",
+    "noConversations": "لا توجد محادثات بعد. ستظهر التعليقات والرسائل الجديدة هنا.",
+    "loadError": "تعذّر تحميل لوحة التحكم",
+    "loadErrorDescription": "حدث خطأ أثناء جلب البيانات المباشرة.",
+    "signInRequired": "مطلوب تسجيل الدخول",
+    "signInDescription": "انتهت صلاحية الجلسة. سجّل الدخول لعرض اللوحة.",
+    "retry": "إعادة المحاولة",
+    "welcome": "إليك ما يحدث في محادثات عملائك.",
+    "knowledgeVersion": "قاعدة المعرفة الإصدار {version}",
+    "queueWorker": "عامل الطوابير",
+    "queueFailed": "{count} فاشلة",
+    "dbScoped": "قناة مرتبطة بقاعدة البيانات",
+    "notConfigured": "غير مُهيَّأ",
+    "none": "لا شيء",
+    "statusHealthy": "سليم",
+    "statusAttention": "يحتاج انتباه",
+    "statusUnavailable": "غير متاح",
+    "dm": "رسالة",
+    "comment": "تعليق"
+  },
+  "dashboardFoundation": {
+    "overview": "نظرة عامة",
+    "description": "ستظهر هنا نظرة عامة على تفاعل عملائك عند تفعيلها.",
+    "gettingStarted": "البدء",
+    "publishTitle": "انشر معرفة علامتك التجارية",
+    "publishBody": "القائمة، الفروع، الأسئلة الشائعة والسياسات.",
+    "replyTitle": "رد من الصندوق الموحد",
+    "replyBody": "التعليقات ورسائل ماسنجر في مكان واحد.",
+    "connectTitle": "اربط صفحة فيسبوك أخرى",
+    "connectBody": "أضف قنوات توجيه بدون تعديل الكود.",
+    "open": "فتح",
+    "inboxTitle": "الصندوق الموحد",
+    "inboxBody": "مؤشرات المحادثات ستتوفر مع وحدة الصندوق.",
+    "knowledgeTitle": "تغطية قاعدة المعرفة",
+    "knowledgeBody": "تابع الإصدارات المنشورة لكل علاماتك التجارية."
+  },
+  "knowledge": {
+    "description": "إدارة معرفة العلامة التجارية: المنيو، الفروع، الأسئلة الشائعة والسياسات",
+    "back": "رجوع",
+    "backToInbox": "رجوع إلى الصندوق الموحد",
+    "errors": {
+      "title": "تعذّر تحميل قاعدة المعرفة",
+      "description": "حدث خطأ أثناء جلب البيانات."
+    },
+    "empty": {
+      "title": "لا توجد معرفة منشورة بعد",
+      "description": "أنشئ مسودة لبدء إدارة المحتوى."
+    },
+    "status": {
+      "editingDraft": "تحرير مسودة",
+      "viewingPublished": "عرض المنشور",
+      "validationHint": "عالج مشاكل التحقق أولًا"
+    },
+    "sections": {
+      "overview": "نظرة عامة",
+      "menu": "المنيو",
+      "branches": "الفروع",
+      "faq": "الأسئلة الشائعة",
+      "policies": "السياسات والخدمة",
+      "sources": "المصادر والإصدارات"
+    },
+    "actions": {
+      "createDraft": "إنشاء مسودة",
+      "draftReady": "المسودة جاهزة",
+      "saveDraft": "حفظ المسودة",
+      "validate": "تحقق",
+      "preview": "معاينة",
+      "publish": "نشر",
+      "discardDraft": "إلغاء المسودة"
+    },
+    "toast": {
+      "saved": "تم حفظ المسودة",
+      "savedWithIssues": "تم الحفظ — توجد مشاكل تحقق",
+      "saveFailed": "فشل الحفظ",
+      "draftFailed": "تعذّر إنشاء المسودة",
+      "validateOk": "التحقق نجح",
+      "validateIssues": "{count} مشكلات تحتاج انتباهك",
+      "validateFailed": "فشل التحقق",
+      "previewOk": "المسودة جاهزة للنشر",
+      "previewIssues": "راجع مشاكل التحقق قبل النشر",
+      "previewFailed": "فشل المعاينة",
+      "published": "تم النشر — الإصدار v{version}",
+      "publishFailed": "فشل النشر",
+      "discarded": "تم إلغاء المسودة",
+      "discardFailed": "فشل إلغاء المسودة"
+    },
+    "dialog": {
+      "publish": {
+        "title": "نشر الإصدار الجديد؟",
+        "description": "سيصبح هذا الإصدار هو المعرفة النشطة للمساعد الآلي. الإصدار السابق يبقى متاحًا في السجل.",
+        "confirm": "تأكيد النشر",
+        "publishing": "جارٍ النشر…",
+        "reviewSummary": "أُضيف {added} · عُدّل {modified} · حُذف {removed}",
+        "previewHint": "للمراجعة الكاملة اضغط «معاينة» قبل النشر."
+      },
+      "discard": {
+        "title": "إلغاء المسودة؟",
+        "description": "سيتم التخلي عن كل التغييرات غير المنشورة. المعرفة المنشورة حاليًا لا تتأثر."
+      },
+      "unsaved": {
+        "title": "تغييرات غير محفوظة",
+        "description": "لديك تعديلات لم تُحفظ بعد. هل تريد الحفظ قبل المتابعة؟",
+        "confirm": "حفظ ومتابعة",
+        "cancel": "تجاهل التغييرات"
+      }
+    },
+    "menu": {
+      "search": "بحث في المنيو…",
+      "addCategory": "إضافة فئة",
+      "promptNewCategory": "اسم الفئة الجديدة",
+      "confirmDeleteCategory": "حذف الفئة \"{name}\" وكل أصنافها؟",
+      "promptNewSubcategory": "اسم القائمة الفرعية",
+      "confirmDeleteSubcategory": "حذف \"{name}\" وكل أصنافها؟",
+      "addSubcategory": "قائمة فرعية",
+      "deleteCategory": "حذف الفئة",
+      "deleteSubcategory": "حذف",
+      "addItem": "إضافة صنف",
+      "noCategories": "لا توجد فئات بعد. ابدأ بإضافة فئة مثل «الإفطار».",
+      "noMatches": "لا توجد أصناف مطابقة.",
+      "counter": "{items} صنف · {categories} فئة",
+      "editItem": "تعديل صنف",
+      "newItem": "إضافة صنف",
+      "deleteItem": "حذف",
+      "field": {
+        "nameEn": "الاسم (إنجليزي)",
+        "nameAr": "الاسم (عربي)",
+        "desc": "الوصف",
+        "price": "السعر (د.ك)",
+        "priceHint": "مثال: 4.650"
+      },
+      "currency": "د.ك",
+      "priceError": "أدخل سعرًا صحيحًا، مثل 4.650",
+      "categories": "الفئات"
+    },
+    "branches": {
+      "count": "{count} فرع",
+      "add": "إضافة فرع",
+      "empty": "لا توجد فروع بعد. أضف أول فرع.",
+      "edit": "تعديل",
+      "delete": "حذف",
+      "editTitle": "تعديل فرع",
+      "newTitle": "إضافة فرع",
+      "field": {
+        "name": "اسم الفرع",
+        "area": "المنطقة",
+        "timings": "مواعيد العمل",
+        "timingsHint": "مثال: 8:00 AM – 11:30 PM",
+        "maps": "رابط الخريطة",
+        "phone": "الهاتف"
+      },
+      "error": {
+        "name": "الاسم مطلوب",
+        "maps": "رابط غير صحيح",
+        "phone": "رقم هاتف غير صحيح",
+        "duplicate": "يوجد فرع بنفس الاسم"
+      },
+      "confirmDelete": "حذف الفرع \"{name}\"?"
+    },
+    "faq": {
+      "empty": "لا توجد أسئلة شائعة بعد.",
+      "add": "إضافة سؤال",
+      "count": "{count} سؤال",
+      "untitled": "سؤال بدون عنوان",
+      "field": {
+        "question": "السؤال",
+        "answer": "الإجابة"
+      },
+      "edit": "تعديل",
+      "delete": "حذف"
+    },
+    "policies": {
+      "meatSources": "مصادر اللحوم",
+      "agentNotes": "ملاحظات تشغيلية للمساعد"
+    },
+    "sources": {
+      "title": "مصدر المعرفة",
+      "kind": "النوع",
+      "versionCount": "عدد الإصدارات",
+      "currentVersion": "الإصدار الحالي",
+      "history": "سجل النشر",
+      "noHistory": "لم يتم النشر بعد."
+    },
+    "overview": {
+      "publishedNote": "أنت تشاهد النسخة المنشورة. أنشئ مسودة لإجراء تعديلات.",
+      "group": {
+        "brand": "معلومات العلامة",
+        "menu": "معلومات المنيو",
+        "service": "معلومات الخدمة",
+        "reservations": "الحجوزات"
+      },
+      "field": {
+        "restaurantName": "اسم المطعم / العلامة",
+        "about": "نبذة عن المطعم",
+        "menuUrl": "رابط المنيو",
+        "currency": "العملة",
+        "halal": "معلومات الحلال",
+        "delivery": "التوصيل / الخدمة",
+        "location": "الموقع",
+        "reservations": "سياسة الحجوزات"
+      }
+    },
+    "validation": {
+      "oneProblem": "مشكلة واحدة",
+      "problems": "{count} مشكلات",
+      "hide": "إخفاء",
+      "show": "عرض",
+      "jump": "انتقال",
+      "attention": "التحقق يحتاج انتباهك"
+    },
+    "sectionLabel": {
+      "overview": "نظرة عامة",
+      "menu": "المنيو",
+      "branches": "الفروع",
+      "faq": "الأسئلة الشائعة",
+      "policies": "السياسات",
+      "sources": "المصادر",
+      "root": "عام"
+    },
+    "review": {
+      "empty": "لا توجد تغييرات مقارنة بالإصدار المنشور.",
+      "added": "إضافة",
+      "modified": "تعديل",
+      "removed": "حذف"
+    },
+    "preview": {
+      "categories": "فئات المنيو",
+      "subcategories": "القوائم الفرعية",
+      "branches": "الفروع",
+      "baseVersion": "إصدار الأساس"
+    },
+    "statusBar": {
+      "draftUnsaved": "مسودة · تغييرات غير محفوظة",
+      "saving": "جارٍ الحفظ…",
+      "saved": "تم حفظ المسودة",
+      "saveFailed": "فشل الحفظ",
+      "draft": "مسودة",
+      "published": "منشور · الإصدار {version}",
+      "noPublished": "لا يوجد إصدار منشور",
+      "oneIssue": "مشكلة واحدة تحتاج انتباهك",
+      "issues": "{count} مشكلات تحتاج انتباهك"
+    },
+    "common": {
+      "save": "حفظ",
+      "cancel": "إلغاء",
+      "delete": "حذف",
+      "close": "إغلاق"
+    }
+  },
+  "team": {
+    "nav": "الفريق والصلاحيات",
+    "description": "إدارة من يمكنه الوصول للوحة وما يمكنه فعله",
+    "addUser": "إضافة مستخدم",
+    "editTitle": "تعديل الصلاحيات",
+    "save": "حفظ",
+    "edit": "تعديل",
+    "disable": "تعطيل",
+    "enable": "تنشيط",
+    "statusActive": "نشط",
+    "statusDisabled": "معطّل",
+    "password": "كلمة المرور",
+    "passwordHint": "8 أحرف على الأقل.",
+    "rolesHint": "مدير الشركة: صلاحية كاملة · المشرف: يعدّل المسودات · الوكيل: للقراءة فقط.",
+    "rbacNote": "الصلاحيات مفروضة على السيرفر — لمدير الشركة فقط.",
+    "confirmDisable": "تعطيل \"{name}\"؟ سيتم تسجيل خروجه فوراً.",
+    "confirmEnable": "إعادة تنشيط \"{name}\"؟",
+    "empty": {
+      "title": "لا يوجد أعضاء فريق بعد",
+      "description": "أضف أول عضو في الفريق للبدء."
+    },
+    "errors": {
+      "title": "تعذّر تحميل الفريق",
+      "description": "حدث خطأ أثناء جلب بيانات الفريق.",
+      "required": "الاسم والبريد الإلكتروني مطلوبان.",
+      "passwordLength": "كلمة المرور يجب أن تكون 8 أحرف على الأقل.",
+      "failed": "حدث خطأ ما. حاول مرة أخرى."
+    },
+    "forbidden": {
+      "title": "صلاحية المدير مطلوبة",
+      "description": "مدير الشركة فقط يمكنه إدارة الفريق. تواصل مع المسؤول."
+    },
+    "table": {
+      "name": "الاسم",
+      "email": "البريد الإلكتروني",
+      "roles": "الصلاحيات",
+      "status": "الحالة",
+      "actions": "إجراءات"
+    },
+    "roles": {
+      "admin": "مدير الشركة",
+      "supervisor": "مشرف",
+      "agent": "وكيل"
+    },
+    "delete": "حذف",
+    "confirmDelete": "حذف \"{name}\" ({email}) نهائياً؟ سيتم إزالة الحساب وجميع جلساته. لا يمكن التراجع عن هذا."
+  },
+  "command": {
+    "title": "تنقل سريع",
+    "placeholder": "ابحث عن صفحة أو إجراء…",
+    "noResults": "لا توجد صفحات مطابقة.",
+    "hint": "↑↓ للتنقل · Enter للفتح",
+    "shortcut": "⌘K"
+  },
+  "channels": {
+    "nav": "القنوات",
+    "description": "قنوات توجيه ميتا الموصولة بهذا المكان (للقراءة فقط)",
+    "readonlyNote": "عرض للقراءة فقط. ربط وإعادة ربط المزودين يأتي مع مرحلة التكاملات.",
+    "statusActive": "نشطة",
+    "health.ok": "سليمة",
+    "health.degraded": "متدهورة",
+    "health.down": "متوقفة",
+    "empty": {
+      "title": "لا توجد قنوات بعد",
+      "description": "تظهر قنوات التوجيه هنا عند توصيل صفحة فيسبوك."
+    },
+    "errors": {
+      "title": "تعذّر تحميل القنوات",
+      "description": "حدث خطأ أثناء جلب قنوات التوجيه."
+    },
+    "table": {
+      "channel": "القناة",
+      "provider": "المزود",
+      "brand": "العلامة",
+      "status": "الحالة",
+      "health": "الصحة",
+      "lastEvent": "آخر حدث"
+    }
+  },
+  "ai": {
+    "nav": "المساعد الذكي",
+    "description": "اضبط طريقة رد المساعد الذكي في مساحتك",
+    "agentName": "المساعد الذكي",
+    "agentSubtitle": "يرد على محادثات العملاء من قاعدة المعرفة المنشورة",
+    "tone": {
+      "professional": "رسمية",
+      "friendly": "ودّية",
+      "custom": "تعليمات مخصصة",
+      "kuwaiti": "لهجة كويتية"
+    },
+    "toneHint": "استخدم التعليمات المخصصة لهجة معينة (مثل الكويتية).",
+    "customInstructions": "تعليمات مخصصة",
+    "customPlaceholder": "مثال: رد باللهجة الكويتية، بخفة ودّكدة…",
+    "customHint": "اختياري. تُطبَّق فوق النبرة المختارة لهذه المساحة فقط.",
+    "languages": "لغات الرد",
+    "fallbackPolicy": "الرد الآمن",
+    "fallbackPolicyNote": "يُدار تلقائياً بواسطة السيرفر — الردود منخفضة الثقة ترجع لرد آمن.",
+    "readOnly": "للعرض فقط — مدير الشركة يمكنه تعديل هذه الإعدادات.",
+    "save": "حفظ التغييرات",
+    "saved": "تم الحفظ",
+    "errors": {
+      "title": "تعذّر تحميل إعدادات الذكاء",
+      "description": "حدث خطأ أثناء جلب إعدادات المساعد."
+    }
+  },
+  "notifications": {
+    "title": "الإشعارات",
+    "loading": "جارٍ التحميل…",
+    "empty": "لا توجد إشعارات",
+    "markAllRead": "تعليم الكل كمقروء"
+  }
+}
