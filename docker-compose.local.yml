@@ -1,0 +1,85 @@
+# =============================================================================
+# LOCAL DEVELOPMENT ONLY — Batch 1 UI Verification
+# Project: restaurant-agent-local (isolated from production)
+# Run: docker compose -p restaurant-agent-local -f docker-compose.local.yml up -d
+# =============================================================================
+
+services:
+  # ----- Local PostgreSQL (isolated volume) -----
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: local-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lwc
+      POSTGRES_PASSWORD: local_dev_password_123
+      POSTGRES_DB: lwc_saas
+    volumes:
+      - local_pg_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ----- Local Redis (isolated) -----
+  redis:
+    image: redis:7-alpine
+    container_name: local-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ----- API (Express) — proxies UI to local Next.js dev server -----
+  api:
+    build: .
+    container_name: local-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      PORT: 3000
+      NODE_ENV: development
+      WEBHOOK_QUEUE_MODE: inline
+      KNOWLEDGE_RETRIEVAL_MODE: shadow
+      WORKER_CONCURRENCY: 1
+      DATA_DIR: /tmp/lwc-local-data
+      # Database & Redis (local containers)
+      DATABASE_URL: postgresql://lwc:local_dev_password_123@postgres:5432/lwc_saas
+      REDIS_URL: redis://redis:6379
+      ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      # Meta (dummy — not used for UI)
+      FB_APP_ID: dummy
+      FB_APP_SECRET: dummy
+      FB_GRAPH_VERSION: v21.0
+      FB_PAGE_ID: 738688299520738
+      FB_PAGE_ACCESS_TOKEN: dummy
+      WEBHOOK_VERIFY_TOKEN: local_verify_token
+      # LLM (dummy — not used for UI)
+      LLM_BASE_URL: https://api.openai.com/v1
+      LLM_API_KEY: dummy
+      LLM_MODEL: gemini-3.8-flash
+      LLM_FALLBACK_MODELS: ""
+      MAX_REPLIES_PER_USER_PER_HOUR: "30"
+      # Auth
+      DASHBOARD_PASSWORD: local_admin_123
+      SEED_ADMIN_EMAIL: admin@local.dev
+      SEED_ADMIN_PASSWORD: local_admin_123
+      # Proxy UI to LOCAL Next.js dev server on host
+      WEB_UPSTREAM: http://host.docker.internal:3001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  local_pg_data:
+    name: restaurant-agent-local_pg_data

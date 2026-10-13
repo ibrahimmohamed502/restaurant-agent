@@ -19,6 +19,9 @@ import {
   createEscalationRecord,
   escalationCategory
 } from './services/conversations.js';
+import { evaluateAiGate } from './services/aiGate.js';
+import { detectCustomerHumanRequest, detectAutoEscalation, HANDOFF_REASONS } from './services/handoffDetector.js';
+import { requestHandoff, REQUESTED_BY } from './services/handoff.js';
 import { alreadyReplied, markReplied, userOverLimit } from './store.js';
 
 export const webhookRouter = express.Router();
@@ -185,6 +188,94 @@ async function processInline(body, { buildCtx, onComment, onMessage }, onlyEvent
   }
 }
 
+/**
+ * Stage 7 — the shared AI stop/continue gate.
+ *
+ * Runs for BOTH comment and DM processing, AFTER the inbound customer message
+ * has been persisted and BEFORE retrieval / generation / grounding / outbound
+ * persistence / provider send.
+ *
+ * Two ways the AI gets switched off, and only these two:
+ *   1. the conversation is already in a human-handled state, or
+ *   2. the customer has explicitly requested a human (deterministic detector).
+ *
+ * When suppressed: the inbound message is already persisted, nothing is
+ * generated, no outbound row is created, and no provider call is made.
+ * Existing escalation behaviour (complaints / contact data) is NOT affected —
+ * it never pauses the AI.
+ *
+ * @returns {Promise<{suppressed: boolean, state: string|null}>}
+ */
+async function applyStage7Gate({ tenantId, conversationId, text, pgEnabled }) {
+  if (!pgEnabled || !tenantId || !conversationId) return { suppressed: false, state: null };
+
+  const gate = await evaluateAiGate({ tenantId, conversationId });
+  if (gate.suppressed) {
+    console.log(`🤝 [stage7] AI suppressed for ${conversationId} — state=${gate.state} (human handling)`);
+    return { suppressed: true, state: gate.state };
+  }
+
+  // 1) Check explicit human request
+  const detection = detectCustomerHumanRequest(text);
+  if (detection.matched) {
+    try {
+      await requestHandoff(
+        {
+          tenantId,
+          conversationId,
+          reason: HANDOFF_REASONS.CUSTOMER_REQUESTED_HUMAN,
+          priority: 'high',
+          requestedBy: REQUESTED_BY.CUSTOMER
+        }
+      );
+      console.log(`🤝 [stage7] customer requested a human for ${conversationId} — AI stopped`);
+    } catch (e) {
+      const after = await evaluateAiGate({ tenantId, conversationId });
+      if (after.suppressed) return { suppressed: true, state: after.state };
+      console.error('⚠️ stage7 customer handoff failed:', e?.message ?? 'error');
+    }
+    return { suppressed: true, state: 'QUEUED' };
+  }
+
+  // 2) Check auto-escalation triggers (food blogger, supplier, legal, events, etc.)
+  const autoDetection = detectAutoEscalation(text);
+  if (autoDetection.matched) {
+    try {
+      await requestHandoff(
+        {
+          tenantId,
+          conversationId,
+          reason: HANDOFF_REASONS.AUTO_ESCALATION,
+          priority: 'high',
+          requestedBy: REQUESTED_BY.CUSTOMER
+        }
+      );
+      console.log(`🤝 [stage7] auto-escalation triggered for ${conversationId} (pattern: ${autoDetection.pattern}) — AI stopped`);
+    } catch (e) {
+      const after = await evaluateAiGate({ tenantId, conversationId });
+      if (after.suppressed) return { suppressed: true, state: after.state };
+      console.error('⚠️ stage7 auto-escalation handoff failed:', e?.message ?? 'error');
+    }
+    return { suppressed: true, state: 'QUEUED' };
+  }
+
+  return { suppressed: false, state: gate.state };
+}
+
+/**
+ * Stage 7 / OBJ-8 — final lightweight state check, taken immediately before the
+ * AI outbound row is created and the provider send is issued.
+ *
+ * This does NOT eliminate the bounded in-flight window (an AI event that passed
+ * the gate a moment before a handoff can still be in flight) — it only shrinks
+ * it. Persist-first inbound behaviour is never compromised.
+ */
+async function finalAiSendCheck({ tenantId, conversationId, pgEnabled }) {
+  if (!pgEnabled || !tenantId || !conversationId) return { suppressed: false };
+  const gate = await evaluateAiGate({ tenantId, conversationId });
+  return { suppressed: gate.suppressed, state: gate.state };
+}
+
 export { handlePayload };
 export { processComment, processMessage };
 
@@ -242,6 +333,13 @@ async function processMessage(event, ctx, deps = {}) {
     }
   }
 
+  // Stage 7 gate: check if AI should be suppressed BEFORE generation
+  const gate = await applyStage7Gate({ tenantId: ctx?.tenantId, conversationId, text, pgEnabled });
+  if (gate.suppressed) {
+    console.log(`🤝 [stage7] AI suppressed for DM ${msg.mid} — state=${gate.state}`);
+    return;
+  }
+
   // Stage 4.4.3: scoped AI path — ctx is mandatory. No legacy/global retry.
   // Stage 6 Batch 3B: active mode → retrieval-grounded generation (safe fallback
   // on failure — never the legacy Path A).
@@ -267,6 +365,13 @@ async function processMessage(event, ctx, deps = {}) {
     } else {
       draft = guarded.draft;
     }
+  }
+
+  // Stage 7 final check before sending
+  const finalCheck = await finalAiSendCheck({ tenantId: ctx?.tenantId, conversationId, pgEnabled });
+  if (finalCheck.suppressed) {
+    console.log(`🤝 [stage7] AI suppressed at final check for DM ${msg.mid} — state=${finalCheck.state}`);
+    return;
   }
 
   // ---- Deliver with explicit outbound lifecycle (Stage 4.4.6) ----
@@ -396,6 +501,13 @@ async function processComment(value, ctx, deps = {}) {
     }
   }
 
+  // Stage 7 gate: check if AI should be suppressed BEFORE generation
+  const gate = await applyStage7Gate({ tenantId: ctx?.tenantId, conversationId, text: message, pgEnabled });
+  if (gate.suppressed) {
+    console.log(`🤝 [stage7] AI suppressed for comment ${commentId} — state=${gate.state}`);
+    return;
+  }
+
   // Stage 4.4.3: scoped AI path — ctx is mandatory. No legacy/global retry.
   // Stage 6 Batch 3B: active mode → retrieval-grounded generation (safe fallback
   // on failure — never the legacy Path A).
@@ -423,6 +535,13 @@ async function processComment(value, ctx, deps = {}) {
     } else {
       draft = guarded.draft;
     }
+  }
+
+  // Stage 7 final check before sending
+  const finalCheck = await finalAiSendCheck({ tenantId: ctx?.tenantId, conversationId, pgEnabled });
+  if (finalCheck.suppressed) {
+    console.log(`🤝 [stage7] AI suppressed at final check for comment ${commentId} — state=${finalCheck.state}`);
+    return;
   }
 
   // Rule: reply is posted PLAIN (no @[user_id] mention). Meta rejects the legacy

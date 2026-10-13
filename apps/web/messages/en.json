@@ -436,9 +436,9 @@
     "description": "Meta routing channels connected to this workspace (read-only)",
     "readonlyNote": "Read-only view. Connecting and reconnecting providers arrives with the Integrations stage.",
     "statusActive": "Active",
-    "health.ok": "Healthy",
-    "health.degraded": "Degraded",
-    "health.down": "Down",
+    "healthOk": "Healthy",
+    "healthDegraded": "Degraded",
+    "healthDown": "Down",
     "empty": {
       "title": "No channels yet",
       "description": "Routing channels appear here once a Meta page is connected."
@@ -481,5 +481,88 @@
       "title": "Couldn't load AI settings",
       "description": "An error occurred while fetching the AI configuration."
     }
+  },
+  "notifications": {
+    "title": "Notifications",
+    "loading": "Loading…",
+    "empty": "No notifications",
+    "markAllRead": "Mark all as read"
+  },
+  "platform": {
+    "companies": "Companies",
+    "description": "Manage companies and their brands",
+    "totalCompanies": "Total Companies",
+    "active": "Active",
+    "companiesList": "Companies List",
+    "addCompany": "Add Company",
+    "createCompany": "Create Company",
+    "creating": "Creating…",
+    "createCompanyDescription": "Create a new company with its first brand and admin user",
+    "name": "Name",
+    "namePlaceholder": "e.g. United Food Company",
+    "slug": "Slug",
+    "slugPlaceholder": "united-food-company",
+    "slugHint": "Lowercase letters, numbers, and hyphens only. Used in URLs.",
+    "adminAccount": "Admin Account",
+    "adminName": "Admin Name",
+    "adminNamePlaceholder": "e.g. John Smith",
+    "adminEmail": "Admin Email",
+    "adminEmailPlaceholder": "e.g. admin@company.com",
+    "adminPassword": "Admin Password",
+    "adminPasswordPlaceholder": "Min. 8 characters",
+    "createCompany": "Create Company",
+    "disableCompany": "Disable Company",
+    "disabling": "Disabling…",
+    "disableCompanyDescription": "This will disable the company and revoke all user sessions. This action cannot be undone.",
+    "companies": "Companies",
+    "description": "Manage companies and their brands",
+    "totalCompanies": "Total Companies",
+    "active": "Active",
+    "companiesList": "Companies List",
+    "emptyTitle": "No companies yet",
+    "emptyDescription": "Create your first company to get started",
+    "disableCompany": "Disable Company",
+    "status": {
+      "active": "Active",
+      "disabled": "Disabled"
+    }
+  },
+  "brands": {
+    "nav": "Brands",
+    "description": "Manage brands within your company",
+    "addBrand": "Add Brand",
+    "createBrand": "Create Brand",
+    "creating": "Creating…",
+    "createBrandDescription": "Create a new brand within your company",
+    "editBrand": "Edit Brand",
+    "save": "Save",
+    "saving": "Saving…",
+    "editBrandDescription": "Edit brand details, status, and default language",
+    "name": "Name",
+    "namePlaceholder": "e.g. Life with Cacao",
+    "slug": "Slug",
+    "slugPlaceholder": "life-with-cacao",
+    "slugHint": "Lowercase letters, numbers, and hyphens only. Used in URLs.",
+    "defaultLanguage": "Default Language",
+    "languages": {
+      "ar": "Arabic",
+      "en": "English"
+    },
+    "status": {
+      "active": "Active",
+      "disabled": "Disabled"
+    },
+    "brandsList": "Brands List",
+    "emptyTitle": "No brands yet",
+    "emptyDescription": "Create your first brand to get started",
+    "editBrand": "Edit Brand",
+    "editBrandDescription": "Edit brand details, status, and default language",
+    "save": "Save",
+    "saving": "Saving…",
+    "disableBrand": "Disable Brand",
+    "disableBrandDescription": "This will disable the brand and its associated channels. This action cannot be undone.",
+    "brands": "Brands",
+    "emptyTitle": "No brands yet",
+    "emptyDescription": "Create your first brand to get started"
   }
 }

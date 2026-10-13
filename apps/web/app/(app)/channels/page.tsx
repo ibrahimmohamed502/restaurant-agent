@@ -127,7 +127,7 @@ export default function ChannelsPage() {
                   <td className="px-4 py-2.5">
                     {c.health ? (
                       <span className={cn('inline-flex items-center rounded-md border px-1.5 py-0.5 text-2xs font-medium', HEALTH_TONE[c.health] ?? 'border-border bg-surface-2 text-muted-foreground')}>
-                        {t(`health.${c.health}` as 'health.ok')}
+                        {t(`health${c.health.charAt(0).toUpperCase() + c.health.slice(1)}` as 'healthOk')}
                       </span>
                     ) : <span className="text-xs text-muted-foreground">—</span>}
                   </td>

@@ -8,16 +8,7 @@ import crypto from 'node:crypto';
  * All functions are best-effort: callers wrap in try/catch so persistence never breaks replies.
  */
 
-let tenantCache = null;
 const channelCache = new Map(); // `${tenantId}|${provider}|${externalId}` -> channel id
-
-/** Single-tenant phase: the 'ufc' tenant (multi-tenant routing lands in Stage 4). */
-export async function getDefaultTenantId() {
-  if (tenantCache) return tenantCache;
-  const { rows } = await pool.query(`SELECT id FROM tenants WHERE slug = 'ufc' LIMIT 1`);
-  tenantCache = rows[0]?.id ?? null;
-  return tenantCache;
-}
 
 export async function findOrCreateChannel({ tenantId, provider, externalId, displayName, brandId = null }) {
   if (!tenantId) throw new Error('findOrCreateChannel: tenantId required (fail closed)');

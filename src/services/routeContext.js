@@ -1,5 +1,6 @@
 import { resolveMetaChannel, RESOLVE_ERRORS } from './channelResolver.js';
 import { createMetaClient } from '../facebook.js';
+import { pool, enabled } from '../db/pg.js';
 
 /**
  * Stage 4.3B.1 — Route Context.
@@ -26,6 +27,7 @@ export class RouteContextError extends Error {
 export const ROUTE_ERRORS = {
   MISSING_PAGE_ID: 'MISSING_PAGE_ID',
   RESOLVE_FAILED: 'RESOLVE_FAILED',
+  TENANT_DISABLED: 'TENANT_DISABLED',
   ...RESOLVE_ERRORS // UNKNOWN_META_PAGE · CHANNEL_INACTIVE · CREDENTIAL_MISSING
 };
 
@@ -36,9 +38,13 @@ export const ROUTE_ERRORS = {
  * @param {object} [opts]
  * @param {Function} [opts.resolveFn=resolveMetaChannel]  resolver to use (injectable for tests)
  * @param {Function} [opts.clientFactory=createMetaClient]  meta client factory (injectable for tests)
+ * @param {object} [opts.db=pool]  query executor (pool or transaction client) — for tests
  * @returns {Promise<{pageId, channelId, tenantId, brandId, displayName, metaClient}>}
  */
-export async function buildRouteContext(entry, { resolveFn = resolveMetaChannel, clientFactory = createMetaClient } = {}) {
+export async function buildRouteContext(entry, { resolveFn = resolveMetaChannel, clientFactory = createMetaClient, db } = {}) {
+  const executor = db ?? pool;
+  const dbEnabled = db ? true : enabled;
+
   // 1) require a valid page id (entry.id) — fail closed if absent
   const pageId = typeof entry === 'string' ? entry : entry?.id;
   if (!pageId) {
@@ -51,7 +57,7 @@ export async function buildRouteContext(entry, { resolveFn = resolveMetaChannel,
   // 2) resolve channel/tenant/brand + decrypt the DB credential (fail-closed)
   let resolved;
   try {
-    resolved = await resolveFn(pageId, { includeCredential: true });
+    resolved = await resolveFn(pageId, { includeCredential: true, db: executor });
   } catch (err) {
     if (err?.code) {
       // channelResolver codes carry safe messages (no credentials) — pass through
@@ -61,7 +67,15 @@ export async function buildRouteContext(entry, { resolveFn = resolveMetaChannel,
     throw new RouteContextError(ROUTE_ERRORS.RESOLVE_FAILED, `routing failed for page ${pageId}`);
   }
 
-  // 3) build the meta client ONLY from the decrypted DB credential (defensive guard)
+  // 3) Check tenant status — disabled tenants must not process inbound
+  if (dbEnabled) {
+    const { rows: tenantRows } = await executor.query(`SELECT status FROM tenants WHERE id = $1`, [resolved.tenantId]);
+    if (tenantRows.length === 0 || tenantRows[0].status !== 'active') {
+      throw new RouteContextError(ROUTE_ERRORS.TENANT_DISABLED, `tenant ${resolved.tenantId} is disabled or not found`);
+    }
+  }
+
+  // 4) build the meta client ONLY from the decrypted DB credential (defensive guard)
   if (!resolved.credential) {
     throw new RouteContextError(ROUTE_ERRORS.CREDENTIAL_MISSING, `no credential resolved for page ${pageId}`);
   }

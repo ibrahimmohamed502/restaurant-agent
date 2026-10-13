@@ -103,72 +103,72 @@
     }
   },
   "dashboard": {
-    "greeting": "مرحبًا بعودتك",
+    "greeting": "مرحباً بعودتك",
     "overview": "نظرة عامة",
-    "conversations": "المحادثات",
-    "messages": "الرسائل",
-    "activeChannels": "القنوات النشطة",
-    "escalations": "التصعيدات",
-    "allTime": "الإجمالي",
-    "inboundOutbound": "واردة + صادرة",
+    "conversations": "محادثات",
+    "messages": "رسائل",
+    "activeChannels": "قنوات نشطة",
+    "escalations": "تصعيدات",
+    "allTime": "كل الوقت",
+    "inboundOutbound": "وارد + صادرة",
     "routedChannels": "توجيه ميتا",
-    "needsAttention": "تحتاج انتباهك",
-    "recentConversations": "أحدث المحادثات",
-    "latestActivity": "آخر النشاطات على كل القنوات",
+    "needsAttention": "يحتاج انتباه",
+    "recentConversations": "محادثات حديثة",
+    "latestActivity": "أحدث نشاط عبر القنوات",
     "viewAll": "عرض الكل",
     "platformStatus": "حالة المنصة",
-    "verifiedState": "متحقق منها من نظامك المباشر",
-    "knowledge": "قاعدة المعرفة",
+    "verifiedState": "تم التحقق من نظامك المباشر",
+    "knowledge": "المعرفة",
     "currentBrand": "لايف وذ كاكاو",
-    "published": "نُشر",
-    "notPublished": "لم يُنشر بعد",
+    "published": "منشور",
+    "notPublished": "غير منشور بعد",
     "manage": "إدارة",
     "quickActions": "إجراءات سريعة",
-    "openInbox": "فتح الصندوق",
+    "openInbox": "فتح الصندوق الموحد",
     "manageKnowledge": "إدارة المعرفة",
     "viewChannels": "عرض القنوات",
     "manageTeam": "إدارة الفريق",
-    "aiAgent": "المساعد الذكي",
-    "aiAgentActive": "مساعد علامتك نشط ويرد على أحداث ميتا.",
+    "aiAgent": "وكيل الذكاء الاصطناعي",
+    "aiAgentActive": "وكيل علامتك التجارية نشط ويرد على أحداث ميتا.",
     "noConversations": "لا توجد محادثات بعد. ستظهر التعليقات والرسائل الجديدة هنا.",
     "loadError": "تعذّر تحميل لوحة التحكم",
     "loadErrorDescription": "حدث خطأ أثناء جلب البيانات المباشرة.",
-    "signInRequired": "مطلوب تسجيل الدخول",
-    "signInDescription": "انتهت صلاحية الجلسة. سجّل الدخول لعرض اللوحة.",
+    "signInRequired": "تسجيل الدخول مطلوب",
+    "signInDescription": "انتهت جلستك. سجّل الدخول لعرض لوحة التحكم.",
     "retry": "إعادة المحاولة",
-    "welcome": "إليك ما يحدث في محادثات عملائك.",
-    "knowledgeVersion": "قاعدة المعرفة الإصدار {version}",
-    "queueWorker": "عامل الطوابير",
+    "welcome": "إليك ما يحدث عبر محادثات عملائك.",
+    "knowledgeVersion": "المعرفة v{version}",
+    "queueWorker": "عامل الطابور",
     "queueFailed": "{count} فاشلة",
-    "dbScoped": "قناة مرتبطة بقاعدة البيانات",
-    "notConfigured": "غير مُهيَّأ",
+    "dbScoped": "قناة بقاعدة بيانات",
+    "notConfigured": "غير مُعد",
     "none": "لا شيء",
-    "statusHealthy": "سليم",
+    "statusHealthy": "صحي",
     "statusAttention": "يحتاج انتباه",
     "statusUnavailable": "غير متاح",
-    "dm": "رسالة",
+    "dm": "ماسنجر",
     "comment": "تعليق"
   },
   "dashboardFoundation": {
     "overview": "نظرة عامة",
-    "description": "ستظهر هنا نظرة عامة على تفاعل عملائك عند تفعيلها.",
+    "description": "ستظهر نظرة عامة على تفاعل العملاء هنا بمجرد التمكين.",
     "gettingStarted": "البدء",
     "publishTitle": "انشر معرفة علامتك التجارية",
-    "publishBody": "القائمة، الفروع، الأسئلة الشائعة والسياسات.",
-    "replyTitle": "رد من الصندوق الموحد",
-    "replyBody": "التعليقات ورسائل ماسنجر في مكان واحد.",
-    "connectTitle": "اربط صفحة فيسبوك أخرى",
-    "connectBody": "أضف قنوات توجيه بدون تعديل الكود.",
+    "publishBody": "المنيو، الفروع، الأسئلة الشائعة والسياسات.",
+    "replyTitle": "الرد من الصندوق الموحد",
+    "replyBody": "التعليقات ورسائل الماسنجر في مكان واحد.",
+    "connectTitle": "ربط صفحة ميتا أخرى",
+    "connectBody": "أضف قنوات توجيه بدون نشر كود.",
     "open": "فتح",
     "inboxTitle": "الصندوق الموحد",
-    "inboxBody": "مؤشرات المحادثات ستتوفر مع وحدة الصندوق.",
-    "knowledgeTitle": "تغطية قاعدة المعرفة",
-    "knowledgeBody": "تابع الإصدارات المنشورة لكل علاماتك التجارية."
+    "inboxBody": "مقاييس المحادثات تصل مع وحدة الصندوق.",
+    "knowledgeTitle": "تغطية المعرفة",
+    "knowledgeBody": "تتبع النسخ المنشورة عبر علاماتك التجارية."
   },
   "knowledge": {
     "description": "إدارة معرفة العلامة التجارية: المنيو، الفروع، الأسئلة الشائعة والسياسات",
     "back": "رجوع",
-    "backToInbox": "رجوع إلى الصندوق الموحد",
+    "backToInbox": "العودة للصندوق الموحد",
     "errors": {
       "title": "تعذّر تحميل قاعدة المعرفة",
       "description": "حدث خطأ أثناء جلب البيانات."
@@ -180,14 +180,14 @@
     "status": {
       "editingDraft": "تحرير مسودة",
       "viewingPublished": "عرض المنشور",
-      "validationHint": "عالج مشاكل التحقق أولًا"
+      "validationHint": "أصلح مشاكل التحقق أولاً"
     },
     "sections": {
       "overview": "نظرة عامة",
       "menu": "المنيو",
       "branches": "الفروع",
       "faq": "الأسئلة الشائعة",
-      "policies": "السياسات والخدمة",
+      "policies": "السياسات والخدمات",
       "sources": "المصادر والإصدارات"
     },
     "actions": {
@@ -201,56 +201,56 @@
     },
     "toast": {
       "saved": "تم حفظ المسودة",
-      "savedWithIssues": "تم الحفظ — توجد مشاكل تحقق",
+      "savedWithIssues": "تم الحفظ — تبقى مشاكل التحقق",
       "saveFailed": "فشل الحفظ",
       "draftFailed": "تعذّر إنشاء المسودة",
-      "validateOk": "التحقق نجح",
-      "validateIssues": "{count} مشكلات تحتاج انتباهك",
+      "validateOk": "تم التحقق بنجاح",
+      "validateIssues": "{count} مشاكل تحتاج انتباه",
       "validateFailed": "فشل التحقق",
       "previewOk": "المسودة جاهزة للنشر",
       "previewIssues": "راجع مشاكل التحقق قبل النشر",
-      "previewFailed": "فشل المعاينة",
-      "published": "تم النشر — الإصدار v{version}",
+      "previewFailed": "فشلت المعاينة",
+      "published": "تم النشر — v{version}",
       "publishFailed": "فشل النشر",
       "discarded": "تم إلغاء المسودة",
-      "discardFailed": "فشل إلغاء المسودة"
+      "discardFailed": "فشل الإلغاء"
     },
     "dialog": {
       "publish": {
-        "title": "نشر الإصدار الجديد؟",
-        "description": "سيصبح هذا الإصدار هو المعرفة النشطة للمساعد الآلي. الإصدار السابق يبقى متاحًا في السجل.",
+        "title": "نشر إصدار جديد؟",
+        "description": "سيصبح هذا الإصدار المعرفة النشطة للمساعد الذكي. الإصدار السابق يبقى في السجل.",
         "confirm": "تأكيد النشر",
-        "publishing": "جارٍ النشر…",
-        "reviewSummary": "أُضيف {added} · عُدّل {modified} · حُذف {removed}",
-        "previewHint": "للمراجعة الكاملة اضغط «معاينة» قبل النشر."
+        "publishing": "جاري النشر…",
+        "reviewSummary": "تمت إضافة {added} · تم تعديل {modified} · تمت إزالة {removed}",
+        "previewHint": "استخدم المعاينة قبل النشر للمراجعة الكاملة."
       },
       "discard": {
         "title": "إلغاء المسودة؟",
-        "description": "سيتم التخلي عن كل التغييرات غير المنشورة. المعرفة المنشورة حاليًا لا تتأثر."
+        "description": "سيتم التخلي عن جميع التغييرات غير المنشورة. المعرفة المنشورة حالياً لن تتأثر."
       },
       "unsaved": {
         "title": "تغييرات غير محفوظة",
-        "description": "لديك تعديلات لم تُحفظ بعد. هل تريد الحفظ قبل المتابعة؟",
-        "confirm": "حفظ ومتابعة",
-        "cancel": "تجاهل التغييرات"
+        "description": "لديك تعديلات غير محفوظة. حفظ قبل المتابعة؟",
+        "confirm": "حفظ والمتابعة",
+        "cancel": "إلغاء التغييرات"
       }
     },
     "menu": {
-      "search": "بحث في المنيو…",
+      "search": "البحث في المنيو…",
       "addCategory": "إضافة فئة",
       "promptNewCategory": "اسم الفئة الجديدة",
-      "confirmDeleteCategory": "حذف الفئة \"{name}\" وكل أصنافها؟",
-      "promptNewSubcategory": "اسم القائمة الفرعية",
-      "confirmDeleteSubcategory": "حذف \"{name}\" وكل أصنافها؟",
-      "addSubcategory": "قائمة فرعية",
+      "confirmDeleteCategory": "حذف الفئة \"{name}\" وجميع عناصرها؟",
+      "promptNewSubcategory": "اسم الفئة الفرعية الجديدة",
+      "confirmDeleteSubcategory": "حذف \"{name}\" وجميع عناصرها؟",
+      "addSubcategory": "فئة فرعية",
       "deleteCategory": "حذف الفئة",
       "deleteSubcategory": "حذف",
-      "addItem": "إضافة صنف",
-      "noCategories": "لا توجد فئات بعد. ابدأ بإضافة فئة مثل «الإفطار».",
-      "noMatches": "لا توجد أصناف مطابقة.",
-      "counter": "{items} صنف · {categories} فئة",
-      "editItem": "تعديل صنف",
-      "newItem": "إضافة صنف",
+      "addItem": "إضافة عنصر",
+      "noCategories": "لا توجد فئات بعد. ابدأ بإضافة واحدة مثل «الفطور».",
+      "noMatches": "لا توجد عناصر مطابقة.",
+      "counter": "{items} عناصر · {categories} فئات",
+      "editItem": "تحرير العنصر",
+      "newItem": "إضافة عنصر",
       "deleteItem": "حذف",
       "field": {
         "nameEn": "الاسم (إنجليزي)",
@@ -260,22 +260,22 @@
         "priceHint": "مثال: 4.650"
       },
       "currency": "د.ك",
-      "priceError": "أدخل سعرًا صحيحًا، مثل 4.650",
+      "priceError": "أدخل سعراً صالحاً، مثل 4.650",
       "categories": "الفئات"
     },
     "branches": {
-      "count": "{count} فرع",
+      "count": "{count} فروع",
       "add": "إضافة فرع",
       "empty": "لا توجد فروع بعد. أضف أول فرع.",
       "edit": "تعديل",
       "delete": "حذف",
-      "editTitle": "تعديل فرع",
+      "editTitle": "تعديل الفرع",
       "newTitle": "إضافة فرع",
       "field": {
         "name": "اسم الفرع",
         "area": "المنطقة",
-        "timings": "مواعيد العمل",
-        "timingsHint": "مثال: 8:00 AM – 11:30 PM",
+        "timings": "ساعات العمل",
+        "timingsHint": "مثال: 8:00 ص – 11:30 م",
         "maps": "رابط الخريطة",
         "phone": "الهاتف"
       },
@@ -283,14 +283,14 @@
         "name": "الاسم مطلوب",
         "maps": "رابط غير صحيح",
         "phone": "رقم هاتف غير صحيح",
-        "duplicate": "يوجد فرع بنفس الاسم"
+        "duplicate": "يوجد فرع بهذا الاسم بالفعل"
       },
-      "confirmDelete": "حذف الفرع \"{name}\"?"
+      "confirmDelete": "حذف الفرع \"{name}\"؟"
     },
     "faq": {
       "empty": "لا توجد أسئلة شائعة بعد.",
       "add": "إضافة سؤال",
-      "count": "{count} سؤال",
+      "count": "{count} أسئلة",
       "untitled": "سؤال بدون عنوان",
       "field": {
         "question": "السؤال",
@@ -306,22 +306,22 @@
     "sources": {
       "title": "مصدر المعرفة",
       "kind": "النوع",
-      "versionCount": "عدد الإصدارات",
+      "versionCount": "الإصدارات",
       "currentVersion": "الإصدار الحالي",
       "history": "سجل النشر",
-      "noHistory": "لم يتم النشر بعد."
+      "noHistory": "غير منشور بعد."
     },
     "overview": {
-      "publishedNote": "أنت تشاهد النسخة المنشورة. أنشئ مسودة لإجراء تعديلات.",
+      "publishedNote": "أنت تعرض الإصدار المنشور. أنشئ مسودة لإجراء تغييرات.",
       "group": {
-        "brand": "معلومات العلامة",
+        "brand": "معلومات العلامة التجارية",
         "menu": "معلومات المنيو",
         "service": "معلومات الخدمة",
         "reservations": "الحجوزات"
       },
       "field": {
-        "restaurantName": "اسم المطعم / العلامة",
-        "about": "نبذة عن المطعم",
+        "restaurantName": "اسم المطعم / العلامة التجارية",
+        "about": "حول المطعم",
         "menuUrl": "رابط المنيو",
         "currency": "العملة",
         "halal": "معلومات الحلال",
@@ -332,11 +332,11 @@
     },
     "validation": {
       "oneProblem": "مشكلة واحدة",
-      "problems": "{count} مشكلات",
+      "problems": "{count} مشاكل",
       "hide": "إخفاء",
-      "show": "عرض",
-      "jump": "انتقال",
-      "attention": "التحقق يحتاج انتباهك"
+      "show": "إظهار",
+      "jump": "انتقال إلى",
+      "attention": "التحقق يحتاج انتباه"
     },
     "sectionLabel": {
       "overview": "نظرة عامة",
@@ -349,15 +349,15 @@
     },
     "review": {
       "empty": "لا توجد تغييرات مقارنة بالإصدار المنشور.",
-      "added": "إضافة",
-      "modified": "تعديل",
-      "removed": "حذف"
+      "added": "مضاف",
+      "modified": "معدل",
+      "removed": "مازول"
     },
     "preview": {
       "categories": "فئات المنيو",
-      "subcategories": "القوائم الفرعية",
+      "subcategories": "الفئات الفرعية",
       "branches": "الفروع",
-      "baseVersion": "إصدار الأساس"
+      "baseVersion": "الإصدار الأساسي"
     },
     "statusBar": {
       "draftUnsaved": "مسودة · تغييرات غير محفوظة",
@@ -365,10 +365,10 @@
       "saved": "تم حفظ المسودة",
       "saveFailed": "فشل الحفظ",
       "draft": "مسودة",
-      "published": "منشور · الإصدار {version}",
+      "published": "منشور · v{version}",
       "noPublished": "لا يوجد إصدار منشور",
       "oneIssue": "مشكلة واحدة تحتاج انتباهك",
-      "issues": "{count} مشكلات تحتاج انتباهك"
+      "issues": "{count} مشاكل تحتاج انتباهك"
     },
     "common": {
       "save": "حفظ",
@@ -379,42 +379,42 @@
   },
   "team": {
     "nav": "الفريق والصلاحيات",
-    "description": "إدارة من يمكنه الوصول للوحة وما يمكنه فعله",
+    "description": "إدارة من يمكنه الوصول للوحة وماذا يمكنه فعله",
     "addUser": "إضافة مستخدم",
     "editTitle": "تعديل الصلاحيات",
     "save": "حفظ",
     "edit": "تعديل",
     "disable": "تعطيل",
-    "enable": "تنشيط",
+    "enable": "تفعيل",
     "statusActive": "نشط",
-    "statusDisabled": "معطّل",
+    "statusDisabled": "معطل",
     "password": "كلمة المرور",
     "passwordHint": "8 أحرف على الأقل.",
-    "rolesHint": "مدير الشركة: صلاحية كاملة · المشرف: يعدّل المسودات · الوكيل: للقراءة فقط.",
-    "rbacNote": "الصلاحيات مفروضة على السيرفر — لمدير الشركة فقط.",
+    "rolesHint": "مدير الشركة: وصول كامل · مشرف: تحرير المسودات · وكيل: قراءة فقط.",
+    "rbacNote": "الصلاحيات تُفرض على الخادم — مدير الشركة فقط.",
     "confirmDisable": "تعطيل \"{name}\"؟ سيتم تسجيل خروجه فوراً.",
-    "confirmEnable": "إعادة تنشيط \"{name}\"؟",
+    "confirmEnable": "إعادة تفعيل \"{name}\"؟",
     "empty": {
       "title": "لا يوجد أعضاء فريق بعد",
-      "description": "أضف أول عضو في الفريق للبدء."
+      "description": "أضف أول عضو فريق للبدء."
     },
     "errors": {
       "title": "تعذّر تحميل الفريق",
-      "description": "حدث خطأ أثناء جلب بيانات الفريق.",
+      "description": "حدث خطأ أثناء جلب أعضاء الفريق.",
       "required": "الاسم والبريد الإلكتروني مطلوبان.",
       "passwordLength": "كلمة المرور يجب أن تكون 8 أحرف على الأقل.",
-      "failed": "حدث خطأ ما. حاول مرة أخرى."
+      "failed": "حدث خطأ ما. يرجى المحاولة مرة أخرى."
     },
     "forbidden": {
-      "title": "صلاحية المدير مطلوبة",
-      "description": "مدير الشركة فقط يمكنه إدارة الفريق. تواصل مع المسؤول."
+      "title": "مطلوب وصول مدير",
+      "description": "فقط مدراء الشركات يمكنهم إدارة الفريق. تواصل مع مديرك."
     },
     "table": {
       "name": "الاسم",
       "email": "البريد الإلكتروني",
-      "roles": "الصلاحيات",
+      "roles": "الأدوار",
       "status": "الحالة",
-      "actions": "إجراءات"
+      "actions": "الإجراءات"
     },
     "roles": {
       "admin": "مدير الشركة",
@@ -422,26 +422,26 @@
       "agent": "وكيل"
     },
     "delete": "حذف",
-    "confirmDelete": "حذف \"{name}\" ({email}) نهائياً؟ سيتم إزالة الحساب وجميع جلساته. لا يمكن التراجع عن هذا."
+    "confirmDelete": "حذف \"{name}\" ({email}) نهائياً؟ هذا يزيل الحساب وجميع جلساتهم. لا يمكن التراجع."
   },
   "command": {
     "title": "تنقل سريع",
-    "placeholder": "ابحث عن صفحة أو إجراء…",
+    "placeholder": "البحث في الصفحات والإجراءات…",
     "noResults": "لا توجد صفحات مطابقة.",
     "hint": "↑↓ للتنقل · Enter للفتح",
     "shortcut": "⌘K"
   },
   "channels": {
     "nav": "القنوات",
-    "description": "قنوات توجيه ميتا الموصولة بهذا المكان (للقراءة فقط)",
-    "readonlyNote": "عرض للقراءة فقط. ربط وإعادة ربط المزودين يأتي مع مرحلة التكاملات.",
-    "statusActive": "نشطة",
-    "health.ok": "سليمة",
-    "health.degraded": "متدهورة",
-    "health.down": "متوقفة",
+    "description": "قنوات توجيه ميتا المتصلة بمساحة العمل هذه (للقراءة فقط)",
+    "readonlyNote": "عرض للقراءة فقط. ربط وإعادة ربط مقدمي الخدمة يأتي مع مرحلة التكاملات.",
+    "statusActive": "نشط",
+    "healthOk": "صحي",
+    "healthDegraded": "متراجع",
+    "healthDown": "متوقف",
     "empty": {
       "title": "لا توجد قنوات بعد",
-      "description": "تظهر قنوات التوجيه هنا عند توصيل صفحة فيسبوك."
+      "description": "تظهر قنوات التوجيه هنا بمجرد ربط صفحة ميتا."
     },
     "errors": {
       "title": "تعذّر تحميل القنوات",
@@ -450,36 +450,119 @@
     "table": {
       "channel": "القناة",
       "provider": "المزود",
-      "brand": "العلامة",
+      "brand": "العلامة التجارية",
       "status": "الحالة",
       "health": "الصحة",
       "lastEvent": "آخر حدث"
     }
   },
   "ai": {
-    "nav": "المساعد الذكي",
-    "description": "اضبط طريقة رد المساعد الذكي في مساحتك",
-    "agentName": "المساعد الذكي",
-    "agentSubtitle": "يرد على محادثات العملاء من قاعدة المعرفة المنشورة",
+    "nav": "وكيل الذكاء الاصطناعي",
+    "description": "تكوين كيفية رد وكيل الذكاء الاصطناعي لمساحة عملك",
+    "agentName": "وكيل الذكاء الاصطناعي",
+    "agentSubtitle": "يرد على محادثات العملاء من معرفتك المنشورة",
     "tone": {
-      "professional": "رسمية",
-      "friendly": "ودّية",
+      "professional": "مهني",
+      "friendly": "ودي",
       "custom": "تعليمات مخصصة",
-      "kuwaiti": "لهجة كويتية"
+      "kuwaiti": "اللهجة الكويتية"
     },
-    "toneHint": "استخدم التعليمات المخصصة لهجة معينة (مثل الكويتية).",
+    "toneHint": "استخدم التعليمات المخصصة للهجة محددة (مثلاً اللهجة الكويتية).",
     "customInstructions": "تعليمات مخصصة",
-    "customPlaceholder": "مثال: رد باللهجة الكويتية، بخفة ودّكدة…",
-    "customHint": "اختياري. تُطبَّق فوق النبرة المختارة لهذه المساحة فقط.",
+    "customPlaceholder": "مثلاً: رد باللهجة الكويتية، اجعله دافئاً ومختصراً…",
+    "customHint": "اختياري. يُطبق فوق النغمة المختارة لمساحة العمل هذه فقط.",
     "languages": "لغات الرد",
-    "fallbackPolicy": "الرد الآمن",
-    "fallbackPolicyNote": "يُدار تلقائياً بواسطة السيرفر — الردود منخفضة الثقة ترجع لرد آمن.",
-    "readOnly": "للعرض فقط — مدير الشركة يمكنه تعديل هذه الإعدادات.",
+    "fallbackPolicy": "التراجع الآمن",
+    "fallbackPolicyNote": "تُدار تلقائياً بواسطة الخادم — الإجابات منخفضة الثقة تتراجع لرد آمن.",
+    "readOnly": "للقراءة فقط — مدير الشركة يمكنه تعديل هذه الإعدادات.",
     "save": "حفظ التغييرات",
     "saved": "تم الحفظ",
     "errors": {
       "title": "تعذّر تحميل إعدادات الذكاء",
-      "description": "حدث خطأ أثناء جلب إعدادات المساعد."
+      "description": "حدث خطأ أثناء جلب تكوين الذكاء الاصطناعي."
     }
+  },
+  "notifications": {
+    "title": "الإشعارات",
+    "loading": "جارٍ التحميل…",
+    "empty": "لا توجد إشعارات",
+    "markAllRead": "تعليم الكل كمقروء"
+  },
+  "platform": {
+    "companies": "الشركات",
+    "description": "إدارة الشركات وعلاماتها التجارية",
+    "totalCompanies": "إجمالي الشركات",
+    "active": "نشطة",
+    "companiesList": "قائمة الشركات",
+    "addCompany": "إضافة شركة",
+    "createCompany": "إنشاء شركة",
+    "creating": "جاري الإنشاء…",
+    "createCompanyDescription": "إنشاء شركة جديدة مع علامتها التجارية الأولى ومديرها",
+    "name": "الاسم",
+    "namePlaceholder": "مثال: شركة الأغذية المتحدة",
+    "slug": "المعرف",
+    "slugPlaceholder": "united-food-company",
+    "slugHint": "أحرف صغيرة وأرقام وشرطات فقط. يستخدم في الروابط.",
+    "adminAccount": "حساب المدير",
+    "adminName": "اسم المدير",
+    "adminNamePlaceholder": "مثال: أحمد محمد",
+    "adminEmail": "بريد المدير الإلكتروني",
+    "adminEmailPlaceholder": "مثال: admin@company.com",
+    "adminPassword": "كلمة مرور المدير",
+    "adminPasswordPlaceholder": "8 أحرف على الأقل",
+    "createCompany": "إنشاء الشركة",
+    "disableCompany": "تعطيل الشركة",
+    "disabling": "جاري التعطيل…",
+    "disableCompanyDescription": "سيؤدي ذلك إلى تعطيل الشركة وإلغاء جميع جلسات المستخدمين. لا يمكن التراجع عن هذا الإجراء.",
+    "companies": "الشركات",
+    "description": "إدارة الشركات وعلاماتها التجارية",
+    "totalCompanies": "إجمالي الشركات",
+    "active": "نشطة",
+    "companiesList": "قائمة الشركات",
+    "emptyTitle": "لا توجد شركات بعد",
+    "emptyDescription": "أنشئ شركتك الأولى للبدء",
+    "disableCompany": "تعطيل الشركة",
+    "status": {
+      "active": "نشطة",
+      "disabled": "معطلة"
+    }
+  },
+  "brands": {
+    "nav": "العلامات التجارية",
+    "description": "إدارة العلامات التجارية داخل شركتك",
+    "addBrand": "إضافة علامة تجارية",
+    "createBrand": "إنشاء علامة تجارية",
+    "creating": "جاري الإنشاء…",
+    "createBrandDescription": "إنشاء علامة تجارية جديدة داخل شركتك",
+    "editBrand": "تعديل العلامة التجارية",
+    "save": "حفظ",
+    "saving": "جاري الحفظ…",
+    "editBrandDescription": "تعديل تفاصيل العلامة التجارية وحالتها واللغة الافتراضية",
+    "name": "الاسم",
+    "namePlaceholder": "مثال: لايف وذ كاكاو",
+    "slug": "المعرف",
+    "slugPlaceholder": "life-with-cacao",
+    "slugHint": "أحرف صغيرة وأرقام وشرطات فقط. يستخدم في الروابط.",
+    "defaultLanguage": "اللغة الافتراضية",
+    "languages": {
+      "ar": "العربية",
+      "en": "الإنجليزية"
+    },
+    "status": {
+      "active": "نشطة",
+      "disabled": "معطلة"
+    },
+    "brandsList": "قائمة العلامات التجارية",
+    "emptyTitle": "لا توجد علامات تجارية بعد",
+    "emptyDescription": "أنشئ أول علامة تجارية للبدء",
+    "editBrand": "تعديل العلامة التجارية",
+    "editBrandDescription": "تعديل تفاصيل العلامة التجارية وحالتها واللغة الافتراضية",
+    "save": "حفظ",
+    "saving": "جاري الحفظ…",
+    "disableBrand": "تعطيل العلامة التجارية",
+    "disableBrandDescription": "سيؤدي ذلك إلى تعطيل العلامة التجارية وقنواتها المرتبطة. لا يمكن التراجع عن هذا الإجراء.",
+    "brands": "العلامات التجارية",
+    "emptyTitle": "لا توجد علامات تجارية بعد",
+    "emptyDescription": "أنشئ أول علامة تجارية للبدء"
   }
 }

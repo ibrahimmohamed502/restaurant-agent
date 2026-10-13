@@ -36,11 +36,22 @@ export async function validateSession(token) {
     `SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1`,
     [row.user_id]
   );
+
+  // Check if user is a Platform Super Admin (platform-level, not tenant-scoped)
+  const { rows: psa } = await pool.query(
+    `SELECT 1 FROM platform_super_admins WHERE user_id = $1`,
+    [row.user_id]
+  );
+  const roleNames = roles.map((r) => r.name);
+  if (psa.length > 0) {
+    roleNames.push('Platform Super Admin');
+  }
+
   return {
     tenantId: row.tenant_id,
     sessionId: row.session_id,
     user: { id: row.user_id, email: row.email, name: row.name },
-    roles: roles.map((r) => r.name)
+    roles: roleNames
   };
 }
 

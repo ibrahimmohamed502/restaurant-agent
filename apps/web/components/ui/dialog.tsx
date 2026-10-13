@@ -33,11 +33,29 @@ export const DialogContent = React.forwardRef<
 ));
 DialogContent.displayName = 'DialogContent';
 
-export function DialogHeader({ title, description }: { title: string; description?: string }) {
-  return (
-    <div className="space-y-1 pe-8">
-      <DialogPrimitive.Title className="text-base font-semibold text-foreground">{title}</DialogPrimitive.Title>
-      {description ? <DialogPrimitive.Description className="text-sm text-muted-foreground">{description}</DialogPrimitive.Description> : null}
-    </div>
-  );
-}
+export const DialogHeader = ({ title, description, children }: { title?: string; description?: string; children?: React.ReactNode }) => (
+  <div className="space-y-1 pe-8">
+    {title && <DialogPrimitive.Title className="text-base font-semibold text-foreground">{title}</DialogPrimitive.Title>}
+    {description && <DialogPrimitive.Description className="text-sm text-muted-foreground">{description}</DialogPrimitive.Description>}
+    {children}
+  </div>
+);
+
+export const DialogFooter = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, children, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn('flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2', className)}
+    {...props}
+  >
+    {children}
+  </div>
+));
+DialogFooter.displayName = 'DialogFooter';
+
+export const DialogTitle = DialogPrimitive.Title;
+export const DialogDescription = DialogPrimitive.Description;
+
+export { DialogPrimitive };

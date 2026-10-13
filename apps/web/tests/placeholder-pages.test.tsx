@@ -3,15 +3,24 @@ import { describe, expect, it } from 'vitest';
 import en from '@/messages/en.json';
 import ar from '@/messages/ar.json';
 
-const PAGES = ['audit', 'brands', 'companies', 'customers', 'integrations', 'settings'];
+const PLACEHOLDER_PAGES = ['audit', 'customers', 'integrations', 'settings'];
+const IMPLEMENTED_PAGES = ['brands', 'companies'];
 
-/** Roadmap modules must render the localized placeholder text — never the raw key. */
+/** Roadmap modules that are still placeholders must render the localized placeholder text — never the raw key. */
 describe('roadmap placeholder pages', () => {
-  it('every roadmap page reads the placeholder key from the root messages', () => {
-    for (const p of PAGES) {
+  it('every placeholder page reads the placeholder key from the root messages', () => {
+    for (const p of PLACEHOLDER_PAGES) {
       const src = readFileSync(new URL(`../app/(app)/${p}/page.tsx`, import.meta.url), 'utf8');
       expect(src, p).toContain("tp('placeholder')");
       expect(src, p).not.toContain("tp('')");
+      expect(src, p).not.toContain("getTranslations('placeholder')");
+    }
+  });
+
+  it('implemented pages (Companies, Brands) do NOT use the placeholder key', () => {
+    for (const p of IMPLEMENTED_PAGES) {
+      const src = readFileSync(new URL(`../app/(app)/${p}/page.tsx`, import.meta.url), 'utf8');
+      expect(src, p).not.toContain("tp('placeholder')");
       expect(src, p).not.toContain("getTranslations('placeholder')");
     }
   });

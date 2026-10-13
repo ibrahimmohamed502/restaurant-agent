@@ -81,6 +81,7 @@ export const api = {
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
+  patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   del: <T>(path: string) => request<T>('DELETE', path)
 };
 
@@ -179,4 +180,294 @@ export const usersApi = {
   setRoles: (id: string, roles: string[]) =>
     api.post<{ ok: true; roles: string[] }>(`/users/${id}/roles`, { roles }),
   remove: (id: string) => api.del<{ ok: true; id: string }>(`/users/${id}`)
+};
+
+/* ----------------------------------- Stage 7: conversations workspace */
+
+export const CONVERSATION_STATES = [
+  'AI_ACTIVE',
+  'HUMAN_REQUIRED',
+  'QUEUED',
+  'ASSIGNED',
+  'HUMAN_ACTIVE',
+  'RESOLVED'
+] as const;
+export type ConversationState = (typeof CONVERSATION_STATES)[number];
+
+export type ConversationListItem = {
+  id: string;
+  customerName: string | null;
+  provider: string | null;
+  state: ConversationState;
+  priority: string | null;
+  assignedUserId: string | null;
+  assignedUserName: string | null;
+  assignedTeamId: string | null;
+  resolvedAt: string | null;
+  createdAt: string | null;
+  brandId: string | null;
+  brandName: string | null;
+  channelName: string | null;
+  needsHuman: boolean;
+  language: string | null;
+  messageCount: number;
+  lastText: string | null;
+  lastMessageAt: string | null;
+};
+
+export type ConversationMessage = {
+  id: string;
+  direction: 'inbound' | 'outbound';
+  senderType: 'customer' | 'ai' | 'employee' | 'system';
+  text: string | null;
+  createdAt: string | null;
+  deliveryStatus?: 'pending' | 'sent' | 'failed';
+  deliveryError?: string | null;
+};
+
+export type ConversationDetail = {
+  conversation: {
+    id: string;
+    customerName: string | null;
+    provider: string | null;
+    channelName: string | null;
+    brandId: string | null;
+    brandName: string | null;
+    state: ConversationState;
+    priority: string | null;
+    resolvedAt: string | null;
+    assignedUserId: string | null;
+    assignedUserName: string | null;
+    assignedTeamId: string | null;
+    needsHuman: boolean;
+    language: string | null;
+    createdAt: string | null;
+  };
+  messages: ConversationMessage[];
+  assignmentHistory: Array<{
+    id: string;
+    action: 'assigned' | 'reassigned' | 'unassigned' | 'resumed' | 'resolved';
+    userId: string | null;
+    teamId: string | null;
+    reason: string | null;
+    createdAt: string | null;
+    actorUserName: string | null;
+    assignedByName: string | null;
+  }>;
+  /** Server-authoritative permissions — the UI only uses these to hide controls. */
+  permissions: {
+    canRequestHandoff: boolean;
+    canClaim: boolean;
+    canAssignOthers: boolean;
+    canReassign: boolean;
+    canUnassign: boolean;
+    canResumeAi: boolean;
+    canResolve: boolean;
+    canReply: boolean;
+    canReadNotes: boolean;
+    canCreateNotes: boolean;
+  };
+};
+
+export type EligibleMember = { id: string; name: string | null; email: string; roles: string[] };
+
+export type InternalNote = {
+  id: string;
+  body: string;
+  createdAt: string | null;
+  author: { id: string | null; name: string | null; email: string | null };
+  canDelete: boolean;
+};
+
+export type AppNotification = {
+  id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  data: Record<string, unknown>;
+  readAt: string | null;
+  createdAt: string | null;
+};
+
+export type ConversationFilters = {
+  state?: string;
+  assignedTo?: string;
+  brandId?: string;
+  limit?: number;
+};
+
+export const conversationsApi = {
+  list: (filters: ConversationFilters = {}) => {
+    const q = new URLSearchParams();
+    if (filters.state) q.set('state', filters.state);
+    if (filters.assignedTo) q.set('assignedTo', filters.assignedTo);
+    if (filters.brandId) q.set('brandId', filters.brandId);
+    if (filters.limit) q.set('limit', String(filters.limit));
+    const qs = q.toString();
+    return api.get<ConversationListItem[]>(`/conversations${qs ? `?${qs}` : ''}`);
+  },
+  detail: (id: string) => api.get<ConversationDetail>(`/conversations/${id}`),
+
+  requestHandoff: (id: string, reason: string, teamId?: string) =>
+    api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/handoff`, { reason, teamId }),
+
+  /** Race-safe self-assign. Loser receives HANDOFF_CONFLICT (409). */
+  claim: (id: string, reason?: string) =>
+    api.post<{ conversationId: string; state: ConversationState; assignedUserId: string }>(
+      `/conversations/${id}/claim`,
+      { reason }
+    ),
+
+  assign: (id: string, userId: string, reason?: string) =>
+    api.post<{ conversationId: string; state: ConversationState; assignedUserId: string; action: string }>(
+      `/conversations/${id}/assign`,
+      { userId, reason }
+    ),
+
+  unassign: (id: string, reason?: string) =>
+    api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/unassign`, { reason }),
+
+  activate: (id: string) =>
+    api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/activate`, {}),
+
+  resolve: (id: string) =>
+    api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/resolve`, {}),
+
+  resumeAi: (id: string, reason: string) =>
+    api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/resume-ai`, { reason }),
+
+  /** Human reply — sent through the provider to the real customer. */
+  reply: (id: string, text: string, idempotencyKey?: string) =>
+    api.post<{
+      messageId: string | null;
+      providerMessageId: string | null;
+      deliveryStatus: 'pending' | 'sent' | 'failed';
+      mechanism: string | null;
+      duplicate: boolean;
+    }>(`/conversations/${id}/reply`, { text, idempotencyKey }),
+
+  retryMessage: (id: string, messageId: string) =>
+    api.post<{ messageId: string; deliveryStatus: string }>(
+      `/conversations/${id}/messages/${messageId}/retry`,
+      {}
+    ),
+
+  eligibleMembers: (teamId?: string) =>
+    api.get<EligibleMember[]>(`/conversations/eligible-members${teamId ? `?teamId=${teamId}` : ''}`),
+
+  notes: (id: string) => api.get<InternalNote[]>(`/conversations/${id}/notes`),
+  addNote: (id: string, body: string) =>
+    api.post<InternalNote>(`/conversations/${id}/notes`, { body }),
+  deleteNote: (id: string, noteId: string) =>
+    api.del<{ id: string; deleted: boolean }>(`/conversations/${id}/notes/${noteId}`)
+};
+
+export const notificationsApi = {
+  list: (unreadOnly = false) =>
+    api.get<{ unread: number; items: AppNotification[] }>(
+      `/notifications${unreadOnly ? '?unreadOnly=1' : ''}`
+    ),
+  markRead: (id: string) => api.post<{ id: string; readAt: string }>(`/notifications/${id}/read`, {}),
+  markAllRead: () => api.post<{ marked: number }>('/notifications/read-all', {})
+};
+
+/* ----------------------------------- Stage 8 Batch 1: Platform Super Admin ----------------------------------- */
+
+export type CompanyInfo = {
+  id: string;
+  name: string;
+  slug: string;
+  status: 'active' | 'disabled';
+  createdAt: string;
+  brandsCount: number;
+  usersCount: number;
+};
+
+export type CompanyDetail = {
+  id: string;
+  name: string;
+  slug: string;
+  status: 'active' | 'disabled';
+  createdAt: string;
+  brands: Array<{
+    id: string;
+    name: string;
+    slug: string;
+    status: 'active' | 'disabled';
+    createdAt: string;
+  }>;
+};
+
+export type PlatformMetrics = {
+  companies: { total: number; active: number };
+  users: { total: number; active: number };
+  conversations: { total: number };
+  channels: { total: number; active: number };
+};
+
+export const platformApi = {
+  listCompanies: () => api.get<CompanyInfo[]>('/platform/companies'),
+  getCompany: (id: string) => api.get<CompanyDetail>(`/platform/companies/${id}`),
+  createCompany: (payload: { name: string; slug: string; adminEmail: string; adminName: string; adminPassword: string }) =>
+    api.post<{ company: { id: string; name: string; slug: string; status: string; createdAt: string };
+      brand: { id: string; name: string; slug: string; status: string };
+      admin: { id: string; email: string; name: string; status: string; createdAt: string } }>('/platform/companies', payload),
+  updateCompany: (id: string, payload: { name?: string; slug?: string }) =>
+    api.patch<{ id: string; name: string; slug: string; status: string; createdAt: string }>(`/platform/companies/${id}`, payload),
+  disableCompany: (id: string) =>
+    api.post<{ id: string; name: string; slug: string; status: string }>(`/platform/companies/${id}/disable`),
+  getMetrics: () => api.get<PlatformMetrics>('/platform/metrics')
+};
+
+/* ----------------------------------- Stage 8 Batch 1: Company Admin ----------------------------------- */
+
+export type BrandInfo = {
+  id: string;
+  name: string;
+  slug: string;
+  status: 'active' | 'disabled';
+  createdAt: string;
+  defaultLanguage?: string;
+};
+
+export type CompanyInfoForAdmin = {
+  id: string;
+  name: string;
+  slug: string;
+  status: 'active' | 'disabled';
+  createdAt: string;
+  brands: BrandInfo[];
+};
+
+export type CompanyUpdatePayload = {
+  name?: string;
+  slug?: string;
+  timezone?: string;
+  locale?: string;
+};
+
+export type BrandCreatePayload = {
+  name: string;
+  slug: string;
+  defaultLanguage?: string;
+};
+
+export type BrandUpdatePayload = {
+  name?: string;
+  slug?: string;
+  status?: 'active' | 'disabled';
+  defaultLanguage?: string;
+};
+
+export const companiesApi = {
+  getCompany: () => api.get<CompanyInfoForAdmin>('/companies/company'),
+  updateCompany: (payload: CompanyUpdatePayload) =>
+    api.patch<{ id: string; name: string; slug: string; status: string; createdAt: string }>('/companies/company', payload),
+  listBrands: () => api.get<BrandInfo[]>('/companies/brands'),
+  createBrand: (payload: BrandCreatePayload) =>
+    api.post<BrandInfo>('/companies/brands', payload),
+  updateBrand: (id: string, payload: BrandUpdatePayload) =>
+    api.patch<BrandInfo>(`/companies/brands/${id}`, payload),
+  disableBrand: (id: string) =>
+    api.post<BrandInfo>(`/companies/brands/${id}/disable`, {})
 };

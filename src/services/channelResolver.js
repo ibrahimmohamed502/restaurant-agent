@@ -54,11 +54,19 @@ export async function resolveMetaChannel(pageId, { includeCredential = false, db
 
   // 1) Resolve the routing channel by the incoming page id (external_id).
   //    Tenant/brand come FROM the channel row — never from a default.
+  //    Prefer 'meta' provider (legacy, has credentials) over 'meta_dm'/'meta_comment'.
+  //    Within same provider, prefer the one with credentials, then oldest.
   const { rows } = await executor.query(
-    `SELECT id, tenant_id, brand_id, provider, external_id, display_name, status
-     FROM channels
-     WHERE external_id = $1 AND provider = 'meta'
-     ORDER BY created_at ASC
+    `SELECT c.id, c.tenant_id, c.brand_id, c.provider, c.external_id, c.display_name, c.status,
+            CASE WHEN pc.channel_id IS NOT NULL THEN 0 ELSE 1 END AS has_cred,
+            CASE c.provider WHEN 'meta' THEN 0 WHEN 'meta_dm' THEN 1 WHEN 'meta_comment' THEN 2 ELSE 3 END AS provider_priority
+     FROM channels c
+     LEFT JOIN (
+       SELECT DISTINCT channel_id FROM provider_credentials
+       WHERE kind = 'page_access_token'
+     ) pc ON pc.channel_id = c.id
+     WHERE c.external_id = $1 AND c.provider IN ('meta', 'meta_dm', 'meta_comment')
+     ORDER BY has_cred ASC, provider_priority ASC, c.created_at ASC
      LIMIT 1`,
     [String(pageId)]
   );

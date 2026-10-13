@@ -21,6 +21,8 @@ import { createAiRouter } from './ai.js';
 import { getMetaEventQueue } from '../../queues/metaEvents.js';
 import { createDashboardRouter } from './dashboard.js';
 import { createConversationsRouter } from './conversations.js';
+import { createPlatformRouter } from './platform.js';
+import { createCompaniesRouter } from './companies.js';
 
 const CSRF_COOKIE = 'csrf_token';
 const CSRF_HEADER = 'x-csrf-token';
@@ -296,6 +298,12 @@ export function createApiV1Router(deps = {}) {
 
   /* --------------------- Stage 5: Knowledge Base management --------------------- */
   router.use('/knowledge', createKnowledgeRouter({ pool }));
+
+  /* --------------------- Stage 8 Batch 1: Platform Super Admin --------------------- */
+  router.use('/platform', createPlatformRouter());
+
+  /* --------------------- Stage 8 Batch 1: Company Admin --------------------- */
+  router.use('/companies', createCompaniesRouter());
 
   /* --------------------- Stage 5: Team & Access (tenant users + roles) --------------------- */
   router.use('/users', createUsersRouter());
