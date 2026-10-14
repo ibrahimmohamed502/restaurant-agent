@@ -207,7 +207,7 @@ const [isDisableDialogOpen, setIsDisableDialogOpen] = React.useState(false);
                       <TableCell className="hidden lg:table-cell text-muted-foreground">{c.usersCount}</TableCell>
                       <TableCell>
                         <Badge variant={c.status === 'active' ? 'success' : 'destructive'}>
-                          {t(`status.${c.status}`)}
+                          {t(`statusLabels.${c.status}`)}
                         </Badge>
                       </TableCell>
                       <TableCell className="hidden md:table-cell text-muted-foreground">{timeAgo(c.createdAt)}</TableCell>

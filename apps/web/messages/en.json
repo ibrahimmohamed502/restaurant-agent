@@ -510,19 +510,18 @@
     "adminEmailPlaceholder": "e.g. admin@company.com",
     "adminPassword": "Admin Password",
     "adminPasswordPlaceholder": "Min. 8 characters",
-    "createCompany": "Create Company",
     "disableCompany": "Disable Company",
     "disabling": "Disabling…",
     "disableCompanyDescription": "This will disable the company and revoke all user sessions. This action cannot be undone.",
-    "companies": "Companies",
-    "description": "Manage companies and their brands",
-    "totalCompanies": "Total Companies",
-    "active": "Active",
-    "companiesList": "Companies List",
     "emptyTitle": "No companies yet",
     "emptyDescription": "Create your first company to get started",
-    "disableCompany": "Disable Company",
-    "status": {
+    "loading": "Loading…",
+    "brands": "Brands",
+    "users": "Users",
+    "status": "Status",
+    "created": "Created",
+    "actions": "Actions",
+    "statusLabels": {
       "active": "Active",
       "disabled": "Disabled"
     }

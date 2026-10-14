@@ -510,19 +510,18 @@
     "adminEmailPlaceholder": "مثال: admin@company.com",
     "adminPassword": "كلمة مرور المدير",
     "adminPasswordPlaceholder": "8 أحرف على الأقل",
-    "createCompany": "إنشاء الشركة",
     "disableCompany": "تعطيل الشركة",
     "disabling": "جاري التعطيل…",
     "disableCompanyDescription": "سيؤدي ذلك إلى تعطيل الشركة وإلغاء جميع جلسات المستخدمين. لا يمكن التراجع عن هذا الإجراء.",
-    "companies": "الشركات",
-    "description": "إدارة الشركات وعلاماتها التجارية",
-    "totalCompanies": "إجمالي الشركات",
-    "active": "نشطة",
-    "companiesList": "قائمة الشركات",
     "emptyTitle": "لا توجد شركات بعد",
     "emptyDescription": "أنشئ شركتك الأولى للبدء",
-    "disableCompany": "تعطيل الشركة",
-    "status": {
+    "loading": "جاري التحميل…",
+    "brands": "العلامات التجارية",
+    "users": "المستخدمون",
+    "status": "الحالة",
+    "created": "تاريخ الإنشاء",
+    "actions": "الإجراءات",
+    "statusLabels": {
       "active": "نشطة",
       "disabled": "معطلة"
     }
