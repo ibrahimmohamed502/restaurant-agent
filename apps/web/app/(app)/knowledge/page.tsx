@@ -41,6 +41,7 @@ export default function KnowledgePage() {
   const [pendingSection, setPendingSection] = React.useState<SectionKey | null>(null);
 
   /* ------------------------------------------------------------- loading */
+
   const load = React.useCallback(async () => {
     setLoading(true);
     setLoadError(false);
@@ -79,6 +80,7 @@ export default function KnowledgePage() {
   React.useEffect(() => { setSaveState(dirty ? 'dirty' : 'idle'); }, [dirty]);
 
   /* ------------------------------------------------------------- editing */
+
   const patch = (next: Record<string, unknown>) => { setContent(next); setSaveState('dirty'); };
 
   const ensureDraft = async () => {
@@ -189,6 +191,7 @@ export default function KnowledgePage() {
   };
 
   /* ------------------------------------------------------------------ view */
+
   if (loading) {
     return (
       <div className="space-y-5">
@@ -213,6 +216,10 @@ export default function KnowledgePage() {
       </div>
     );
   }
+
+  // At this point, overview is guaranteed to be non-null
+  const overviewData = overview!;
+  
   if (!content) {
     return (
       <div className="space-y-5">
@@ -229,7 +236,7 @@ export default function KnowledgePage() {
   const branches = Array.isArray(c.branches) ? c.branches : [];
   const faqKey = ['faqs', 'faq', 'questions'].find((k) => Array.isArray(c[k])) ?? 'faqs';
   const faqs = Array.isArray(c[faqKey]) ? c[faqKey] : [];
-  const editing = hasDraft;
+  const editing = Boolean(overview?.draft && overview.draft.status === 'editing');
 
   const sections = [
     { key: 'overview', label: tk('sections.overview'), icon: Store },
@@ -271,10 +278,10 @@ export default function KnowledgePage() {
             </span>
           )
         }
-      />
+        />
 
       <KbStatusBar
-        brandLabel={overview.source.title}
+        brandLabel={overviewData?.source?.title ?? ''}
         publishedVersion={publishedVersion}
         draftState={editing ? 'draft' : 'none'}
         saveState={saveState}
@@ -299,7 +306,7 @@ export default function KnowledgePage() {
           {section === 'branches' ? <BranchEditor branches={branches} readOnly={!editing || !canEdit} onChange={(next) => patch({ ...c, branches: next })} /> : null}
           {section === 'faq' ? <FaqEditor faqs={faqs} label={tk('faq.field.question')} readOnly={!editing || !canEdit} onChange={(next) => patch({ ...c, [faqKey]: next })} /> : null}
           {section === 'policies' ? <PolicyEditor value={c} editing={editing && canEdit} onChange={(next) => patch(next)} /> : null}
-          {section === 'sources' ? <SourcesPanel source={overview.source} versions={overview.history} /> : null}
+          {section === 'sources' ? <SourcesPanel source={overviewData.source} versions={overviewData.history} /> : null}
         </div>
       </div>
 
