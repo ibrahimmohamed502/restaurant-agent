@@ -148,7 +148,8 @@ export function createApiV1Router(deps = {}) {
     lockedSecondsFn = lockedSeconds,
     recordFailedLoginFn = recordFailedLogin,
     resetLoginAttemptsFn = resetLoginAttempts,
-    corsOrigins = (process.env.API_CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean)
+    corsOrigins = (process.env.API_CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    platformAuditFn
   } = deps;
 
   const router = express.Router();
@@ -300,7 +301,7 @@ export function createApiV1Router(deps = {}) {
   router.use('/knowledge', createKnowledgeRouter({ pool }));
 
   /* --------------------- Stage 8 Batch 1: Platform Super Admin --------------------- */
-  router.use('/platform', createPlatformRouter());
+  router.use('/platform', createPlatformRouter(platformAuditFn));
 
   /* --------------------- Stage 8 Batch 1: Company Admin --------------------- */
   router.use('/companies', createCompaniesRouter());

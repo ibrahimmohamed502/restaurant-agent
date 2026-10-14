@@ -7,7 +7,6 @@
 import express from 'express';
 import { requireV1Auth, apiError } from './index.js';
 import { requireAbility, isCompanyAdmin } from './stage7-rbac.js';
-import { pool } from '../../db/pg.js';
 import { hashPassword } from '../../auth/passwords.js';
 import { audit } from '../../auth/audit.js';
 
@@ -18,7 +17,7 @@ router.use(requireV1Auth);
 
 router.get('/company', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT t.id, t.name, t.slug, t.status, t.created_at,
               (SELECT json_agg(json_build_object('id', b.id, 'name', b.name, 'slug', b.slug, 'status', b.status, 'createdAt', b.created_at))
                  FROM brands b WHERE b.tenant_id = t.id) AS brands
@@ -53,7 +52,7 @@ router.patch('/company', requireAbility('company.update'), async (req, res) => {
     if (timezone) { set.push(`timezone = $${params.length + 1}`); params.push(timezone); }
     if (locale) { set.push(`locale = $${params.length + 1}`); params.push(locale); }
 
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE tenants SET ${set.join(', ')} WHERE id = $1 RETURNING id, name, slug, status, created_at`,
       params
     );
@@ -81,10 +80,10 @@ router.patch('/company', requireAbility('company.update'), async (req, res) => {
 
 /* ---------------------------- GET /brands ---------------------------- */
 
-router.get('/brands', async (req, res) => {
+router.get('/brands', requireAbility('brand.read'), async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT id, name, slug, status, created_at
+    const { rows } = await req.db.query(
+      `SELECT id, name, slug, status, created_at, default_language
          FROM brands
         WHERE tenant_id = $1
         ORDER BY created_at ASC`,
@@ -109,9 +108,9 @@ router.post('/brands', requireAbility('brand.create'), async (req, res) => {
   }
 
   try {
-    const { rows: [brand] } = await pool.query(
+    const { rows: [brand] } = await req.db.query(
       `INSERT INTO brands (tenant_id, name, slug, status, default_language)
-       VALUES ($1,$2,'active',$3) RETURNING id, name, slug, status, created_at`,
+       VALUES ($1,$2,'active',$3) RETURNING id, name, slug, status, created_at, default_language`,
       [req.v1.tenantId, name, slug.toLowerCase(), defaultLanguage || 'ar']
     );
 
@@ -157,8 +156,8 @@ router.patch('/brands/:id', requireAbility('brand.update'), async (req, res) => 
     if (status) { set.push(`status = $${params.length + 1}`); params.push(status); }
     if (defaultLanguage) { set.push(`default_language = $${params.length + 1}`); params.push(defaultLanguage); }
 
-    const { rows } = await pool.query(
-      `UPDATE brands SET ${set.join(', ')} WHERE id = $1 AND tenant_id = $2 RETURNING id, name, slug, status, created_at`,
+    const { rows } = await req.db.query(
+      `UPDATE brands SET ${set.join(', ')} WHERE id = $1 AND tenant_id = $2 RETURNING id, name, slug, status, created_at, default_language`,
       params
     );
     if (!rows[0]) return apiError(res, 404, 'NOT_FOUND', 'brand not found');
@@ -187,7 +186,7 @@ router.patch('/brands/:id', requireAbility('brand.update'), async (req, res) => 
 
 router.post('/brands/:id/disable', requireAbility('brand.disable'), async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE brands SET status = 'disabled' WHERE id = $1 AND tenant_id = $2 AND status = 'active'
        RETURNING id, name, slug, status`,
       [req.params.id, req.v1.tenantId]
@@ -195,7 +194,7 @@ router.post('/brands/:id/disable', requireAbility('brand.disable'), async (req, 
     if (!rows[0]) return apiError(res, 404, 'NOT_FOUND', 'brand not found or already disabled');
 
     // Disable associated channels (safe archive)
-    await pool.query(
+    await req.db.query(
       `UPDATE channels SET status = 'inactive' WHERE brand_id = $1 AND tenant_id = $2 AND status = 'active'`,
       [req.params.id, req.v1.tenantId]
     );

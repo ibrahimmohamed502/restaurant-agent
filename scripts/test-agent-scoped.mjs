@@ -84,9 +84,8 @@ const junk = await run({ text: 'hi' }, { llmFn: () => 'not json at all' });
 check('L. malformed LLM output → safe fallback draft', junk.intent === 'fallback' && typeof junk.reply === 'string');
 
 // M LLM failure still uses localized fallback
-const boom = await run({ text: 'hi', channel: 'comment' }, { llmFn: () => { throw new Error('LLM HTTP 500'); } });
+const boom = await run({ text: 'مرحبا', channel: 'comment' }, { llmFn: () => { throw new Error('LLM HTTP 500'); } });
 const expectedFallback = (await import('../src/templates.js')).pickLocalized((await import('../src/templates.js')).FALLBACK_REPLY, 'ar');
-// deterministic language is Arabic here; simply require the existing generic fallback object was used
 check('M. LLM failure uses existing localized fallback behavior', boom.intent === 'fallback' && boom.reply === expectedFallback);
 
 // N no secrets/credentials in scoped prompt
