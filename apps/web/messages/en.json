@@ -547,11 +547,15 @@
       "ar": "Arabic",
       "en": "English"
     },
-    "status": {
+    "status": "Status",
+    "statusLabels": {
       "active": "Active",
       "disabled": "Disabled"
     },
     "brandsList": "Brands List",
+    "loading": "Loading…",
+    "created": "Created",
+    "actions": "Actions",
     "emptyTitle": "No brands yet",
     "emptyDescription": "Create your first brand to get started",
     "editBrand": "Edit Brand",
@@ -559,6 +563,7 @@
     "save": "Save",
     "saving": "Saving…",
     "disableBrand": "Disable Brand",
+    "disabling": "Disabling…",
     "disableBrandDescription": "This will disable the brand and its associated channels. This action cannot be undone.",
     "brands": "Brands",
     "emptyTitle": "No brands yet",

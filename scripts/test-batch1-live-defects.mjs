@@ -185,7 +185,7 @@ console.log('\n--- Defect 2: Migration 012 file exists and is correct ---');
 }
 
 // ---- Defect 3: i18n translation keys present ----
-console.log('\n--- Defect 3: i18n translation keys ---');
+console.log('\n--- Defect 3: i18n translation keys (platform) ---');
 for (const locale of ['en', 'ar']) {
   const msgPath = new URL(`../apps/web/messages/${locale}.json`, import.meta.url);
   let messages = {};
@@ -198,6 +198,130 @@ for (const locale of ['en', 'ar']) {
   check(`[${locale}] platform.created present`, typeof p.created === 'string' && p.created.length > 0);
   check(`[${locale}] platform.actions present`, typeof p.actions === 'string' && p.actions.length > 0);
   check(`[${locale}] platform.statusLabels nested object preserved`, typeof p.statusLabels === 'object' && p.statusLabels !== null);
+}
+
+// ---- Defect 6: Brands i18n keys (second round of untranslated keys) ----
+console.log('\n--- Defect 6: Brands i18n translation keys ---');
+for (const locale of ['en', 'ar']) {
+  const msgPath = new URL(`../apps/web/messages/${locale}.json`, import.meta.url);
+  let messages = {};
+  try { messages = JSON.parse(readFileSync(msgPath, 'utf8')); } catch { /* ignore */ }
+  const b = messages.brands || {};
+  check(`[${locale}] brands.status is string (NOT nested object)`, typeof b.status === 'string');
+  check(`[${locale}] brands.loading present`, typeof b.loading === 'string' && b.loading.length > 0);
+  check(`[${locale}] brands.created present`, typeof b.created === 'string' && b.created.length > 0);
+  check(`[${locale}] brands.actions present`, typeof b.actions === 'string' && b.actions.length > 0);
+  check(`[${locale}] brands.brandsList present`, typeof b.brandsList === 'string' && b.brandsList.length > 0);
+  check(`[${locale}] brands.statusLabels nested object preserved`, typeof b.statusLabels === 'object' && b.statusLabels !== null);
+}
+
+// ---- Defect 7: Source code does not reference conflicting nested keys ----
+console.log('\n--- Defect 7: Page source uses statusLabels (not nested status) ---');
+{
+  const companiesPath = new URL('../apps/web/app/(app)/companies/page.tsx', import.meta.url);
+  const brandsPath = new URL('../apps/web/app/(app)/brands/page.tsx', import.meta.url);
+  let companiesSrc = '';
+  let brandsSrc = '';
+  try { companiesSrc = readFileSync(companiesPath, 'utf8'); } catch { /* ignore */ }
+  try { brandsSrc = readFileSync(brandsPath, 'utf8'); } catch { /* ignore */ }
+
+  // Companies: must not use t(`status.${...}`)
+  check('companies page has NO t(`status.${...}`)', !/t\(`status\.\$\{/.test(companiesSrc));
+  check('companies page uses statusLabels', /statusLabels\./.test(companiesSrc));
+
+  // Brands: must not use t(`status.${...}`) or t('status.active')
+  check('brands page has NO t(`status.${...}`)', !/t\(`status\.\$\{/.test(brandsSrc));
+  check('brands page has NO t(\'status.active\')', !/t\('status\.active'\)/.test(brandsSrc));
+  check('brands page uses statusLabels', /statusLabels\./.test(brandsSrc));
+
+  // Brands: must reference created/actions keys (now defined)
+  check('brands page references created key', /t\('created'\)/.test(brandsSrc));
+  check('brands page references actions key', /t\('actions'\)/.test(brandsSrc));
+
+  // Companies: loading badge must be conditional on busy (not always rendered)
+  const alwaysLoadingBadge = /<Badge[^>]*>\s*\{busy \?[^}]*\}\s*\{t\('loading'\)\}/.test(companiesSrc);
+  check('companies loading badge NOT unconditional', !alwaysLoadingBadge);
+  check('companies loading badge gated by busy', /busy &&/.test(companiesSrc));
+}
+
+// ---- Defect 8: Static i18n scan for Batch 1 pages ----
+console.log('\n--- Defect 8: Static i18n scan (companies + brands) ---');
+{
+  const { execSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const cwd = fileURLToPath(new URL('..', import.meta.url));
+  const runScan = () => {
+    try { return { code: 0, out: execSync('node scripts/check-i18n-keys.mjs', { cwd, encoding: 'utf8' }) }; }
+    catch (e) { return { code: e.status ?? 1, out: String(e.stdout || '') }; }
+  };
+  const r = runScan();
+  check('i18n scan: no missing/non-string/empty keys', r.code === 0 && /No missing or non-string/.test(r.out), r.out.slice(-200));
+}
+
+// ---- Defect 9: Scanner cannot produce false PASS ----
+console.log('\n--- Defect 9: Scanner false-PASS resistance ---');
+{
+  const { execSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const { readFileSync, writeFileSync, copyFileSync, rmSync, existsSync } = await import('node:fs');
+  const cwd = fileURLToPath(new URL('..', import.meta.url));
+  const enPath = cwd + 'apps/web/messages/en.json';
+  const bakPath = cwd + 'apps/web/messages/.en.json.fp-bak';
+
+  const runScan = () => {
+    try { return { code: 0, out: execSync('node scripts/check-i18n-keys.mjs', { cwd, encoding: 'utf8' }) }; }
+    catch (e) { return { code: e.status ?? 1, out: String(e.stdout || '') }; }
+  };
+
+  copyFileSync(enPath, bakPath);
+  try {
+    const orig = JSON.parse(readFileSync(bakPath, 'utf8'));
+
+    const mutate = (fn) => {
+      const m = JSON.parse(JSON.stringify(orig));
+      fn(m);
+      writeFileSync(enPath, JSON.stringify(m, null, 2));
+      return runScan();
+    };
+
+    check('missing brands.created → FAILS', mutate(m => { delete m.brands.created; }).code !== 0);
+    check('missing brands.actions → FAILS', mutate(m => { delete m.brands.actions; }).code !== 0);
+    check('brands.status as object → FAILS', mutate(m => { m.brands.status = { a: 'b' }; }).code !== 0);
+    check('platform.status as object → FAILS', mutate(m => { m.platform.status = { a: 'b' }; }).code !== 0);
+    check('empty-string brands.status → FAILS', mutate(m => { m.brands.status = ''; }).code !== 0);
+    check('raw-key value brands.status → FAILS', mutate(m => { m.brands.status = 'brands.status'; }).code !== 0);
+    check('raw-key value brands.created → FAILS', mutate(m => { m.brands.created = 'brands.created'; }).code !== 0);
+    check('raw-key value platform.actions → FAILS', mutate(m => { m.platform.actions = 'platform.actions'; }).code !== 0);
+    check('raw-key value platform.loading → FAILS', mutate(m => { m.platform.loading = 'platform.loading'; }).code !== 0);
+    check('brands section deleted → FAILS', mutate(m => { delete m.brands; }).code !== 0);
+  } finally {
+    copyFileSync(bakPath, enPath);
+    if (existsSync(bakPath)) rmSync(bakPath, { force: true });
+  }
+  const restored = runScan();
+  check('restored en.json → scanner PASSES again', restored.code === 0, restored.out.slice(-150));
+}
+
+// ---- Defect 10: en/ar key + type parity ----
+console.log('\n--- Defect 10: en/ar translation parity ---');
+for (const section of ['platform', 'brands']) {
+  const { fileURLToPath: ftp } = await import('node:url');
+  const root = ftp(new URL('../', import.meta.url));
+  const en = JSON.parse(readFileSync(root + `apps/web/messages/en.json`, 'utf8'));
+  const ar = JSON.parse(readFileSync(root + `apps/web/messages/ar.json`, 'utf8'));
+
+  const flatten = (o, p = '') => Object.entries(o).flatMap(([k, v]) =>
+    v && typeof v === 'object' && !Array.isArray(v) ? flatten(v, p ? `${p}.${k}` : k) : [[p ? `${p}.${k}` : k, typeof v]]);
+  const ek = Object.fromEntries(flatten(en[section] || {}));
+  const ak = Object.fromEntries(flatten(ar[section] || {}));
+  const missingAr = Object.keys(ek).filter(k => !(k in ak));
+  const missingEn = Object.keys(ak).filter(k => !(k in ek));
+  const typeMismatch = Object.keys(ek).filter(k => k in ak && ek[k] !== ak[k]);
+
+  check(`[${section}] no keys missing in ar`, missingAr.length === 0, missingAr.join(', '));
+  check(`[${section}] no keys missing in en`, missingEn.length === 0, missingEn.join(', '));
+  check(`[${section}] no type mismatches`, typeMismatch.length === 0, typeMismatch.join(', '));
+  check(`[${section}] en has ${Object.keys(ek).length} keys`, Object.keys(ek).length > 25);
 }
 
 // ---- Defect 4: Brand creation with default_language works ----

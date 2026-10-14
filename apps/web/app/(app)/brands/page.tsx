@@ -216,7 +216,7 @@ const [isDisableDialogOpen, setIsDisableDialogOpen] = React.useState(false);
                       </TableCell>
                       <TableCell>
                         <Badge variant={b.status === 'active' ? 'success' : 'destructive'}>
-                          {t(`status.${b.status}`)}
+                          {t(`statusLabels.${b.status}`)}
                         </Badge>
                       </TableCell>
                       <TableCell className="hidden md:table-cell text-muted-foreground">{timeAgo(b.createdAt)}</TableCell>
@@ -335,8 +335,8 @@ const [isDisableDialogOpen, setIsDisableDialogOpen] = React.useState(false);
                 onChange={(e) => setForm({ ...form, status: e.target.value as 'active' | 'disabled' })}
                 className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <option value="active">{t('status.active')}</option>
-                <option value="disabled">{t('status.disabled')}</option>
+                <option value="active">{t('statusLabels.active')}</option>
+                <option value="disabled">{t('statusLabels.disabled')}</option>
               </select>
             </div>
             <div className="space-y-2">

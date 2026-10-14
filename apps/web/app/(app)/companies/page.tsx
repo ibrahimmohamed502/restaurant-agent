@@ -171,10 +171,12 @@ const [isDisableDialogOpen, setIsDisableDialogOpen] = React.useState(false);
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle>{t('companiesList')}</CardTitle>
-            <Badge variant={busy ? 'neutral' : 'neutral'} className="ml-2">
-              {busy ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : ''}
-              {t('loading')}
-            </Badge>
+            {busy && (
+              <Badge variant="neutral" className="ml-2">
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                {t('loading')}
+              </Badge>
+            )}
           </div>
           </CardHeader>
         <CardContent>
