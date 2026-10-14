@@ -16,6 +16,7 @@ import { Table, TableHeader, TableBody, TableRow, TableCell, TableHead } from '@
 import { Separator } from '@/components/ui/separator';
 import { platformApi } from '@/lib/api';
 import { ErrorState, PageLoading } from '@/components/ui/states';
+import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 function timeAgo(iso: string | null): string {
@@ -41,6 +42,7 @@ export default function PlatformCompaniesPage() {
   const [metrics, setMetrics] = React.useState<{ total: number; active: number } | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
+  const [forbidden, setForbidden] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [metricsLoading, setMetricsLoading] = React.useState(true);
 
@@ -54,6 +56,7 @@ const [isDisableDialogOpen, setIsDisableDialogOpen] = React.useState(false);
   const load = React.useCallback(async () => {
     setLoading(true);
     setError(false);
+    setForbidden(false);
     try {
       const [companiesData, metricsData] = await Promise.all([
         platformApi.listCompanies(),
@@ -61,8 +64,10 @@ const [isDisableDialogOpen, setIsDisableDialogOpen] = React.useState(false);
       ]);
       setCompanies(companiesData);
       setMetrics(metricsData.companies);
-    } catch {
-      setError(true);
+    } catch (err) {
+      const e = err as ApiError;
+      if (e.status === 403) setForbidden(true);
+      else setError(true);
     } finally {
       setLoading(false);
     }
@@ -127,6 +132,20 @@ const [isDisableDialogOpen, setIsDisableDialogOpen] = React.useState(false);
       <div className="space-y-5">
         <PageHeader title={t('companies')} breadcrumb={<BackButton />} />
         <PageLoading />
+      </div>
+    );
+  }
+
+  if (forbidden) {
+    return (
+      <div className="space-y-5">
+        <PageHeader title={t('companies')} breadcrumb={<BackButton />} />
+        <ErrorState
+          title={t('forbiddenTitle')}
+          description={t('forbiddenDescription')}
+          actionLabel={tc('retry')}
+          onAction={load}
+        />
       </div>
     );
   }

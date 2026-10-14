@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { ArrowLeft, BookOpen, Eye, GitBranch, Pencil, Store } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
-import { ErrorState, PageLoading } from '@/components/ui/states';
+import { EmptyState, ErrorState, PageLoading } from '@/components/ui/states';
 import { useToast } from '@/components/ui/toaster';
 import { KbActionBar, KbSectionNav, KbStatusBar, type KbAction, type SaveState } from '@/components/kb/kb-shell';
 import { ConfirmDialog, KbSkeleton, PreviewSummary, ReviewList, ValidationPanel } from '@/components/kb/kb-parts';
@@ -13,6 +13,7 @@ import { MenuEditor } from '@/components/kb/menu-editor';
 import { BranchEditor, FaqEditor, PolicyEditor, SourcesPanel, type Faq, type PolicyField } from '@/components/kb/editors';
 import { OverviewWorkspace, OVERVIEW_GROUPS } from '@/components/kb/overview';
 import { knowledgeApi, type KnowledgeOverview, type ValidationError, type Review } from '@/lib/knowledge-api';
+import { ApiError } from '@/lib/api';
 
 type SectionKey = 'overview' | 'menu' | 'branches' | 'faq' | 'policies' | 'sources';
 
@@ -27,6 +28,7 @@ export default function KnowledgePage() {
   const [overview, setOverview] = React.useState<KnowledgeOverview | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState(false);
+  const [noSource, setNoSource] = React.useState(false);
 
   const [section, setSection] = React.useState<SectionKey>('overview');
   const [content, setContent] = React.useState<Record<string, unknown> | null>(null);
@@ -42,6 +44,7 @@ export default function KnowledgePage() {
   const load = React.useCallback(async () => {
     setLoading(true);
     setLoadError(false);
+    setNoSource(false);
     try {
       const data = await knowledgeApi.overview();
       setOverview(data);
@@ -51,8 +54,15 @@ export default function KnowledgePage() {
       setSaveState('idle');
       setErrors([]);
       setReview(null);
-    } catch {
-      setLoadError(true);
+    } catch (err) {
+      // 404 KNOWLEDGE_SOURCE_NOT_FOUND = the Knowledge Base has not been
+      // initialized for this company/brand yet → friendly empty state,
+      // NOT an error. Genuine failures still fall through to ErrorState.
+      if (err instanceof ApiError && err.status === 404 && err.code === 'KNOWLEDGE_SOURCE_NOT_FOUND') {
+        setNoSource(true);
+      } else {
+        setLoadError(true);
+      }
     } finally {
       setLoading(false);
     }
@@ -187,11 +197,19 @@ export default function KnowledgePage() {
       </div>
     );
   }
-  if (loadError || !overview) {
+  if (loadError || (!overview && !noSource)) {
     return (
       <div className="space-y-5">
         <PageHeader title={t('knowledge')} />
         <ErrorState title={tk('errors.title')} description={tk('errors.description')} actionLabel={tc('retry')} onAction={load} />
+      </div>
+    );
+  }
+  if (noSource) {
+    return (
+      <div className="space-y-5">
+        <PageHeader title={t('knowledge')} description={tk('description')} />
+        <EmptyState title={tk('emptyTitle')} description={tk('emptyDescription')} actionLabel={tc('retry')} onAction={load} />
       </div>
     );
   }

@@ -98,15 +98,23 @@ const COMPANY_ADMIN_PERMISSIONS = [
         [tenant.id, name, 'main']
       );
 
+      // Initialize the Knowledge Base source for this brand (tenant-scoped).
+      // Without this, GET /knowledge returns 404 KNOWLEDGE_SOURCE_NOT_FOUND
+      // and the new company can never use the Knowledge Base.
+      await client.query(
+        `INSERT INTO knowledge_sources (tenant_id, brand_id, kind, title)
+         VALUES ($1,$2,'menu',$3)`,
+        [tenant.id, brand.id, `${name} — main menu & info`]
+      );
+
       // Create default teams
       for (const t of ['Customer Service', 'Marketing', 'Management']) {
         await client.query(`INSERT INTO teams (tenant_id, name) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [tenant.id, t]);
       }
 
-      // Create roles (seeded by migration, but ensure they exist for this tenant)
-      // Use explicit permissions and DO NOTHING on conflict to preserve any custom permissions
-      // Create roles (seeded by migration, but ensure they exist for this tenant)
-      // Use explicit permissions and DO NOTHING on conflict to preserve any custom permissions
+      // Create roles (seeded by migration, but ensure they exist for this tenant).
+      // Uses explicit permissions and DO NOTHING on conflict to preserve any
+      // custom permissions an existing role may already carry.
       let adminRole;
       const roleInsert = await client.query(
         `INSERT INTO roles (tenant_id, name, permissions) VALUES ($1,'Company Admin',$2)

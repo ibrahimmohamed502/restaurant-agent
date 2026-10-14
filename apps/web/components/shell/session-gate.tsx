@@ -7,6 +7,7 @@ import { authApi, type MeResponse } from '@/lib/api';
 import { ErrorState, PageLoading } from '@/components/ui/states';
 
 const COMPANY_ADMIN = 'Company Admin';
+const PLATFORM_SUPER_ADMIN = 'Platform Super Admin';
 
 /**
  * Classify a failed /auth/me response:
@@ -69,7 +70,7 @@ export function SessionGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const isSuperAdmin = (me.roles ?? []).includes(COMPANY_ADMIN);
+  const isSuperAdmin = (me.roles ?? []).includes(PLATFORM_SUPER_ADMIN);
   return (
     <AppShell user={{ name: me.user.name, email: me.user.email }} isSuperAdmin={isSuperAdmin}>
       {children}
