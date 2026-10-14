@@ -16,7 +16,6 @@ import { audit } from '../../auth/audit.js';
  * @returns {express.Router}
  */
 export function createPlatformRouter(auditFn = audit) {
-  console.log('[DEBUG createPlatformRouter] auditFn.toString().includes("mock"):', auditFn.toString().includes('mock'), 'auditFn.name:', auditFn.name);
   const router = express.Router();
   router.use(requireV1Auth, requirePlatformSuperAdmin);
 
@@ -31,6 +30,21 @@ export function createPlatformRouter(auditFn = audit) {
   }
 
   const isEmail = (v) => typeof v === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v) && v.length <= 254;
+
+// Explicit Company Admin permissions (matching migration 010)
+const COMPANY_ADMIN_PERMISSIONS = [
+  'brand.read','brand.create','brand.update','brand.disable',
+  'user.read','user.create','user.update','user.disable',
+  'brand.integration.connect','brand.integration.disconnect',
+  'brand.integration.reconnect','brand.integration.status',
+  'company.read','company.update',
+  'conversation.read','conversation.handoff','conversation.assign',
+  'conversation.reassign','conversation.unassign','conversation.resolve',
+  'conversation.resume_ai','conversation.reply',
+  'note.read','note.create','note.delete_any','notification.read',
+  'conversation.assign_self','conversation.reply_own','conversation.resolve_own',
+  'note.delete_own'
+];
 
   /* ---------------------------- GET /companies ---------------------------- */
 
@@ -90,11 +104,12 @@ export function createPlatformRouter(auditFn = audit) {
       }
 
       // Create roles (seeded by migration, but ensure they exist for this tenant)
+      // Use explicit permissions and DO NOTHING on conflict to preserve any custom permissions
       const { rows: [adminRole] } = await client.query(
-        `INSERT INTO roles (tenant_id, name, permissions) VALUES ($1,'Company Admin','["*"]'::jsonb)
-         ON CONFLICT (tenant_id, name) DO UPDATE SET permissions = EXCLUDED.permissions
+        `INSERT INTO roles (tenant_id, name, permissions) VALUES ($1,'Company Admin',$2)
+         ON CONFLICT (tenant_id, name) DO NOTHING
          RETURNING id`,
-        [tenant.id]
+        [tenant.id, JSON.stringify(COMPANY_ADMIN_PERMISSIONS)]
       );
 
       // Create admin user
@@ -120,7 +135,6 @@ export function createPlatformRouter(auditFn = audit) {
         ip: req.ip,
         metadata: { name: tenant.name, slug: tenant.slug, adminEmail: admin.email }
       });
-      console.log('[DEBUG PLATFORM] auditFn called for create, caller: PLATFORM, auditFn.name:', auditFn.name);
 
       return res.status(201).json({
         data: {
@@ -161,7 +175,6 @@ export function createPlatformRouter(auditFn = audit) {
   /* ------------------------- PATCH /companies/:id ------------------------- */
 
   router.patch('/companies/:id', async (req, res) => {
-  console.log('[DEBUG PLATFORM] PATCH /companies/:id reached, id:', req.params.id);
     const { name, slug } = req.body ?? {};
     if (!name && !slug) return apiError(res, 422, 'VALIDATION_ERROR', 'name or slug is required');
     if (slug && !/^[a-z0-9-]+$/.test(slug)) {
@@ -190,7 +203,6 @@ export function createPlatformRouter(auditFn = audit) {
         ip: req.ip,
         metadata: { name: rows[0].name, slug: rows[0].slug }
       });
-      console.log('[DEBUG PLATFORM] auditFn called for update');
 
       return res.json({ data: rows[0] });
     } catch (err) {
@@ -227,7 +239,6 @@ export function createPlatformRouter(auditFn = audit) {
         ip: req.ip,
         metadata: { name: rows[0].name, slug: rows[0].slug }
       });
-      console.log('[DEBUG PLATFORM] auditFn called for disable');
 
       return res.json({ data: rows[0] });
     } catch (err) {

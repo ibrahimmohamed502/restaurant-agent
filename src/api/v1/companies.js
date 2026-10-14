@@ -110,7 +110,7 @@ router.post('/brands', requireAbility('brand.create'), async (req, res) => {
   try {
     const { rows: [brand] } = await req.db.query(
       `INSERT INTO brands (tenant_id, name, slug, status, default_language)
-       VALUES ($1,$2,'active',$3) RETURNING id, name, slug, status, created_at, default_language`,
+       VALUES ($1,$2,$3,'active',$4) RETURNING id, name, slug, status, created_at, default_language`,
       [req.v1.tenantId, name, slug.toLowerCase(), defaultLanguage || 'ar']
     );
 
