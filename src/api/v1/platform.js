@@ -105,12 +105,28 @@ const COMPANY_ADMIN_PERMISSIONS = [
 
       // Create roles (seeded by migration, but ensure they exist for this tenant)
       // Use explicit permissions and DO NOTHING on conflict to preserve any custom permissions
-      const { rows: [adminRole] } = await client.query(
+      // Create roles (seeded by migration, but ensure they exist for this tenant)
+      // Use explicit permissions and DO NOTHING on conflict to preserve any custom permissions
+      let adminRole;
+      const roleInsert = await client.query(
         `INSERT INTO roles (tenant_id, name, permissions) VALUES ($1,'Company Admin',$2)
          ON CONFLICT (tenant_id, name) DO NOTHING
          RETURNING id`,
         [tenant.id, JSON.stringify(COMPANY_ADMIN_PERMISSIONS)]
       );
+      if (roleInsert.rows[0]) {
+        adminRole = roleInsert.rows[0];
+      } else {
+        // Role already exists, fetch its ID (preserving custom permissions)
+        const { rows: [existingRole] } = await client.query(
+          `SELECT id FROM roles WHERE tenant_id = $1 AND name = 'Company Admin'`,
+          [tenant.id]
+        );
+        if (!existingRole) {
+          throw new Error('Company Admin role not found after conflict');
+        }
+        adminRole = existingRole;
+      }
 
       // Create admin user
       const { rows: [admin] } = await client.query(

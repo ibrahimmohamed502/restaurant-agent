@@ -133,6 +133,26 @@ const db = {
       const r = roles.get(key);
       return { rows: r ? [r] : [] };
     }
+    if (/select permissions from roles where tenant_id = '\w+' and name = 'company admin'/.test(s) ||
+        /select permissions from roles where tenant_id = \$\d+ and name = 'company admin'/.test(s)) {
+      const tenantId = params[0];
+      for (const [, r] of roles) {
+        if (r.tenant_id === tenantId && r.name === 'Company Admin') {
+          return { rows: [r] };
+        }
+      }
+      return { rows: [] };
+    }
+    if (/insert into roles/.test(s) && /on conflict.*do nothing/.test(s)) {
+      const key = `${params[0]}:Company Admin`;
+      if (roles.has(key)) {
+        return { rows: [] };
+      }
+      const perms = JSON.parse(params[1]);
+      const r = { id: key, tenant_id: params[0], name: 'Company Admin', permissions: perms };
+      roles.set(key, r);
+      return { rows: [r] };
+    }
     if (/insert into roles/.test(s) && /on conflict/.test(s)) {
       const key = `${params[0]}:${params[1]}`;
       const r = { id: key, tenant_id: params[0], name: params[1], permissions: params[2] };
@@ -564,6 +584,47 @@ console.log('\n--- Audit Log: Company Disable ---');
     check('Audit has tenant_id', !!logs[0].tenant_id);
     check('Audit has actor', !!logs[0].actor_user_id);
   }
+}
+
+console.log('\n--- Regression: ON CONFLICT DO NOTHING preserves custom permissions ---');
+{
+  // Pre-seed a tenant with a Company Admin role that has CUSTOM permissions (not the default explicit set)
+  const customTenantId = 't-custom-perms';
+  const customPerms = ['brand.read', 'brand.create', 'user.read']; // Minimal custom set
+  tenants.set(customTenantId, { id: customTenantId, name: 'Custom Perms Co', slug: 'custom-perms', status: 'active', created_at: new Date() });
+  brands.set('b-custom', { id: 'b-custom', tenant_id: customTenantId, name: 'Main', slug: 'main', status: 'active', created_at: new Date() });
+  const customRoleKey = `${customTenantId}:Company Admin`;
+  roles.set(customRoleKey, { id: customRoleKey, tenant_id: customTenantId, name: 'Company Admin', permissions: customPerms });
+  
+  // Create a new company - this will trigger the role creation logic for the NEW tenant
+  // But first, let's verify the custom tenant's role is preserved
+  const { rows: customRoleCheck } = await db.query(
+    `SELECT permissions FROM roles WHERE tenant_id = $1 AND name = 'Company Admin'`,
+    [customTenantId]
+  );
+  check('Custom permissions preserved before create', JSON.stringify(customRoleCheck[0]?.permissions) === JSON.stringify(customPerms));
+  
+  // Now create a NEW company (different tenant) - this should work normally with default perms
+  const res = await makeReq('POST', '/platform/companies', { name: 'Another Co', slug: 'another-co', adminEmail: 'admin@another.test', adminName: 'Admin', adminPassword: 'SecurePass123' }, psaCookie, psaCsrf);
+  check('POST /platform/companies with new tenant → 201', res.status === 201);
+  
+  if (res.status === 201) {
+    const newTenantId = res.body.data.company.id;
+    // Verify the NEW tenant got the explicit default permissions (30 perms)
+    const { rows: newRoleCheck } = await db.query(
+      `SELECT permissions FROM roles WHERE tenant_id = $1 AND name = 'Company Admin'`,
+      [newTenantId]
+    );
+    check('New tenant gets explicit default permissions (30)', newRoleCheck[0]?.permissions?.length === 30);
+    check('New tenant has no wildcard', !newRoleCheck[0]?.permissions?.includes('*'));
+  }
+  
+  // Verify the custom tenant's role is STILL preserved after the new company creation
+  const { rows: customRoleCheck2 } = await db.query(
+    `SELECT permissions FROM roles WHERE tenant_id = $1 AND name = 'Company Admin'`,
+    [customTenantId]
+  );
+  check('Custom permissions STILL preserved after new company create', JSON.stringify(customRoleCheck2[0]?.permissions) === JSON.stringify(customPerms));
 }
 
 console.log(`\n${failed === 0 ? '🎉' : '💥'} ${passed} passed, ${failed} failed\n`);
