@@ -125,6 +125,22 @@ const db = {
   })
 };
 
+// Mock query additions inserted above connect? Need to add handlers before default return.
+// We add brand/tenant lookups here by monkey-patching db.query wrapper.
+const originalQuery = db.query.bind(db);
+db.query = async (sql, params = []) => {
+  const s = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (/select name from brands where id/.test(s)) {
+    const b = brands.get(params[0]);
+    return b ? { rows: [{ name: b.name }] } : { rows: [] };
+  }
+  if (/select name from tenants where id/.test(s)) {
+    const t = tenants.get(params[0]);
+    return t ? { rows: [{ name: t.name }] } : { rows: [] };
+  }
+  return originalQuery(sql, params);
+};
+
 /* ------------------------------------------------------------- router wiring */
 
 const { createApiV1Router } = await import('../src/api/v1/index.js');

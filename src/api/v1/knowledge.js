@@ -87,16 +87,32 @@ export function createKnowledgeRouter({ pool }) {
           return res.json({ data: { draft: shapeDraft(draft), created } });
         }
 
-        // No published knowledge → create initial draft with minimal valid content
-        // that passes validateKnowledge (requires restaurantName)
-        const tenantName = req.v1.user?.name || source.title || 'New Company';
+        // No published knowledge → create initial draft with neutral, schema-valid content.
+        // Reliable brand/company context (when it can be fetched) is used as the
+        // working name; nothing else (currency, halal, about) is invented — those
+        // stay blank for the user to fill deliberately. The draft still validates
+        // as "required: name" unless a name could be resolved.
+        let contextName = '';
+        try {
+          if (source.brand_id) {
+            const { rows: brandRows } = await pool.query('SELECT name FROM brands WHERE id = $1', [source.brand_id]);
+            if (brandRows?.[0]?.name) contextName = String(brandRows[0].name).trim();
+          }
+          if (!contextName) {
+            const { rows: tenantRows } = await pool.query('SELECT name FROM tenants WHERE id = $1', [tenantOf(req)]);
+            if (tenantRows?.[0]?.name) contextName = String(tenantRows[0].name).trim();
+          }
+        } catch {
+          contextName = '';
+        }
+        const name = contextName;
         const initialContent = {
-          restaurantName: tenantName,
-          brandName: tenantName,
-          name: tenantName,
+          restaurantName: name,
+          brandName: name,
+          name,
           about: '',
-          currency: 'KD',
-          halal: 'Halal',
+          currency: '',
+          halal: '',
           branches: [],
           menus: {}
         };
