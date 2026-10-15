@@ -52,6 +52,9 @@ export async function validateSession(token) {
     sessionId: row.session_id,
     user: { id: row.user_id, email: row.email, name: row.name },
     roles: roleNames
+    // Brand restriction extension point: when per-user brand grants exist,
+    // return the allowed brand ids here. Absent = tenant-wide scope, which is
+    // what api/v1/brandAccess.js enforces for every brand-scoped endpoint.
   };
 }
 

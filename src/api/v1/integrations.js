@@ -7,10 +7,12 @@
  *
  * SECURITY RULES (enforced here, not in the UI):
  *  - Tenant identity ALWAYS comes from the authenticated session (req.v1.tenantId).
- *    A browser can only narrow the view with `brandId`, which is validated as
- *    owned by that same tenant. There is no tenant parameter anywhere.
+ *    A browser can only narrow the view with `brandId`, which must be owned by
+ *    the tenant AND inside the caller's brand scope (see ./brandAccess.js).
  *  - Credential VALUES are never selected, decrypted, logged or serialized:
  *    the query returns presence + expiry only.
+ *  - Health diagnostics are reduced to approved CODES by services/healthCodes.js;
+ *    raw provider error text is never returned.
  *  - Read-only in this batch: no connect / disconnect / rotation mutations.
  *
  * RBAC: every endpoint requires the existing `brand.integration.status`
@@ -20,14 +22,11 @@ import express from 'express';
 import { requireV1Auth, apiError } from './index.js';
 import { requireAbility } from './stage7-rbac.js';
 import { providerCatalog, providerLabel } from '../../providers/registry.js';
+import { safeHealthStatus, safeHealthErrorCode } from '../../services/healthCodes.js';
+import { brandScopeFromSession, brandVisibleToScope, brandIsAccessible, BRAND_SCOPE_RESTRICTED } from './brandAccess.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Channel listing with credential PRESENCE (never values) and health.
- * Tenant-scoped by construction; optional brand narrowing.
- */
-const LIST_SQL = `
+/** Shared projection — no credential columns are ever selected. */
+const PROJECTION = `
   SELECT c.id, c.provider, c.external_id, c.display_name, c.status, c.brand_id, c.created_at,
          b.name AS brand_name,
          EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.channel_id = c.id) AS credential_present,
@@ -37,8 +36,9 @@ const LIST_SQL = `
     LEFT JOIN brands b ON b.id = c.brand_id
     LEFT JOIN integration_health h ON h.channel_id = c.id
    WHERE c.tenant_id = $1
-     AND ($2::uuid IS NULL OR c.brand_id = $2)
-   ORDER BY c.provider ASC, c.display_name ASC NULLS LAST, c.created_at ASC`;
+     AND ($2::uuid IS NULL OR c.brand_id = $2)`;
+
+const listSql = (restricted) => (restricted ? `${PROJECTION}\n     AND c.brand_id = ANY($3::uuid[])` : PROJECTION);
 
 const STATUS_SQL = `
   SELECT c.id, c.provider, c.external_id, c.display_name, c.status, c.brand_id, c.created_at,
@@ -51,7 +51,7 @@ const STATUS_SQL = `
     LEFT JOIN integration_health h ON h.channel_id = c.id
    WHERE c.id = $1 AND c.tenant_id = $2`;
 
-/** Map a DB row to the provider-neutral API shape. No secret ever leaves here. */
+/** Map a DB row to the provider-neutral API shape. No secret, no raw error text. */
 function toIntegration(row) {
   return {
     id: row.id,
@@ -68,10 +68,10 @@ function toIntegration(row) {
       expiresAt: row.credential_expires_at ?? null
     },
     health: {
-      status: row.health_status ?? 'unknown',
+      status: safeHealthStatus(row.health_status),
       lastEventAt: row.last_event_at ?? null,
-      // operator-written diagnostic text; truncated so it can never carry a payload
-      lastError: row.last_error ? String(row.last_error).slice(0, 200) : null
+      // allow-listed diagnostic CODE only — never the raw provider error text
+      lastError: safeHealthErrorCode(row.last_error)
     }
   };
 }
@@ -83,22 +83,28 @@ export function createIntegrationsRouter({ pool }) {
   /* ------------------------- GET /integrations ------------------------- */
   router.get('/', requireAbility('brand.integration.status'), async (req, res) => {
     const brandId = req.query.brandId ? String(req.query.brandId) : null;
+    const scope = brandScopeFromSession(req.v1);
     try {
-      if (brandId && !UUID_RE.test(brandId)) {
+      if (brandId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(brandId)) {
         return apiError(res, 400, 'VALIDATION_ERROR', 'brandId must be a uuid');
       }
-      // Brand must belong to the caller's tenant — otherwise a cross-tenant
-      // brandId could be used as an existence oracle.
       if (brandId) {
-        const { rows: brandRows } = await req.db.query(
-          `SELECT id FROM brands WHERE id = $1 AND tenant_id = $2`,
-          [brandId, req.v1.tenantId]
-        );
-        if (!brandRows[0]) return apiError(res, 404, 'BRAND_NOT_FOUND', 'brand not found');
+        // Must be owned by the tenant AND inside the caller's brand scope —
+        // otherwise a brandId could be used as an existence oracle.
+        const allowed = await brandIsAccessible({ db: req.db, tenantId: req.v1.tenantId, brandId, scope });
+        if (!allowed) return apiError(res, 404, 'BRAND_NOT_FOUND', 'brand not found');
       }
 
-      const { rows } = await req.db.query(LIST_SQL, [req.v1.tenantId, brandId]);
-      return res.json({ data: { integrations: rows.map(toIntegration), providers: providerCatalog() } });
+      const restricted = scope.mode === BRAND_SCOPE_RESTRICTED;
+      const params = restricted ? [req.v1.tenantId, brandId, scope.brandIds] : [req.v1.tenantId, brandId];
+      const { rows } = await req.db.query(listSql(restricted), params);
+      return res.json({
+        data: {
+          integrations: rows.map(toIntegration),
+          providers: providerCatalog(),
+          scope: restricted ? { mode: scope.mode, brandCount: scope.brandIds.length } : { mode: scope.mode }
+        }
+      });
     } catch (err) {
       console.error('integrations list failed:', err.message);
       return apiError(res, 500, 'INTERNAL', 'unexpected error');
@@ -108,10 +114,17 @@ export function createIntegrationsRouter({ pool }) {
   /* --------------------- GET /integrations/:id/status --------------------- */
   router.get('/:id/status', requireAbility('brand.integration.status'), async (req, res) => {
     const id = String(req.params.id ?? '');
-    if (!UUID_RE.test(id)) return apiError(res, 400, 'VALIDATION_ERROR', 'channel id must be a uuid');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return apiError(res, 400, 'VALIDATION_ERROR', 'channel id must be a uuid');
+    }
+    const scope = brandScopeFromSession(req.v1);
     try {
       const { rows } = await req.db.query(STATUS_SQL, [id, req.v1.tenantId]);
-      if (!rows[0]) return apiError(res, 404, 'CHANNEL_NOT_FOUND', 'integration not found');
+      // Out-of-scope brand is reported exactly like a missing channel (404),
+      // so the endpoint never reveals that it exists.
+      if (!rows[0] || !brandVisibleToScope(rows[0].brand_id, scope)) {
+        return apiError(res, 404, 'CHANNEL_NOT_FOUND', 'integration not found');
+      }
       return res.json({ data: { integration: toIntegration(rows[0]) } });
     } catch (err) {
       console.error('integration status failed:', err.message);

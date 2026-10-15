@@ -122,7 +122,7 @@ export async function requireV1Auth(req, res, next) {
     const auth = token ? await validate(token) : null;
     if (!auth) return apiError(res, 401, 'UNAUTHENTICATED', 'authentication required');
     if (!auth.tenantId) return apiError(res, 403, 'TENANT_REQUIRED', 'no tenant context on session');
-    req.v1 = { tenantId: auth.tenantId, user: auth.user, roles: auth.roles || [], sessionId: auth.sessionId ?? null };
+    req.v1 = { tenantId: auth.tenantId, user: auth.user, roles: auth.roles || [], sessionId: auth.sessionId ?? null, brandIds: auth.brandIds ?? null };
     next();
   } catch {
     return apiError(res, 401, 'UNAUTHENTICATED', 'authentication required');

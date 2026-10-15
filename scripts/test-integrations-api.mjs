@@ -48,9 +48,12 @@ const credentials = new Map([
   [ID.chAMeta, { value_encrypted: Buffer.from(SECRET_TOKEN_MATERIAL).toString('hex'), iv: 'aabb', expires_at: new Date('2027-01-01') }],
   [ID.chBMeta, { value_encrypted: Buffer.from('other-company-secret').toString('hex'), iv: 'ccdd', expires_at: null }]
 ]);
+// A raw provider error is deliberately hostile: token-looking string + customer id.
+const RAW_PROVIDER_ERROR = 'Graph API 400 {"error":{"message":"Invalid OAuth token EAAABsecret for user 987654@fb"}}';
 const health = new Map([
   [ID.chAMeta, { status: 'ok', last_event_at: new Date('2026-10-01'), last_error: null }],
-  [ID.chBMeta, { status: 'degraded', last_event_at: null, last_error: 'RATE_LIMITED' }]
+  [ID.chADM, { status: 'weird_status', last_event_at: null, last_error: RAW_PROVIDER_ERROR }],
+  [ID.chBMeta, { status: 'degraded', last_event_at: null, last_error: 'meta_rate_limit' }]
 ]);
 
 let passed = 0, failed = 0;
@@ -69,11 +72,12 @@ const db = {
       return { rows: b && b.tenant_id === params[1] ? [b] : [] };
     }
 
-    // integrations listing (tenant + optional brand narrowing)
+    // integrations listing (tenant + optional brand narrowing + optional brand scope)
     if (/from channels c/.test(s) && /c\.tenant_id = \$1/.test(s) && /\$2::uuid is null or c\.brand_id = \$2/.test(s)) {
-      const [tenantId, brandId] = params;
+      const [tenantId, brandId, scopeIds] = params;
       const rows = [...channels.values()]
         .filter((c) => c.tenant_id === tenantId && (!brandId || c.brand_id === brandId))
+        .filter((c) => !scopeIds || (c.brand_id && scopeIds.includes(c.brand_id)))
         .map((c) => decorate(c));
       return { rows };
     }
@@ -121,7 +125,14 @@ const router = createApiV1Router({
     const u = users.get(s.userId);
     if (!u) return null;
     const names = (userRoles.get(s.userId) || []).map((rid) => roles.get(rid)?.name).filter(Boolean);
-    return { tenantId: s.tenantId, user: { id: u.id, email: u.email, name: u.name }, roles: names, sessionId: 'sess-' + u.id };
+    return {
+      tenantId: s.tenantId,
+      user: { id: u.id, email: u.email, name: u.name },
+      roles: names,
+      sessionId: 'sess-' + u.id,
+      // optional brand restriction carried by the session (null = tenant-wide)
+      brandIds: s.brandIds ?? null
+    };
   },
   revokeSessionFn: async () => {},
   revokeOtherSessionsFn: async () => {},
@@ -145,7 +156,7 @@ const call = async (path, { method = 'GET', cookie, csrf } = {}) => {
   return { status: r.status, body, text: JSON.stringify(body) };
 };
 
-function makeUser({ id, tenantId, roleName, roleId }) {
+function makeUser({ id, tenantId, roleName, roleId, brandIds = null }) {
   users.set(id, { id, tenant_id: tenantId, email: `${id}@test`, name: id });
   if (roleName) {
     roles.set(roleId, { id: roleId, tenant_id: tenantId, name: roleName, permissions: [] });
@@ -154,7 +165,7 @@ function makeUser({ id, tenantId, roleName, roleId }) {
     userRoles.set(id, []);
   }
   const token = crypto.randomBytes(16).toString('hex');
-  sessions.set(token, { tenantId, userId: id, revoked: false });
+  sessions.set(token, { tenantId, userId: id, revoked: false, brandIds });
   return token;
 }
 
@@ -163,6 +174,8 @@ const supervisorA = makeUser({ id: 'sup-a', tenantId: 't-a', roleName: 'Supervis
 const agentA = makeUser({ id: 'agent-a', tenantId: 't-a', roleName: 'Agent', roleId: 'r-agent-a' });
 const noRole = makeUser({ id: 'norole-a', tenantId: 't-a' });
 const adminB = makeUser({ id: 'admin-b', tenantId: 't-b', roleName: 'Company Admin', roleId: 'r-ca-b' });
+// Restricted to Brand One only (b-a1) - drives brand-level authorization tests.
+const scopedA = makeUser({ id: 'scoped-a', tenantId: 't-a', roleName: 'Supervisor', roleId: 'r-sup-b', brandIds: [ID.bA1] });
 
 console.log('\nStage 8 Batch 2 -- Integrations API (read-only)\n');
 
@@ -203,7 +216,7 @@ console.log('\n--- Credential leakage ---');
   check('Status endpoint carries provider label', status.body?.data?.integration?.providerLabel === 'Meta (Facebook & Messenger)');
   check('Status endpoint reports health', status.body?.data?.integration?.health?.status === 'ok');
   const degraded = await call(`/integrations/${ID.chBMeta}/status`, { cookie: `lwc_session=${adminB}`, csrf: CSRF });
-  check('Sanitized last error surfaced for own tenant', degraded.body?.data?.integration?.health?.lastError === 'RATE_LIMITED');
+  check('Approved diagnostic code is surfaced verbatim', degraded.body?.data?.integration?.health?.lastError === 'META_RATE_LIMIT', String(degraded.body?.data?.integration?.health?.lastError));
 }
 
 /* ---------- 3. tenant isolation ---------- */
@@ -254,7 +267,71 @@ console.log('\n--- RBAC ---');
   check('Status endpoint is equally protected', noneStatus.status === 403, `got ${noneStatus.status}`);
 }
 
-/* ---------- 6. auth + CSRF + read-only surface ---------- */
+/* ---------- 6. health diagnostics are codes, never raw text ---------- */
+console.log('\n--- Health diagnostics (safe codes only) ---');
+{
+  const res = await call('/integrations', { cookie: `lwc_session=${adminA}`, csrf: CSRF });
+  const raw = res.body?.data?.integrations?.find((i) => i.id === ID.chADM);
+  check('Raw provider error text never reaches the response', !res.text.includes('Invalid OAuth token'), res.text.slice(0, 200));
+  check('Token-like substring never reaches the response', !res.text.includes('EAAABsecret'));
+  check('Customer id from the provider error never reaches the response', !res.text.includes('987654@fb'));
+  check('Unrecognized error collapses to a constant code', raw?.health?.lastError === 'UNRECOGNIZED_ERROR', String(raw?.health?.lastError));
+  check('Unrecognized health status collapses to unknown', raw?.health?.status === 'unknown', String(raw?.health?.status));
+  check('Clean channel reports null error', res.body?.data?.integrations?.find((i) => i.id === ID.chAMeta)?.health?.lastError === null);
+  check('Known health status is preserved', res.body?.data?.integrations?.find((i) => i.id === ID.chAMeta)?.health?.status === 'ok');
+
+  // direct unit check of the allow-list helper
+  const { safeHealthErrorCode, safeHealthStatus, UNRECOGNIZED_ERROR } = await import('../src/services/healthCodes.js');
+  check('Helper: approved code passes through', safeHealthErrorCode('credential_missing') === 'CREDENTIAL_MISSING');
+  check('Helper: resolver code passes through', safeHealthErrorCode('UNKNOWN_META_PAGE') === 'UNKNOWN_META_PAGE');
+  check('Helper: arbitrary text is dropped', safeHealthErrorCode('my page token is abc123 for user 5') === UNRECOGNIZED_ERROR);
+  check('Helper: null stays null', safeHealthErrorCode(null) === null);
+  check('Helper: long text never echoes', String(safeHealthErrorCode('x'.repeat(500))).length < 40);
+  check('Helper: status allow-list', safeHealthStatus('degraded') === 'degraded' && safeHealthStatus('bogus') === 'unknown' && safeHealthStatus(null) === 'unknown');
+}
+
+/* ---------- 7. brand-level authorization ---------- */
+console.log('\n--- Brand-level authorization (caller restricted to one brand) ---');
+{
+  // unfiltered listing must be narrowed to the caller's brands
+  const list = await call('/integrations', { cookie: `lwc_session=${scopedA}`, csrf: CSRF });
+  const ids = (list.body?.data?.integrations ?? []).map((i) => i.id);
+  check('Unfiltered listing returns only the allowed brand', JSON.stringify(ids) === JSON.stringify([ID.chAMeta]), JSON.stringify(ids));
+  check('Channel of a brand outside the scope is hidden', !ids.includes(ID.chADM));
+  check('Company-wide channel is hidden from a brand-restricted caller', !ids.includes(ID.chADisabled));
+  check('Response reports a restricted scope', list.body?.data?.scope?.mode === 'restricted' && list.body?.data?.scope?.brandCount === 1);
+
+  // tenant-wide caller still sees everything (regression)
+  const wide = await call('/integrations', { cookie: `lwc_session=${adminA}`, csrf: CSRF });
+  check('Tenant-wide caller is unaffected by the restriction', (wide.body?.data?.integrations ?? []).length === 3);
+  check('Tenant-wide caller sees a tenant scope', wide.body?.data?.scope?.mode === 'tenant');
+
+  // filter inside the scope is allowed
+  const inside = await call(`/integrations?brandId=${ID.bA1}`, { cookie: `lwc_session=${scopedA}`, csrf: CSRF });
+  check('Filtering by an allowed brand works', inside.status === 200 && (inside.body?.data?.integrations ?? []).map((i) => i.id).join() === ID.chAMeta, `got ${inside.status}`);
+
+  // filter outside the scope is refused, without revealing existence
+  const outside = await call(`/integrations?brandId=${ID.bA2}`, { cookie: `lwc_session=${scopedA}`, csrf: CSRF });
+  check('Filtering by a brand outside the scope → 404 BRAND_NOT_FOUND', outside.status === 404 && outside.body?.error?.code === 'BRAND_NOT_FOUND', `got ${outside.status} ${outside.body?.error?.code}`);
+  check('Out-of-scope filter leaks nothing', !outside.text.includes('Messenger DMs'));
+
+  // direct status access is brand-authorized too
+  const ok = await call(`/integrations/${ID.chAMeta}/status`, { cookie: `lwc_session=${scopedA}`, csrf: CSRF });
+  check('Status for an allowed brand → 200', ok.status === 200, `got ${ok.status}`);
+  const denied = await call(`/integrations/${ID.chADM}/status`, { cookie: `lwc_session=${scopedA}`, csrf: CSRF });
+  check('Status for an out-of-scope brand → 404 (no existence leak)', denied.status === 404 && denied.body?.error?.code === 'CHANNEL_NOT_FOUND', `got ${denied.status} ${denied.body?.error?.code}`);
+  check('Denied status response contains no channel data', !denied.text.includes('Messenger DMs') && !denied.text.includes('PAGE_A'));
+  const companyWide = await call(`/integrations/${ID.chADisabled}/status`, { cookie: `lwc_session=${scopedA}`, csrf: CSRF });
+  check('Status for a company-wide channel is denied for a restricted caller', companyWide.status === 404, `got ${companyWide.status}`);
+  const stillOk = await call(`/integrations/${ID.chADisabled}/status`, { cookie: `lwc_session=${adminA}`, csrf: CSRF });
+  check('Company-wide channel remains visible to tenant-wide callers', stillOk.status === 200, `got ${stillOk.status}`);
+
+  // scope comes from the session, never from the browser
+  const spoof = await call('/integrations?brandId=&tenantId=t-b', { cookie: `lwc_session=${scopedA}`, csrf: CSRF });
+  check('Restricted scope cannot be widened by query params', (spoof.body?.data?.integrations ?? []).map((i) => i.id).join() === ID.chAMeta);
+}
+
+/* ---------- 8. auth + CSRF + read-only surface ---------- */
 console.log('\n--- Authentication, CSRF and read-only surface ---');
 {
   const anon = await call('/integrations');
