@@ -11,6 +11,46 @@ import { Worker } from 'bullmq';
 import { getRedisConnection } from '../queues/redis.js';
 import { closeRedisConnection } from '../queues/redis.js';
 import { safeErrorCode } from '../services/redact.js';
+import { claimStaleWebhookEvents } from '../services/webhookEvents.js';
+import { replayStaleIntakes } from './metaEventPipeline.js';
+import { enabled as pgEnabled } from '../db/pg.js';
+
+/** How often stranded intake rows are looked for. */
+export const STALE_SWEEP_INTERVAL_MS = Number(process.env.STALE_SWEEP_INTERVAL_MS || 60_000);
+
+/**
+ * Recover intake rows that were recorded but never started processing.
+ *
+ * Owned exclusively by the worker: it is the process that owns queue state, and
+ * a second claimer (for example the webhook request path) could take a row that
+ * a queued job is about to process, producing a duplicate outbound reply.
+ *
+ * Safety rules (unchanged from replayStaleIntakes):
+ *   - only rows still in 'received' are claimed, via one atomic UPDATE;
+ *   - rows in 'processing' are never auto-replayed;
+ *   - bounded by the claim limit, single pass per tick, no retry loop.
+ */
+export function startStaleIntakeSweeper({ intervalMs = STALE_SWEEP_INTERVAL_MS } = {}) {
+  if (!pgEnabled) {
+    console.log('⏭️ stale intake sweeper disabled (no database)');
+    return null;
+  }
+  const timer = setInterval(async () => {
+    try {
+      const claimed = await claimStaleWebhookEvents();
+      if (!claimed.length) return;
+      console.warn(`♻️  replaying ${claimed.length} stranded intake event(s) that never started`);
+      const results = await replayStaleIntakes(claimed);
+      const failed = results.filter((r) => r?.failed).length;
+      if (failed) console.error(`❌ ${failed} stranded event(s) failed and were marked for review`);
+    } catch (err) {
+      console.error('❌ stale intake sweep failed:', safeErrorCode(err));
+    }
+  }, Math.max(15_000, Number(intervalMs) || 60_000));
+  timer.unref?.(); // never hold the process open
+  console.log(`♻️  stale intake sweeper armed (every ${Math.max(15_000, Number(intervalMs) || 60_000)}ms)`);
+  return timer;
+}
 import { META_EVENT_QUEUE } from '../queues/metaEvents.js';
 import { processQueuedMetaEvent } from './metaEventPipeline.js';
 import { createKnowledgeIndexWorker } from './knowledgeIndexWorker.js';
@@ -57,6 +97,7 @@ async function main() {
 
   // Stage 6: the knowledge-index worker shares the process but uses its OWN
   // queue + concurrency — embedding/index jobs never mix with Meta events.
+  startStaleIntakeSweeper();
   const indexWorker = createKnowledgeIndexWorker();
   indexWorker.on('completed', (job) => console.log(`✅ index job done: ${job.id}`));
   indexWorker.on('failed', (job, err) => {

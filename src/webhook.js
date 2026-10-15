@@ -108,9 +108,20 @@ export async function queueIntake(events, deps = {}) {
     enqueueMetaEvent,
     markWebhookEventInline
   } = deps;
-  const result = { enqueued: 0, duplicates: 0, fallbackEvents: [] };
+  const result = { enqueued: 0, duplicates: 0, fallbackEvents: [], noIntake: [] };
   for (const ev of events) {
-    const recorded = await recordWebhookEvent(ev);
+    let recorded;
+    try {
+      recorded = await recordWebhookEvent(ev);
+    } catch (e) {
+      // The idempotency record could not be written, so deduplication is NOT
+      // available for this event. Dropping it would lose a customer message
+      // (Meta was already ACKed and will not retry); skipping it is the only
+      // safe alternative, so it is processed inline and reported separately.
+      console.warn(`⚠️ intake record unavailable (${safeErrorCode(e)}) — event handled without deduplication`);
+      result.noIntake.push(ev);
+      continue;
+    }
     if (!recorded) { result.duplicates++; continue; }
     try {
       await enqueueMetaEvent(ev);
@@ -145,20 +156,13 @@ async function completeInlineEvents(events, status) {
 async function enqueuePayload(body) {
   try {
     const { normalizeMetaWebhook } = await import('./providers/meta/normalizer.js');
-    const { recordWebhookEvent, markWebhookEventInline, claimStaleWebhookEvents } =
-      await import('./services/webhookEvents.js');
+    const { recordWebhookEvent, markWebhookEventInline } = await import('./services/webhookEvents.js');
     const { enqueueMetaEvent } = await import('./queues/metaEvents.js');
-    const { replayStaleIntakes } = await import('./workers/metaEventPipeline.js');
 
-    // Crash recovery: events that were recorded but never started processing
-    // (e.g. the process died between the INSERT and the queue add) are claimed
-    // and replayed once. Bounded, and never replays anything already started.
-    const claimed = await claimStaleWebhookEvents().catch(() => []);
-    if (claimed.length) {
-      console.warn(`♻️  replaying ${claimed.length} stale intake event(s) that never started`);
-      await replayStaleIntakes(claimed).catch((e) => console.error('❌ stale replay failed:', safeErrorCode(e)));
-    }
-
+    // Stale-intake recovery is NOT done here: it is owned by the worker process
+    // (see startStaleIntakeSweeper). Claiming from the request path as well
+    // would let the API and the worker race for the same event, which is exactly
+    // how a duplicate outbound reply happens.
     const events = normalizeMetaWebhook(body);
     return await queueIntake(events, { recordWebhookEvent, enqueueMetaEvent, markWebhookEventInline });
   } catch (err) {
@@ -178,10 +182,19 @@ async function handlePayload(body, handlers = {}) {
     const outcome = await enqueueFn(body);
     if (outcome === null) {
       // intake infrastructure failed entirely → inline fallback below
-    } else if (outcome.fallbackEvents?.length) {
-      const handled = outcome.fallbackEvents;
+    } else if ((outcome.fallbackEvents?.length ?? 0) + (outcome.noIntake?.length ?? 0) > 0) {
+      // Everything the queue did not take is handled here, exactly once.
+      // fallbackEvents still have a durable intake row to close out; noIntake
+      // events have none, so only they are reported, never marked.
+      const handled = outcome.fallbackEvents ?? [];
+      const inlineSet = new Set(
+        [...handled, ...(outcome.noIntake ?? [])].map((e) => e.eventId)
+      );
+      if (outcome.noIntake?.length) {
+        console.warn(`⚠️ ${outcome.noIntake.length} event(s) processed WITHOUT an intake record — dedupe unavailable for those`);
+      }
       try {
-        await processInline(body, { buildCtx, onComment, onMessage }, new Set(handled.map((e) => e.eventId)));
+        await processInline(body, { buildCtx, onComment, onMessage }, inlineSet);
         await completeInlineEvents(handled, 'done');
       } catch (err) {
         await completeInlineEvents(handled, 'failed');
