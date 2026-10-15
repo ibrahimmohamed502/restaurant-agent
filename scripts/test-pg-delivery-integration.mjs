@@ -613,11 +613,90 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
       none.delivered_unrecorded === 0 && none.refused_unrecorded === 0 && none.pending_inflight === 0,
       JSON.stringify(none));
 
-    // Missing tenant fails closed rather than reporting everything.
+    // Missing tenant must be DISTINGUISHABLE from a genuine zero, never reported
+    // as a clean state.
     const noTenant = await summarizeUnresolvedOutbound({ scope: AUTHORISED });
-    check('a missing tenant returns the empty shape', noTenant.unresolved_total === 0);
+    check('a missing tenant is marked unavailable, not clean',
+      noTenant.unavailable === true && noTenant.reason === 'TENANT_REQUIRED', JSON.stringify(noTenant));
+    check('a missing tenant never leaks a count', noTenant.unresolved_total === 0);
     check('the in-flight bucket is a fixed token',
       typeof PENDING_INFLIGHT === 'string' && PENDING_INFLIGHT === 'pending_inflight');
+  }
+
+  // ---- the worker's cross-tenant aggregate ----
+  {
+    const { summarizeUnresolvedOutboundAllTenants } =
+      await import('../src/services/conversations.js');
+
+    const otherId = OTHER_TENANT.id;
+    const { rows: [otherConv] } = await pool.query(
+      `INSERT INTO conversations (tenant_id, external_key)
+       VALUES ($1, 'PSID_OTHER') RETURNING id`, [otherId]);
+    const { rows: [otherChan] } = await pool.query(
+      `INSERT INTO channels (tenant_id, provider, external_id, display_name)
+       VALUES ($1,'meta_dm','page_other','Other') RETURNING id`, [otherId]);
+    await pool.query(`UPDATE conversations SET channel_id = $2 WHERE id = $1`, [otherConv.id, otherChan.id]);
+
+    const before = await summarizeUnresolvedOutboundAllTenants();
+
+    // One marked row in our tenant, two in the other.
+    await addOutbound({ status: 'pending', error: null });
+    await pool.query(
+      `UPDATE messages SET delivery_error = 'delivered_unrecorded', created_at = now() - interval '1 hour'
+        WHERE id = (SELECT id FROM messages WHERE tenant_id = $1 AND direction='outbound'
+                     ORDER BY created_at DESC LIMIT 1)`, [tenant.id]);
+
+    await addOutbound({ tenantId: otherId, conversationId: otherConv.id, status: 'pending', error: 'refused_unrecorded' });
+    await addOutbound({ tenantId: otherId, conversationId: otherConv.id, status: 'pending', error: 'delivery_unknown' });
+    await pool.query(
+      `UPDATE messages SET created_at = now() - interval '1 hour'
+        WHERE tenant_id = $1 AND delivery_error = ANY($2::text[])`,
+      [otherId, ['refused_unrecorded', 'delivery_unknown']]);
+
+    const all = await summarizeUnresolvedOutboundAllTenants();
+    check('the aggregate counts rows across tenants',
+      all.refused_unrecorded >= 1 && all.delivery_unknown >= 1, JSON.stringify(all));
+    check('the aggregate total is the sum of the marker buckets',
+      all.unresolved_total === all.delivered_unrecorded + all.refused_unrecorded + all.delivery_unknown,
+      JSON.stringify(all));
+    check('the aggregate grew versus the empty database',
+      all.unresolved_total > before.unresolved_total);
+    check('more than one tenant is affected',
+      all.tenants_affected >= 2, String(all.tenants_affected));
+
+    // It must not name any tenant.
+    const serialised = JSON.stringify(all);
+    check('no tenant id leaks through the aggregate',
+      !serialised.includes(tenant.id) && !serialised.includes(otherId), serialised);
+    check('no per-tenant breakdown is returned',
+      !('byTenant' in all) && !('tenants' in all));
+    check('no customer content is returned',
+      !/text|name|psid|message_id/i.test(serialised), serialised);
+
+    // Ageing: a message that went pending seconds ago is legitimately in flight,
+    // so it must appear in NO bucket until it has had time to settle.
+    const fresh = await addOutbound({ status: 'pending', error: null });
+    await pool.query(`UPDATE messages SET created_at = now() WHERE id = $1`, [fresh]);
+    const afterFresh = await summarizeUnresolvedOutboundAllTenants();
+    check('a row that just went pending is not counted as unresolved',
+      afterFresh.unresolved_total === all.unresolved_total,
+      `${JSON.stringify(afterFresh)} vs ${JSON.stringify(all)}`);
+    check('nor is it counted as in-flight before it has settled',
+      afterFresh.pending_inflight === all.pending_inflight,
+      `${JSON.stringify(afterFresh)} vs ${JSON.stringify(all)}`);
+
+    // Age the same row: it must now become visible, and only as in-flight.
+    await pool.query(
+      `UPDATE messages SET created_at = now() - interval '1 hour' WHERE id = $1`, [fresh]);
+    const afterAged = await summarizeUnresolvedOutboundAllTenants();
+    check('once aged, a still-pending row is visible as in-flight',
+      afterAged.pending_inflight === all.pending_inflight + 1,
+      `${JSON.stringify(afterAged)} vs ${JSON.stringify(all)}`);
+    check('an in-flight row is never counted as unresolved',
+      afterAged.unresolved_total === all.unresolved_total,
+      `${JSON.stringify(afterAged)} vs ${JSON.stringify(all)}`);
+    check('the aggregate still names no tenant after ageing',
+      !JSON.stringify(afterAged).includes(otherId), JSON.stringify(afterAged));
   }
 }
 

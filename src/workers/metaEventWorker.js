@@ -16,7 +16,7 @@ import {
   summarizeStrandedEvents,
   strandedEventTotal
 } from '../services/webhookEvents.js';
-import { summarizeUnresolvedOutbound } from '../services/conversations.js';
+import { summarizeUnresolvedOutboundAllTenants } from '../services/conversations.js';
 import { redispatchStaleIntakes } from './metaEventPipeline.js';
 import { enabled as pgEnabled } from '../db/pg.js';
 
@@ -116,16 +116,20 @@ async function reportUnresolvedOutbound(now = Date.now()) {
   if (now - lastUnresolvedReportAt < UNRESOLVED_REPORT_MIN_GAP_MS) return;
   lastUnresolvedReportAt = now;
   try {
-    const u = await summarizeUnresolvedOutbound({ scope: { mode: 'tenant', brandIds: null } });
+    // The worker has no request context, so it must NOT invent a tenantId: that
+    // previously produced an all-zero result and the alert silently never fired.
+    // The cross-tenant aggregate returns counters only — never a tenant id.
+    const u = await summarizeUnresolvedOutboundAllTenants();
     if (u.unavailable) {
-      console.error('⚠️ unresolved-outbound report unavailable — cannot confirm a clean state');
+      // Loud and sanitized: an unavailable report is NOT a clean state.
+      console.error(`⚠️ unresolved-outbound report unavailable [${u.reason ?? 'REPORT_UNAVAILABLE'}] — cannot confirm a clean state`);
       return;
     }
     if (!u.unresolved_total) return;
     console.warn(
       `⚠️ unresolved outbound: delivered_unrecorded=${u.delivered_unrecorded} ` +
       `refused_unrecorded=${u.refused_unrecorded} delivery_unknown=${u.delivery_unknown} ` +
-      `(stale>5m=${u.stale_total}) — none are retried automatically`
+      `(tenants_affected=${u.tenants_affected}) — none are retried automatically`
     );
   } catch {
     // Never let reporting break the sweeper.

@@ -191,6 +191,31 @@ WHERE status IN ('processing', 'unknown')
 GROUP BY 1, 2;
 ```
 
+### Worker alert — unresolved outbound (cross-tenant)
+
+The worker is a single process for the whole platform. It has no request context
+and so cannot supply a tenant id, and it must never invent one.
+`summarizeUnresolvedOutbound` therefore returns an explicit
+`unavailable / TENANT_REQUIRED` for a missing tenant rather than an all-zero
+result, so a missing context can never be read as "nothing is wrong". It used to
+return zeros, which is why the worker alert silently never fired.
+
+`reportUnresolvedOutbound()` uses `summarizeUnresolvedOutboundAllTenants()`, a
+counter-only aggregate:
+
+- it returns **numbers only** — no tenant id, no customer id, no message text, no
+  credential, and no per-tenant breakdown, so a log line identifies nobody;
+- `tenants_affected` is **how many** distinct tenants are affected, not which;
+- rows younger than five minutes are excluded — a message that went `pending`
+  seconds ago is legitimately in flight, not unresolved;
+- it never mutates anything and never triggers a retry;
+- if the report itself fails, the worker logs a sanitized `REPORT_UNAVAILABLE`
+  line and explicitly does **not** claim a clean state.
+
+The per-tenant, brand-scoped drill-down stays behind the authorization check on
+`GET /dashboard/api/reconciliation`. That endpoint is unchanged and never uses
+the cross-tenant aggregate.
+
 Cutover: set `WEBHOOK_QUEUE_MODE=queue` in the stack env and
 `docker compose -p restaurant-agent up -d` (worker already deployed).
 Rollback: set it back to `inline`.

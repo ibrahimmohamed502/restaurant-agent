@@ -191,8 +191,11 @@ console.log('--- 7. the report and logs carry no customer data ---');
   const alert = workerSrc.slice(workerSrc.indexOf('function reportUnresolvedOutbound'));
   check('the worker alert prints only counters',
     !/SELECT|message_id|psid/i.test(alert));
-  check('the worker alert interpolates only numeric fields',
-    (alert.match(/\$\{u\.[a-z_]+\}/g) || []).every((m) => /\$\{u\.(delivered_unrecorded|refused_unrecorded|delivery_unknown|stale_total)\}/.test(m)));
+  check('the worker alert interpolates only counters and a fixed reason token',
+    (alert.match(/\$\{u\.[a-z_]+\}/g) || []).every((m) =>
+      /\$\{u\.(delivered_unrecorded|refused_unrecorded|delivery_unknown|stale_total|tenants_affected)\}/.test(m) ||
+      /\$\{u\.reason \?\? 'REPORT_UNAVAILABLE'\}/.test(m)),
+    (alert.match(/\$\{u\.[a-z_]+\}/g) || []).join(' '));
 
   const svc = read('../src/services/conversations.js');
   const summaryFn = svc.slice(svc.indexOf('export async function summarizeUnresolvedOutbound'));

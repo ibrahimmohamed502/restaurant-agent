@@ -357,7 +357,10 @@ export async function summarizeUnresolvedOutbound({
     unresolved_total: 0,
     stale_total: 0
   };
-  if (!tenantId) return empty;
+  // A missing tenant context is NOT "nothing is wrong". Returning the empty shape
+  // here once made the worker's alert silently report a clean state forever, so
+  // it is now an explicit, distinguishable failure that every caller must handle.
+  if (!tenantId) return { ...empty, unavailable: true, reason: 'TENANT_REQUIRED' };
 
   const tenantWide = scope?.mode === BRAND_SCOPE_TENANT;
   const brandIds = tenantWide ? [] : (scope?.brandIds ?? []);
@@ -395,6 +398,69 @@ export async function summarizeUnresolvedOutbound({
     // Fail closed: a reporting failure must never read as "nothing unresolved".
     console.error('⚠️ unresolved-outbound summary failed:', safeErrorCode(err));
     return { ...empty, unavailable: true };
+  }
+}
+
+/**
+ * CROSS-TENANT aggregate, for the internal worker alert only.
+ *
+ * The worker is a single process with no request context, so it cannot supply a
+ * tenantId — and must never fabricate one. This function exists so the alert can
+ * still fire, while leaking as little as possible:
+ *
+ *  - it returns COUNTERS ONLY. No tenant id, no customer id, no message text, no
+ *    credential, and no per-tenant breakdown — a log line cannot identify which
+ *    tenant is affected. `tenants_affected` is how MANY tenants are affected,
+ *    not which ones;
+ *  - the drill-down is GET /dashboard/api/reconciliation, which applies the
+ *    caller's tenant AND brand policy;
+ *  - it never mutates anything and never triggers a retry.
+ *
+ * Rows younger than `olderThanSeconds` are excluded: a message that went pending
+ * seconds ago is legitimately in flight, not unresolved.
+ */
+export async function summarizeUnresolvedOutboundAllTenants({ olderThanSeconds = 300 } = {}) {
+  const empty = {
+    delivered_unrecorded: 0,
+    refused_unrecorded: 0,
+    delivery_unknown: 0,
+    pending_inflight: 0,
+    unresolved_total: 0,
+    stale_total: 0,
+    tenants_affected: 0
+  };
+  const older = Math.max(30, Number(olderThanSeconds) || 300);
+
+  try {
+    const { rows } = await pool.query(
+      `WITH unresolved AS (
+          SELECT m.delivery_error, m.tenant_id
+            FROM messages m
+           WHERE m.direction = 'outbound'
+             AND m.created_at < now() - ($2 || ' seconds')::interval
+             AND (m.delivery_status = 'pending' OR m.delivery_error = ANY($3::text[]))
+         )
+       SELECT COALESCE(u.delivery_error, $1) AS marker,
+              COUNT(*)::int AS total,
+              (SELECT COUNT(DISTINCT t2.tenant_id) FROM unresolved t2)::int AS tenants
+         FROM unresolved u
+        GROUP BY 1`,
+      [PENDING_INFLIGHT, String(older), [...RECONCILIATION_CATEGORIES]]
+    );
+
+    const out = { ...empty };
+    for (const row of rows) {
+      if (row.marker in out) out[row.marker] = row.total;
+      if (row.marker !== PENDING_INFLIGHT) out.unresolved_total += row.total;
+      // How many distinct tenants have at least one unresolved message — a bare
+      // count. It says HOW MANY, never WHICH, so the log identifies nobody.
+      out.tenants_affected = Math.max(out.tenants_affected, row.tenants ?? 0);
+    }
+    return out;
+  } catch (err) {
+    // Fail closed: an unavailable report must never read as "all clear".
+    console.error('⚠️ cross-tenant unresolved summary failed:', safeErrorCode(err));
+    return { ...empty, unavailable: true, reason: 'REPORT_UNAVAILABLE' };
   }
 }
 
