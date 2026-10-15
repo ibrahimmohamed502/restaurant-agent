@@ -16,6 +16,11 @@
 const VERSION = process.env.FB_GRAPH_VERSION || 'v21.0';
 const GRAPH_BASE = `https://graph.facebook.com/${VERSION}`;
 
+// Log hygiene for this module: provider messages are never printed verbatim and
+// customer identifiers are redacted. redact.js has no dependencies of its own,
+// so this cannot introduce a cycle.
+import { redactId, safeErrorCode } from './services/redact.js';
+
 export const META_CREDENTIAL_MISSING = 'META_CREDENTIAL_MISSING';
 
 export class MetaCredentialError extends Error {
@@ -112,7 +117,10 @@ export function createMetaClient({ accessToken } = {}) {
       return graphPost('/me/messages', {
         recipient: { id: psid },
         sender_action: 'typing_on'
-      }).catch((e) => console.warn('typing indicator failed:', e.message));
+        // Best-effort UX signal only. A failure here must never affect the reply,
+        // and the raw provider message is never logged: a Graph error can echo
+        // request context, and the PSID is redacted rather than printed.
+      }).catch((e) => console.warn('typing indicator failed:', safeErrorCode(e), `psid=${redactId(psid)}`));
     },
 
     /** Fetch the sender's first name for a warmer greeting (null if unavailable). */

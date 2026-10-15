@@ -85,7 +85,14 @@ console.log('\n🧪 Stage 4.4.6 — persist-first + delivery status\n');
 {
   store.clear();
   const ctx = makeCtx();
-  ctx.metaClient.replyToComment = async () => { throw new Error('Graph API 401 (code 190): Error validating access token: Session has expired'); };
+  // Built exactly as src/facebook.js toGraphError() builds it. A bare Error with
+  // only message text is malformed as far as the classifier is concerned and is
+  // (correctly) treated as an UNKNOWN outcome rather than a refusal.
+  ctx.metaClient.replyToComment = async () => {
+    const e = new Error('Graph API 401 (code 190): Error validating access token: Session has expired');
+    e.status = 401; e.graphCode = 190; e.isGraphError = true;
+    throw e;
+  };
   const marked = [];
   await processComment({ comment_id: 'cC', message: 'hi', from: { id: 'u1' } }, ctx, base({ mark: (id) => marked.push(id) }));
   const out = [...store.values()].find(r => r.direction === 'outbound');
@@ -97,7 +104,11 @@ console.log('\n🧪 Stage 4.4.6 — persist-first + delivery status\n');
 {
   store.clear();
   const ctx = makeCtx();
-  ctx.metaClient.replyToComment = async () => { throw new Error('Graph API 500 (code 1): An unknown error has occurred.'); };
+  ctx.metaClient.replyToComment = async () => {
+    const e = new Error('Graph API 500 (code 1): An unknown error has occurred.');
+    e.status = 500; e.graphCode = 1; e.isGraphError = true;
+    throw e;
+  };
   await processComment({ comment_id: 'cD', message: 'hi', from: { id: 'u1' } }, ctx, base());
   const out = [...store.values()].find(r => r.direction === 'outbound');  // A 5xx means Meta's own edge failed: the message may already exist, so the
   // outcome is UNKNOWN. It is recorded as 'pending' + 'delivery_unknown', which

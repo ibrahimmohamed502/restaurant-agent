@@ -27,7 +27,7 @@ if (!pool) { console.error('stub pool missing'); process.exit(1); }
 const store = new Map();          // `${conv}|${pmid}` -> message row
 let seq = 0;
 /** Flip these to simulate infrastructure failures at a precise point. */
-const faults = { updateDelivery: false, insertInbound: false };
+const faults = { updateDelivery: false, insertInbound: false, insertOutbound: false };
 
 pool.query = async (sql, params = []) => {
   const s = sql.replace(/\s+/g, ' ');
@@ -43,6 +43,11 @@ pool.query = async (sql, params = []) => {
     if (isInbound && faults.insertInbound) {
       const e = new Error('connection terminated unexpectedly');
       e.code = 'ECONNRESET';
+      throw e;
+    }
+    if (!isInbound && faults.insertOutbound) {
+      const e = new Error('deadlock detected');
+      e.code = '40P01';
       throw e;
     }
     // Mirrors ON CONFLICT (conversation_id, provider_message_id) DO NOTHING.
@@ -96,7 +101,12 @@ const check = (n, ok, d = '') => {
   else { failed++; console.log(`  FAIL ${n}${d ? ' -- ' + d : ''}`); }
 };
 
-const reset = () => { store.clear(); faults.updateDelivery = false; faults.insertInbound = false; };
+const reset = () => {
+  store.clear();
+  faults.updateDelivery = false;
+  faults.insertInbound = false;
+  faults.insertOutbound = false;
+};
 const outboundRows = () => [...store.values()].filter((r) => r.direction === 'outbound');
 const inboundRows = () => [...store.values()].filter((r) => r.direction === 'inbound');
 
@@ -229,6 +239,61 @@ for (const [label, err, value, run] of [
     `${out?.delivery_status}/${out?.delivery_error}`);
   check(`${label}: not retryable`,
     !isRetryableDeliveryRow({ deliveryStatus: out?.delivery_status, deliveryError: out?.delivery_error }));
+}
+
+/* ==== 3b. THE SEND FAILED DEFINITIVELY, THEN THE DB WRITE ALSO FAILED === */
+console.log('\n--- 3b. a DB failure must never turn a refusal into a safe retry ---');
+for (const [label, value, run] of [
+  ['comment', { comment_id: 'cd1', message: 'hi', from: { id: 'u1' } }, processComment],
+  ['DM', { message: { mid: 'md1', text: 'hi' }, sender: { id: 'u1' } }, processMessage]
+]) {
+  reset();
+  // 'attempted' counts calls; 'accepted' counts replies Meta actually returned.
+  // A refusal must never increment 'accepted' — that is the whole point.
+  let attempted = 0, accepted = 0;
+  const refuse = async () => { attempted++; throw graphError(429, 4); };
+  const meta = run === processComment
+    ? { replyToComment: refuse }
+    : { sendMessengerReply: refuse };
+  faults.updateDelivery = true;
+
+  await run(value, ctxWith(meta), base());
+
+  const out = outboundRows()[0];
+  check(`${label}: Meta refused it, so nothing reached the customer`,
+    attempted === 1 && accepted === 0, `attempted=${attempted}`);
+  check(`${label}: no row was recorded as delivered`,
+    !outboundRows().some((r) => r.delivery_status === 'sent'));
+  // The refusal was genuinely retryable, but the write that would have recorded
+  // it failed — so the row is still 'pending'. A database outage must NEVER be
+  // the thing that makes an outbound message look safe to re-send.
+  check(`${label}: the row stayed 'pending', it did not become 'failed'`,
+    out?.delivery_status === 'pending', out?.delivery_status);
+  check(`${label}: and it is NOT retryable`,
+    !isRetryableDeliveryRow({ deliveryStatus: out?.delivery_status, deliveryError: out?.delivery_error }));
+}
+
+/* ==== 3c. THE OUTBOUND ROW CANNOT BE CREATED BEFORE THE META CALL ====== */
+console.log('\n--- 3c. no outbound record means the send is never attempted ---');
+for (const [label, value, run] of [
+  ['comment', { comment_id: 'cd2', message: 'hi', from: { id: 'u1' } }, processComment],
+  ['DM', { message: { mid: 'md2', text: 'hi' }, sender: { id: 'u1' } }, processMessage]
+]) {
+  reset();
+  let sent = 0;
+  const meta = run === processComment
+    ? { replyToComment: async () => { sent++; return { id: 'r1' }; } }
+    : { sendMessengerReply: async () => { sent++; return { message_id: 'd1' }; } };
+  faults.insertOutbound = true;
+
+  let threw = false;
+  const ledger = { started: false, outcome: null, category: null };
+  await run(value, ctxWith(meta), base({ ledger })).catch(() => { threw = true; });
+
+  check(`${label}: the Meta send was never attempted`, sent === 0, `sent=${sent}`);
+  check(`${label}: the failure propagates so the worker can retry`, threw);
+  check(`${label}: the ledger was NOT marked, so a retry stays safe`,
+    ledger.started === false, `started=${ledger.started}`);
 }
 
 /* ============ 4. DEFINITIVE REJECTIONS ARE DISTINGUISHED ================ */

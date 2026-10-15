@@ -1,4 +1,4 @@
-import { redactId, textSummary } from './services/redact.js';
+import { redactId, textSummary, safeErrorCode } from './services/redact.js';
 
 /**
  * Staff alerts — fired on escalations (complaints, collaborations, complex
@@ -56,7 +56,9 @@ async function sendWebhookAlert(info) {
     });
     console.log('📨 Staff webhook alert sent');
   } catch (e) {
-    console.error('Staff webhook failed:', e.message);
+    // Sanitized: the raw error text is never printed, and the payload (which
+    // contains the customer's words) is not echoed here.
+    console.error('Staff webhook failed:', safeErrorCode(e));
   }
 }
 
@@ -84,13 +86,15 @@ async function sendEmailAlert(info) {
       })
     });
     if (!res.ok) {
-      const body = await res.text();
-      console.error(`📧 Staff email failed ${res.status}: ${body.slice(0, 200)}`);
+      // The provider's error body is NOT logged. It can echo the submitted
+      // content, which includes the customer's message. The status alone is the
+      // useful, safe signal.
+      console.error(`📧 Staff email failed: status=${res.status}`);
       return;
     }
     console.log(`📧 Staff email sent → ${to}`);
   } catch (e) {
-    console.error('📧 Staff email error:', e.message);
+    console.error('📧 Staff email error:', safeErrorCode(e));
   }
 }
 

@@ -1,5 +1,10 @@
 import { pool } from '../db/pg.js';
-import { classifyDeliveryError, DELIVERY_CATEGORY, RETRYABLE_DELIVERY_CATEGORIES } from './deliveryOutcome.js';
+import {
+  classifyDeliveryError,
+  classifyUnstructuredError,
+  DELIVERY_CATEGORY,
+  RETRYABLE_DELIVERY_CATEGORIES
+} from './deliveryOutcome.js';
 import crypto from 'node:crypto';
 
 /**
@@ -193,7 +198,13 @@ export async function updateMessageDelivery({ tenantId, messageId, deliveryStatu
  * 'delivery_unknown' on a 'pending' row, which is not retryable.
  */
 export function deliveryErrorCategory(err) {
-  return classifyDeliveryError(err).category ?? DELIVERY_CATEGORY.API_ERROR;
+  // A structured response is classified by the full state machine. Anything that
+  // never went through toGraphError() gets the text-based pass, which can still
+  // recognise a permanent auth/permission refusal but is STRUCTURALLY INCAPABLE
+  // of returning a retryable category.
+  const structured = err?.status !== undefined && err?.status !== null;
+  const result = structured ? classifyDeliveryError(err) : classifyUnstructuredError(err);
+  return result.category ?? DELIVERY_CATEGORY.API_ERROR;
 }
 
 export async function createEscalationRecord({ tenantId, conversationId, category, reason, summary }) {

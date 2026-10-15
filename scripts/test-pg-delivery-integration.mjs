@@ -244,6 +244,19 @@ console.log('\n--- 3. only a provably safe refusal may be re-sent ---');
   const foreignId = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
   check('another tenant cannot claim the row', (await claim(foreignId, OTHER_TENANT.id)) === null);
 
+  // ---- TWO OPERATORS clicking Retry at the same moment ----
+  // This is the literal scenario from the review: two staff members, one
+  // message. Exactly one Meta POST may result.
+  const twoOpsId = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
+  const [opA, opB] = await Promise.all([claim(twoOpsId), claim(twoOpsId)]);
+  check('two operators retrying the same message -> exactly one winner',
+    [opA, opB].filter(Boolean).length === 1, `a=${Boolean(opA)} b=${Boolean(opB)}`);
+  const { rows: [twoOpsRow] } = await pool.query(
+    `SELECT retry_count, delivery_status FROM messages WHERE id = $1`, [twoOpsId]);
+  check('the loser is refused with no state change',
+    twoOpsRow.retry_count === 1 && twoOpsRow.delivery_status === 'pending',
+    JSON.stringify(twoOpsRow));
+
   // ---- concurrent claims: exactly one winner ----
   const raceId = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
   const results = await Promise.all([claim(raceId), claim(raceId), claim(raceId), claim(raceId)]);
@@ -251,6 +264,43 @@ console.log('\n--- 3. only a provably safe refusal may be re-sent ---');
   check('4 concurrent retry claims -> exactly 1 winner', winners === 1, `winners=${winners}`);
   const { rows: [raceRow] } = await pool.query(`SELECT retry_count FROM messages WHERE id = $1`, [raceId]);
   check('the row was transitioned exactly once', raceRow.retry_count === 1);
+
+  // ---- authorisation matrix, one row per (status, category) combination ----
+  const matrix = [
+    ['sent', null, false], ['pending', null, false], ['pending', 'delivery_unknown', false],
+    ['failed', 'meta_auth_expired', false], ['failed', 'meta_permission', false],
+    ['failed', 'meta_api_error', false], ['failed', 'delivery_unknown', false],
+    ['failed', null, false], ['failed', 'network_error', false], ['failed', '', false],
+    ['failed', 'META_RATE_LIMIT', false], ['failed', ' meta_rate_limit', false],
+    ['failed', 'meta_rate_limit', true]
+  ];
+  for (const [status, category, expected] of matrix) {
+    const id = await addOutbound({ status, error: category });
+    const won = await claim(id);
+    check(`authorisation: ${status}/${category === null ? 'NULL' : JSON.stringify(category)} -> ${expected ? 'ALLOWED' : 'REFUSED'}`,
+      Boolean(won) === expected, `got=${Boolean(won)}`);
+  }
+
+  // ---- the category allow-list is enforced by the database, not the app ----
+  const { rows: [gateSql] } = await pool.query(
+    `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+      WHERE conrelid = 'messages'::regclass AND conname = 'messages_delivery_status_check'`);
+  check('the delivery_status CHECK still allows exactly the three values',
+    /'pending'/.test(gateSql.def) && /'sent'/.test(gateSql.def) && /'failed'/.test(gateSql.def) &&
+    !/'unknown'/.test(gateSql.def), gateSql.def);
+
+  // ---- brand scope: report what the schema and auth model actually enforce ----
+  const { rows: [chanCols] } = await pool.query(
+    `SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'channels' AND column_name = 'brand_id'`);
+  check('channels carry brand_id, but the retry gate scopes by tenant',
+    chanCols.column_name === 'brand_id');
+  const { rows: msgCols } = await pool.query(
+    `SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'messages' AND column_name = 'brand_id'`);
+  check('messages have NO brand_id, so brand cannot be scoped in the claim',
+    msgCols.length === 0,
+    'brand isolation is carried by channels.brand_id and enforced at routing time');
 }
 
 /* ================== 4. THE ATOMIC CLAIM ON REAL webhook_events ============= */

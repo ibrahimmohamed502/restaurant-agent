@@ -148,15 +148,29 @@ established is never retried.**
 | `delivery_status` | `delivery_error` | Meaning | Retry offered? |
 | --- | --- | --- | --- |
 | `sent` | — | Meta returned success | no |
-| `failed` | `meta_rate_limit` | Meta refused it (throttling), so nothing was created | **yes** |
-| `failed` | `meta_auth_expired` / `meta_permission` | Meta refused it; needs a credential fix | no |
-| `pending` | `delivery_unknown` | timeout, reset socket, 5xx, or a bookkeeping write failed after a confirmed send — **the customer may already have the reply** | **never** |
+| `failed` | `meta_rate_limit` | Verified Graph error with a **documented throttling code** (4 / 17 / 32 / 613) | **yes** |
+| `failed` | `meta_auth_expired` / `meta_permission` | Verified Graph auth or permission refusal; needs a credential fix | no |
+| `failed` | `meta_api_error` | Any other 4xx — refusal confirmed, cause not vouched for | no |
+| `pending` | `delivery_unknown` | timeout, reset socket, 5xx, malformed error, a bare HTTP 429, or a bookkeeping write that failed after a confirmed send — **the customer may already have the reply** | **never** |
 
 The allow-list lives in the SQL of `claimFailedOutboundForRetry`, so the rule is
 enforced by the database, not by the UI. The dashboard shows a Retry button only
 for `meta_rate_limit` and explains every refusal it makes. This is deliberate:
 the Graph API has no idempotency key, so re-sending after an unknown outcome is
 the only way to guarantee a duplicate reply.
+
+**A retry requires all three of:** a verified Graph error response (the error
+object produced by the Meta client), a 4xx HTTP status, and an explicitly
+allow-listed throttling code. Anything else fails closed:
+
+- A **bare HTTP 429** with no throttling code is NOT retried. Meta refused the
+  request, but we cannot prove it is the documented throttling path.
+- **Message text is never evidence.** An error whose text contains "rate limit"
+  or "too many requests" cannot make it retryable; provider text is not a
+  contract.
+- A recognised auth/permission **code wins over the HTTP status**, so a
+  contradictory pair such as (429, 190) is never re-read as throttling.
+- Malformed, contradictory and transport errors are `delivery_unknown`.
 
 Fail-closed rule: if the inbound customer message cannot be persisted, no reply
 is generated or sent at all — otherwise the event would have no idempotency
