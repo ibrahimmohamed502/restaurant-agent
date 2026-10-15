@@ -8,7 +8,7 @@ process.env.DATABASE_URL = 'postgres://stub:stub@127.0.0.1:1/stub';
 const { normalizeMetaWebhook, normalizeMetaComment, normalizeMetaMessage } = await import('../src/providers/meta/normalizer.js');
 const { sendMetaReply } = await import('../src/providers/meta/provider.js');
 const { normalizedFromPayload, processQueuedMetaEvent } = await import('../src/workers/metaEventPipeline.js');
-const { handlePayload, webhookProcessingMode } = await import('../src/webhook.js');
+const { handlePayload, webhookProcessingMode, intakeWebhookBody, queueIntake } = await import('../src/webhook.js');
 const { getRedisConnection } = await import('../src/queues/redis.js');
 
 let passed = 0, failed = 0;
@@ -20,7 +20,15 @@ const CTX = { pageId: PAGE, tenantId: 't1', brandId: 'b1', channelId: 'ch1', met
 /* ------------------------------------------------ webhookEvents mock store */
 const events = new Map(); // `${provider}|${externalId}` -> {id,status,tenant_id,error,payload}
 const makeWebhookEventDeps = () => ({
-  getEvent: async (provider, externalId) => events.get(`${provider}|${externalId}`) ?? null,
+  // Atomic claim: only a row that is still claimable is handed over, and the
+  // claim itself moves it to 'processing' — exactly like the SQL does.
+  claim: async ({ provider, externalId }) => {
+    const row = events.get(`${provider}|${externalId}`) ?? null;
+    if (!row) return null;
+    if (row.status !== 'received' && row.status !== 'failed') return null;
+    row.status = 'processing';
+    return row;
+  },
   updateEvent: async ({ provider, externalId, status, tenantId, error }) => {
     const k = `${provider}|${externalId}`;
     const row = events.get(k);
@@ -120,27 +128,22 @@ console.log('\n🧪 Stage 4 completion tests (mocked)\n');
 
   // 2C) row recorded → enqueue fails → row removed → event returned for inline processing
   {
-    const rows = new Set();
     let enqueueAttempts = 0;
     let marked = 0;
     const outcome = await queueIntake(evs, {
-      recordWebhookEvent: async (ev) => {
-        const k = 'meta|' + ev.eventId;
-        if (rows.has(k)) return null;
-        rows.add(k);
-        return { id: 'e5' };
-      },
       enqueueMetaEvent: async () => { enqueueAttempts++; throw new Error('redis down'); },
       markWebhookEventInline: async () => { marked++; }
     });
-    check('fallback 2C: enqueue failure → intake row KEPT and marked, event returned for inline',
-      enqueueAttempts === 1 && marked === 1 && rows.size === 1 && outcome.fallbackEvents.length === 1 && outcome.enqueued === 0);
+    check('fallback 2C: enqueue failure → event marked for inline, durable row untouched',
+      enqueueAttempts === 1 && marked === 1 && outcome.fallbackEvents.length === 1 && outcome.enqueued === 0);
 
     // the returned event must be processed inline exactly once
     let inlineCalls = 0;
     const ids = new Set(outcome.fallbackEvents.map((e) => e.eventId));
     await handlePayload(commentBody, {
       skipQueue: true,
+      // the intake is already durable at this point (it is what queueIntake returned)
+      intake: { events: outcome.fallbackEvents, duplicates: 0 },
       buildCtx: async () => CTX,
       onComment: async (v) => { if (ids.has(v.comment_id)) inlineCalls++; }
     });
@@ -151,26 +154,40 @@ console.log('\n🧪 Stage 4 completion tests (mocked)\n');
   {
     const rows = new Set();
     let enqueued = 0;
-    const deps = {
-      recordWebhookEvent: async (ev) => { const k = 'meta|' + ev.eventId; if (rows.has(k)) return null; rows.add(k); return { id: 'e6' }; },
-      enqueueMetaEvent: async () => { enqueued++; },
-      markWebhookEventInline: async () => true
+    const record = async (ev) => {
+      const k = 'meta|' + ev.eventId;
+      if (rows.has(k)) return null;   // ON CONFLICT DO NOTHING
+      rows.add(k);
+      return { id: 'e6' };
     };
-    const first = await queueIntake(evs, deps);
-    const redelivery = await queueIntake(evs, deps);
+    const dispatch = { enqueueMetaEvent: async () => { enqueued++; }, markWebhookEventInline: async () => true };
+
+    const first = await intakeWebhookBody(commentBody, { record });
+    const firstOutcome = await queueIntake(first.events, dispatch);
+    const redelivery = await intakeWebhookBody(commentBody, { record });
+    const redeliveryOutcome = redelivery.events.length ? await queueIntake(redelivery.events, dispatch) : { enqueued: 0, duplicates: 0 };
+
     check('fallback/idempotency: redelivery before worker completion → 1 queued, 1 duplicate, no second reply',
-      first.enqueued === 1 && redelivery.enqueued === 0 && redelivery.duplicates === 1 && enqueued === 1);
+      firstOutcome.enqueued === 1 &&
+      redelivery.duplicates === 1 && redeliveryOutcome.enqueued === 0 && enqueued === 1 &&
+      rows.size === 1);
   }
 
   // total intake failure (infrastructure) → inline fallback still processes
   {
     let inlineCalls = 0;
     await handlePayload(commentBody, {
-      enqueueFn: async () => null, // simulate record/enqueue infrastructure failure
+      intake: { events: evs, duplicates: 0 },
+      // queue unavailable AFTER intake: every recorded event is answered inline
+      enqueueFn: async () => {
+        const e = new Error('redis down');
+        e.code = 'ECONN';
+        throw e;
+      },
       buildCtx: async () => CTX,
       onComment: async () => { inlineCalls++; }
     });
-    check('fallback: intake infrastructure failure → inline processing exactly once', inlineCalls === 1);
+    check('fallback: queue failure after durable intake → inline processing exactly once', inlineCalls === 1);
   }
 }
 
@@ -188,7 +205,10 @@ console.log('\n🧪 Stage 4 completion tests (mocked)\n');
   // inline mode ignores the queue entirely
   process.env.WEBHOOK_QUEUE_MODE = 'inline';
   let inlineRan = 0;
-  await handlePayload({ object: 'page', entry: [{ id: PAGE, changes: [{ field: 'feed', value: { item: 'comment', verb: 'add', comment_id: 'CINL', message: 'x', from: { id: 'u' } } }] }] }, {
+  const inlineBody = { object: 'page', entry: [{ id: PAGE, changes: [{ field: 'feed', value: { item: 'comment', verb: 'add', comment_id: 'CINL', message: 'x', from: { id: 'u' } } }] }] };
+  const { normalizeMetaWebhook: normalizeInline } = await import('../src/providers/meta/normalizer.js');
+  await handlePayload(inlineBody, {
+    intake: { events: normalizeInline(inlineBody), duplicates: 0 },
     buildCtx: async () => CTX,
     onComment: async () => { inlineRan++; }
   });
@@ -199,10 +219,12 @@ console.log('\n🧪 Stage 4 completion tests (mocked)\n');
 {
   process.env.WEBHOOK_QUEUE_MODE = 'queue';
   let capturedJob = null;
-  await handlePayload({ object: 'page', entry: [{ id: PAGE, messaging: [{ sender: { id: 'p1' }, message: { mid: 'MJ', text: 'hi' } }] }] }, {
-    enqueueFn: async (body) => {
-      const { normalizeMetaWebhook } = await import('../src/providers/meta/normalizer.js');
-      const ev = normalizeMetaWebhook(body)[0];
+  const queueBody = { object: 'page', entry: [{ id: PAGE, messaging: [{ sender: { id: 'p1' }, message: { mid: 'MJ', text: 'hi' } }] }] };
+  const { normalizeMetaWebhook: normalizeForTest } = await import('../src/providers/meta/normalizer.js');
+  await handlePayload(queueBody, {
+    intake: { events: normalizeForTest(queueBody), duplicates: 0 },
+    enqueueFn: async (events) => {
+      const ev = events[0];
       // exactly what the real enqueue would put in the payload
       capturedJob = { provider: ev.provider, eventId: ev.eventId, eventType: ev.eventType, pageId: ev.pageId, conversationKey: ev.conversationKey, actor: ev.actor, text: ev.text, receivedAt: ev.receivedAt };
       return { enqueued: 1, duplicates: 0, fallbackEvents: [] };

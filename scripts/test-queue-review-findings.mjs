@@ -19,43 +19,60 @@ const webhookSrc = readFileSync('src/webhook.js', 'utf8');
 const workerSrc = readFileSync('src/workers/metaEventWorker.js', 'utf8');
 const pipelineSrc = readFileSync('src/workers/metaEventPipeline.js', 'utf8');
 
-/* Inline copy of the production queueIntake contract, kept in sync with webhook.js. */
-function makeQueueIntake({ recordFails = false, enqueueFails = false } = {}) {
+const { intakeWebhookBody, queueIntake } = await import('../src/webhook.js');
+
+/**
+ * Models the real POST route against the production intake/dispatch pair:
+ * intake (durable record, before the ACK) then dispatch (queue or inline,
+ * after the ACK). A thrown intake is what turns into a retryable 503.
+ */
+async function runRoute(events, { record, enqueueMetaEvent, markWebhookEventInline }) {
+  const body = { object: 'page', events };
+  const intake = await intakeWebhookBody(body, { record, normalize: (b) => b.events });
+  const outcome = await queueIntake(intake.events, { enqueueMetaEvent, markWebhookEventInline });
+  // duplicates are counted by the INTAKE phase; the dispatcher only enqueues.
+  return { ack: 200, ...outcome, duplicates: intake.duplicates, accepted: intake.events.length };
+}
+
+/** The route's catch branch: no durable record, therefore no processing. */
+async function runRouteExpecting503(events, deps) {
+  try {
+    await runRoute(events, deps);
+    return { ack: 200 };
+  } catch {
+    return { ack: 503, enqueued: 0, duplicates: 0, fallbackEvents: [] };
+  }
+}
+
+/** In-memory stand-in for the UNIQUE(provider, external_id) intake table. */
+function makeDeps({ enqueueFailsFor = [] } = {}) {
   const rows = new Map();
-  const state = { marked: [], processed: [], noIntake: [] };
-  const recordWebhookEvent = async (ev) => {
-    if (recordFails) { const e = new Error('db down'); e.code = 'ECONNREFUSED'; throw e; }
+  // mutable, so a test can simulate the database failing and then recovering
+  // against the SAME durable store.
+  const recordDown = new Set();
+  const state = { marked: [], enqueued: [] };
+  const record = async (ev) => {
+    if (recordDown.has(ev.eventId)) { const e = new Error('db down'); e.code = 'ECONNREFUSED'; throw e; }
     const k = `${ev.provider}|${ev.eventId}`;
-    if (rows.has(k)) return null;
+    if (rows.has(k)) return null;          // ON CONFLICT DO NOTHING
     rows.set(k, { status: 'received' });
-    return { id: 'e' };
+    return { id: `row-${rows.size}` };
   };
-  const enqueueMetaEvent = async () => {
-    if (enqueueFails) { const e = new Error('redis down'); e.code = 'ECONN'; throw e; }
+  const enqueueMetaEvent = async (ev) => {
+    state.enqueued.push(ev.eventId);
+    if (enqueueFailsFor.includes(ev.eventId)) { const e = new Error('redis down'); e.code = 'ECONN'; throw e; }
     return 'job';
   };
   const markWebhookEventInline = async (p, id) => { state.marked.push(`${p}|${id}`); };
-  return { rows, state, deps: { recordWebhookEvent, enqueueMetaEvent, markWebhookEventInline } };
+  return { rows, recordDown, state, record, enqueueMetaEvent, markWebhookEventInline };
 }
-
-const runIntake = async (events, deps) => {
-  const result = { enqueued: 0, duplicates: 0, fallbackEvents: [], noIntake: [] };
-  for (const ev of events) {
-    let recorded;
-    try { recorded = await deps.recordWebhookEvent(ev); }
-    catch { result.noIntake.push(ev); continue; }
-    if (!recorded) { result.duplicates++; continue; }
-    try { await deps.enqueueMetaEvent(ev); result.enqueued++; }
-    catch { await deps.markWebhookEventInline(ev.provider, ev.eventId).catch(() => undefined); result.fallbackEvents.push(ev); }
-  }
-  return result;
-};
 
 console.log('\nStage 8 — review findings\n');
 
 /* ============ FINDING 2: recovery must not depend on inbound traffic ============ */
 console.log('--- 2. stranded-event recovery is owned by the worker ---');
 {
+  const eventsSrc = readFileSync('src/services/webhookEvents.js', 'utf8');
   check('worker owns a stale intake sweeper', /export function startStaleIntakeSweeper/.test(workerSrc));
   check('sweeper is started by the worker main()', /startStaleIntakeSweeper\(\);/.test(workerSrc));
   check('sweeper runs on a timer, not per request', /setInterval/.test(workerSrc));
@@ -63,85 +80,111 @@ console.log('--- 2. stranded-event recovery is owned by the worker ---');
   check('sweeper timer is unref’d (never holds the process)', /\.unref\?\.\(\)/.test(workerSrc));
   check('sweeper is disabled without a database', /!pgEnabled/.test(workerSrc));
 
-  // single owner: the webhook request path must NOT claim stale rows any more
+  // single owner: the webhook request path must NOT claim or dispatch stale rows
   check('webhook path no longer claims stale rows', !/claimStaleWebhookEvents/.test(webhookSrc));
-  check('webhook path no longer replays stale events', !/replayStaleIntakes/.test(webhookSrc));
-  check('the two claimers cannot race (only the worker claims)', (workerSrc.match(/claimStaleWebhookEvents\(\)/g) || []).length >= 1);
+  check('webhook path no longer re-dispatches stale events', !/redispatchStaleIntakes/.test(webhookSrc));
+  check('only the worker claims stranded rows', (workerSrc.match(/claimStaleWebhookEvents\(\)/g) || []).length >= 1);
 
-  // replay safety rules survive the move
-  check('replay only touches rows still in received', /status = 'received'/.test(readFileSync('src/services/webhookEvents.js', 'utf8')));
-  check('replay never re-runs a processing row', /status === 'done'/.test(pipelineSrc));
-  check('replay is bounded (claim limit)', /LIMIT \$3/.test(readFileSync('src/services/webhookEvents.js', 'utf8')));
+  // re-dispatch safety rules
+  check('sweeper only touches rows still in received', /status = 'received'/.test(eventsSrc));
+  check('the sweeper never changes status (the worker owns the claim)',
+    /SET error = COALESCE\(error, \$1\)/.test(eventsSrc) && !/SET status = 'processing', error = \$1/.test(eventsSrc));
+  check('the worker refuses a processing or done row', /AND status IN \('received', 'failed'\)/.test(eventsSrc));
+  check('a refused claim stops processing before any business logic', /if \(!row\) return \{ skipped: 'not_claimed' \}/.test(pipelineSrc));
+  check('re-dispatch is bounded (claim limit)', /LIMIT \$5/.test(eventsSrc));
+  check('re-dispatch is capped so a dead queue cannot loop', /maxRedispatches/.test(eventsSrc) && /< \$4/.test(eventsSrc));
   check('sweeper failures are caught, never fatal', /catch \(err\)[\s\S]{0,120}stale intake sweep failed/.test(workerSrc));
 }
 
-/* ============== FINDING 3: queue/DB failure keeps Messenger available ========= */
+/* ====== FINDING 3: queue down stays available; database down is retried ====== */
 console.log('\n--- 3. intake + queue failures are distinguished ---');
 {
-  // (a) queue down, database healthy: row kept, event handled inline
+  // (a) queue down, database healthy: durable row kept, customer answered inline
   {
-    const { state, deps } = makeQueueIntake({ enqueueFails: true });
-    const r = await runIntake([{ provider: 'meta', eventId: 'm_q' }], deps);
+    const deps = makeDeps({ enqueueFailsFor: ['m_q'] });
+    const r = await runRoute([{ provider: 'meta', eventId: 'm_q' }], deps);
+    check('queue failure: the request is still ACKed (200)', r.ack === 200);
     check('queue failure: event handled inline', r.fallbackEvents.length === 1);
-    check('queue failure: intake row kept and marked', state.marked.length === 1);
-    check('queue failure: nothing reported as no-intake', r.noIntake.length === 0);
+    check('queue failure: durable row kept and marked', deps.state.marked.length === 1 && deps.rows.size === 1);
+    check('queue failure: nothing is queued', r.enqueued === 0);
   }
 
-  // (b) database down: the event must NOT be dropped
+  // (b) database down: no durable record means no processing — the request is
+  //     answered 503 so Meta redelivers it instead of the event being lost.
   {
-    const { deps } = makeQueueIntake({ recordFails: true });
-    const r = await runIntake([{ provider: 'meta', eventId: 'm_db' }], deps);
-    check('intake failure: event is NOT dropped', r.noIntake.length === 1 && r.fallbackEvents.length === 0);
-    check('intake failure: reported separately for operators', /noIntake/.test(webhookSrc));
-    check('intake failure: logs that dedupe is unavailable', /WITHOUT an intake record/.test(webhookSrc));
-    check('intake failure: still answered inline (availability)',
-      /\(outcome\.fallbackEvents\?\.length \?\? 0\) \+ \(outcome\.noIntake\?\.length \?\? 0\) > 0/.test(webhookSrc)
-      && /\.\.\.\(outcome\.noIntake \?\? \[\]\)/.test(webhookSrc));
+    const deps = makeDeps();
+    deps.recordDown.add('m_db');
+    const r = await runRouteExpecting503([{ provider: 'meta', eventId: 'm_db' }], deps);
+    check('database failure: retryable 503 instead of a false ACK', r.ack === 503);
+    check('database failure: nothing is queued or processed', r.enqueued === 0 && (r.fallbackEvents ?? []).length === 0);
+    check('database failure: no idempotency row is invented', deps.rows.size === 0);
+    check('database failure: the operator is told intake failed',
+      /durable intake failed/.test(webhookSrc) && /res\.sendStatus\(503\)/.test(webhookSrc));
   }
 
-  // (c) whole intake pipeline unavailable => enqueuePayload returns null, body handled inline
-  check('enqueuePayload still returns null on infrastructure failure', /return null;/.test(webhookSrc));
-  check('a null outcome falls through to full inline processing', /intake infrastructure failed entirely → inline fallback below/.test(webhookSrc));
-
-  // (d) mixed batch: enqueue ok + queue down + db down + duplicate
+  // (c) duplicate redelivery before the worker completes is suppressed
   {
-    const rows = new Map();
-    const state = { marked: [], noIntake: [] };
-    let enqueueCalls = 0;
-    const deps = {
-      recordWebhookEvent: async (ev) => {
-        if (ev.eventId === 'm_nodb') { const e = new Error('db'); e.code = 'X'; throw e; }
-        const k = `${ev.provider}|${ev.eventId}`;
-        if (rows.has(k)) return null;
-        rows.set(k, 1);
-        return { id: 'e' };
-      },
-      enqueueMetaEvent: async (ev) => {
-        enqueueCalls++;
-        if (ev.eventId === 'm_q') { const e = new Error('redis'); e.code = 'ECONN'; throw e; }
-      },
-      markWebhookEventInline: async (p, id) => { state.marked.push(id); }
-    };
-    const r = await runIntake([
+    const deps = makeDeps();
+    const first = await runRoute([{ provider: 'meta', eventId: 'm_d' }], deps);
+    const again = await runRoute([{ provider: 'meta', eventId: 'm_d' }], deps);
+    check('redelivery: second delivery is a duplicate, not a second job',
+      first.enqueued === 1 && again.enqueued === 0 && again.duplicates === 1 && again.ack === 200);
+    check('redelivery: exactly one durable row exists', deps.rows.size === 1);
+  }
+
+  // (d) partial intake failure in a multi-event payload: the request fails
+  //     closed, and the retry converges on exactly the missing events.
+  {
+    const events = [
       { provider: 'meta', eventId: 'm_ok' },
       { provider: 'meta', eventId: 'm_q' },
       { provider: 'meta', eventId: 'm_nodb' },
       { provider: 'meta', eventId: 'm_ok' }
-    ], deps);
-    check('mixed batch: healthy event queued', r.enqueued === 1 && enqueueCalls === 2);
-    check('mixed batch: queue-failed event inline', r.fallbackEvents.length === 1 && state.marked.length === 1);
-    check('mixed batch: db-failed event kept, not dropped', r.noIntake.length === 1);
-    check('mixed batch: duplicate suppressed', r.duplicates === 1);
-    const handledInline = new Set([...r.fallbackEvents, ...r.noIntake].map((e) => e.eventId));
-    check('mixed batch: every non-queued event is handled exactly once', handledInline.size === 2, [...handledInline].join());
+    ];
+    const deps = makeDeps({ enqueueFailsFor: ['m_q'] });
+    deps.recordDown.add('m_nodb');
+    const firstTry = await runRouteExpecting503(events, deps);
+    check('partial intake failure: the whole request is not ACKed', firstTry.ack === 503);
+    check('partial intake failure: nothing is dispatched', (firstTry.fallbackEvents ?? []).length === 0);
+
+    // Meta retries the identical payload; the database is healthy this time.
+    deps.recordDown.clear();
+    const retry = await runRoute(events, deps);
+    check('retry after a partial failure: the request is accepted', retry.ack === 200);
+    // The rows written during the failed attempt are already durable, so the
+    // retry sees them as duplicates and does NOT dispatch them a second time.
+    // They stay claimable, and the worker sweeper re-dispatches them: at-least-
+    // once is preserved without a duplicate outbound reply.
+    check('retry: only the event missing from the durable set is dispatched now',
+      retry.enqueued === 1 && retry.duplicates === 3 && retry.fallbackEvents.length === 0,
+      JSON.stringify({ enq: retry.enqueued, fb: retry.fallbackEvents.length, dup: retry.duplicates }));
+    check('retry: every event has exactly one durable row', deps.rows.size === 3);
+    check('retry: the rows of the failed attempt are still claimable',
+      [...deps.rows.values()].every((r) => r.status === 'received'));
+
+    const { redispatchStaleIntakes } = await import('../src/workers/metaEventPipeline.js');
+    const recovered = [];
+    const stranded = [...deps.rows.entries()]
+      .map(([k, r]) => ({ provider: k.split('|')[0], external_id: k.split('|')[1], status: r.status, redispatches: 0 }))
+      .filter((r) => !deps.state.enqueued.includes(r.external_id));
+    await redispatchStaleIntakes(stranded, {
+      enqueue: async (e) => { recovered.push(e.eventId); },
+      record: async () => {}
+    });
+    check('the sweeper recovers every event left by the failed attempt',
+      recovered.sort().join(',') === 'm_ok,m_q', recovered.join(','));
+    check('no event is dispatched twice across the retry and the sweep',
+      deps.state.enqueued.filter((e) => recovered.includes(e)).length === 0);
   }
 
-  // (e) concurrent redelivery while the database is down: at-least-once, never silent
+  // (e) concurrent Meta redelivery: the UNIQUE constraint elects one winner
   {
-    const { deps } = makeQueueIntake({ recordFails: true });
-    const results = await Promise.all([1, 2, 3].map(() => runIntake([{ provider: 'meta', eventId: 'm_dbc' }], deps)));
-    check('db down: every delivery is handled (availability preserved)', results.every((r) => r.noIntake.length === 1));
-    check('db down: the limitation is explicit, not silent', webhookSrc.includes('WITHOUT an intake record'));
+    const deps = makeDeps();
+    const batch = [{ provider: 'meta', eventId: 'm_c' }];
+    const results = await Promise.all([runRoute(batch, deps), runRoute(batch, deps), runRoute(batch, deps)]);
+    check('concurrent redelivery: exactly one delivery is accepted',
+      results.filter((r) => r.enqueued === 1).length === 1 && results.every((r) => r.ack === 200));
+    check('concurrent redelivery: no second job is created', deps.state.enqueued.length === 1 && deps.rows.size === 1);
   }
 }
 

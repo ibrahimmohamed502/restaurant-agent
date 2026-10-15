@@ -179,11 +179,18 @@ console.log('\n🧪 Stage 4.3B.2 — webhook routing-context tests\n');
 // K. ACK/signature behavior unchanged — static check of the POST route contract
 {
   const src = await import('node:fs').then(fs => fs.readFileSync(new URL('../src/webhook.js', import.meta.url), 'utf8'));
-  check('K. immediate 200 ACK, X-Hub-Signature-256 verification preserved',
-    src.includes('res.sendStatus(200); // ACK immediately') &&
+  check('K. durable intake before ACK, 503 when intake fails, signature preserved',
+    // signature is still verified first, and timing-safe
     src.includes('x-hub-signature-256') &&
     src.includes('verifySignature(req)') &&
-    src.includes('crypto.timingSafeEqual'));
+    src.includes('crypto.timingSafeEqual') &&
+    src.indexOf('verifySignature(req)') < src.indexOf('intakeWebhookBody(req.body)') &&
+    // intake happens BEFORE the 200 ...
+    src.indexOf('intakeWebhookBody(req.body)') < src.indexOf('res.sendStatus(200)') &&
+    // ... and a failed intake returns a retryable 503 instead of losing the event
+    src.includes('res.sendStatus(503)') &&
+    // dispatch (queue / AI / outbound) only happens after the ACK
+    src.indexOf('dispatchWebhookBody') > src.indexOf('res.sendStatus(200)'));
 }
 
 console.log(`\n${failed === 0 ? '🎉' : '💥'} ${passed} passed, ${failed} failed\n`);

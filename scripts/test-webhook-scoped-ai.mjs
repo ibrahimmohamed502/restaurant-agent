@@ -145,7 +145,13 @@ console.log('\n🧪 Stage 4.4.3 — webhook scoped-AI wiring\n');
 {
   const fs = await import('node:fs');
   const src = fs.readFileSync(new URL('../src/webhook.js', import.meta.url), 'utf8');
-  check('P. immediate 200 ACK + signature verify unchanged', src.includes('res.sendStatus(200); // ACK immediately') && src.includes('timingSafeEqual'));
+  check('P. durable intake before ACK, retryable 503, signature verify unchanged',
+    src.includes('x-hub-signature-256') &&
+    src.includes('verifySignature(req)') &&
+    src.indexOf('verifySignature(req)') < src.indexOf('intakeWebhookBody(req.body)') &&
+    src.indexOf('intakeWebhookBody(req.body)') < src.indexOf('res.sendStatus(200)') &&
+    src.includes('res.sendStatus(503)') &&
+    src.indexOf('dispatchWebhookBody') > src.indexOf('res.sendStatus(200)')); // ACK immediately') && src.includes('timingSafeEqual'));
 }
 
 // N + static security

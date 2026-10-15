@@ -12,7 +12,7 @@ import { getRedisConnection } from '../queues/redis.js';
 import { closeRedisConnection } from '../queues/redis.js';
 import { safeErrorCode } from '../services/redact.js';
 import { claimStaleWebhookEvents } from '../services/webhookEvents.js';
-import { replayStaleIntakes } from './metaEventPipeline.js';
+import { redispatchStaleIntakes } from './metaEventPipeline.js';
 import { enabled as pgEnabled } from '../db/pg.js';
 
 /** How often stranded intake rows are looked for. */
@@ -25,7 +25,13 @@ export const STALE_SWEEP_INTERVAL_MS = Number(process.env.STALE_SWEEP_INTERVAL_M
  * a second claimer (for example the webhook request path) could take a row that
  * a queued job is about to process, producing a duplicate outbound reply.
  *
- * Safety rules (unchanged from replayStaleIntakes):
+ * This process NEVER processes a swept event: it only re-queues it, so the
+ * worker remains the single processor. Because the job id is a
+ * deterministic function of (provider, external_id), re-adding a job that is
+ * already waiting/active/delayed is a no-op, and one that was lost is
+ * restored. A queued-but-unclaimed job therefore cannot be processed twice.
+ *
+ * Safety rules:
  *   - only rows still in 'received' are claimed, via one atomic UPDATE;
  *   - rows in 'processing' are never auto-replayed;
  *   - bounded by the claim limit, single pass per tick, no retry loop.
@@ -39,10 +45,13 @@ export function startStaleIntakeSweeper({ intervalMs = STALE_SWEEP_INTERVAL_MS }
     try {
       const claimed = await claimStaleWebhookEvents();
       if (!claimed.length) return;
-      console.warn(`♻️  replaying ${claimed.length} stranded intake event(s) that never started`);
-      const results = await replayStaleIntakes(claimed);
-      const failed = results.filter((r) => r?.failed).length;
-      if (failed) console.error(`❌ ${failed} stranded event(s) failed and were marked for review`);
+      console.warn(`♻️  sweeping ${claimed.length} stranded intake event(s) that never started`);
+      // Re-dispatch ONLY. This process never runs customer message/comment
+      // logic for a swept row, so the worker stays the only processor and a
+      // queued-but-unclaimed job cannot be processed twice.
+      const results = await redispatchStaleIntakes(claimed);
+      const restored = results.filter((r) => r?.redispatched).length;
+      if (restored) console.warn(`♻️  re-dispatched ${restored} stranded intake event(s)`);
     } catch (err) {
       console.error('❌ stale intake sweep failed:', safeErrorCode(err));
     }

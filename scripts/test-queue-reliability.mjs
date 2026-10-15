@@ -128,7 +128,7 @@ console.log('\n--- 3. enqueue failure keeps the idempotency row ---');
   check('claimStaleWebhookEvents is exported', typeof we.claimStaleWebhookEvents === 'function');
   check('claim only ever selects status=received', /WHERE status = 'received'/.test(weSrc));
   check('claim is a single atomic UPDATE ... WHERE id IN (SELECT', /UPDATE webhook_events[\s\S]*WHERE id IN \(/.test(weSrc));
-  check('claim is bounded by a limit', /LIMIT \$3/.test(weSrc));
+  check('claim is bounded by a limit', /LIMIT \$5/.test(weSrc));
   check('production never deletes an intake row', !/DELETE FROM webhook_events/.test(weSrc + whSrc));
 
   const rows = new Map();
@@ -195,57 +195,49 @@ console.log('\n--- 4. concurrent redelivery — one record, one reply ---');
   check('exactly one durable intake row exists', rows.size === 1);
 }
 
-/* ======================= 5. STALE RECOVERY IS BOUNDED ======================== */
+/* ============== 5. STALE RECOVERY RE-DISPATCHES, NEVER PROCESSES ============= */
 console.log('\n--- 5. stale intake recovery ---');
 {
-  const { replayStaleIntakes } = await import('../src/workers/metaEventPipeline.js');
-  const processed = [];
-  const statuses = [];
-  const deps = {
-    buildCtx: async () => ({ tenantId: 't-1', brandId: 'b-1', pageId: 'PAGE-1', metaClient: {} }),
-    onMessage: async (m) => { processed.push(m?.message?.mid); },
-    onComment: async () => {},
-    updateEvent: async ({ status }) => { statuses.push(status); return { id: 'x', status }; },
-    pgEnabled: true
-  };
+  const { redispatchStaleIntakes } = await import('../src/workers/metaEventPipeline.js');
 
-  const row = {
-    provider: 'meta',
-    external_id: 'm_stale',
-    payload: {
-      eventType: 'message',
-      pageId: 'PAGE-1',
-      receivedAt: '2026-10-15T16:00:00.000Z',
-      messaging: [{ message: { mid: 'm_stale' }, sender: { id: 'PSID-1' } }]
-    }
-  };
-  const res = await replayStaleIntakes([row], deps);
-  check('stale event is replayed once', res.length === 1 && res[0].ok === true, JSON.stringify(res));
-  check('replay processed the message', processed.length === 1);
-  check('replay terminates the row as done', statuses.at(-1) === 'done');
-
-  // routing failure must terminate the row, not loop
-  const statuses2 = [];
-  const bad = await replayStaleIntakes([row], {
-    ...deps,
-    buildCtx: async () => { const e = new Error('nope'); e.code = 'UNKNOWN_META_PAGE'; throw e; },
-    updateEvent: async ({ status, error }) => { statuses2.push(`${status}:${error}`); return { status }; }
+  const enqueued = [];
+  const counted = [];
+  const processedCalls = [];
+  const rowsIn = [
+    { provider: 'meta', external_id: 'm_stale', redispatches: 0, received_at: '2026-10-15T16:00:00.000Z' },
+    { provider: 'meta', external_id: 'm_stale2', redispatches: 2, received_at: '2026-10-15T16:00:00.000Z' }
+  ];
+  const res = await redispatchStaleIntakes(rowsIn, {
+    enqueue: async (e) => { enqueued.push(e.eventId); },
+    record: async (p, id, n) => { counted.push(`${id}:${n}`); }
   });
-  check('unroutable stale event is failed closed', bad[0]?.skipped === 'routing_failed', JSON.stringify(bad));
-  check('unroutable stale event records the safe code', statuses2[0] === 'failed:UNKNOWN_META_PAGE', statuses2.join());
+  check('stranded events are re-dispatched, not processed', res.length === 2 && res.every((r) => r.redispatched));
+  check('re-dispatch carries identity only (no customer content)', enqueued.join(',') === 'm_stale,m_stale2', enqueued.join(','));
+  check('re-dispatch attempts are counted, never looped', counted.join(',') === 'm_stale:1,m_stale2:3', counted.join(','));
 
-  // processing failure must terminate the row
-  const statuses3 = [];
-  await replayStaleIntakes([row], {
-    ...deps,
-    onMessage: async () => { throw new Error('meta api down'); },
-    updateEvent: async ({ status }) => { statuses3.push(status); return { status }; }
+  // a queue that is still down must leave the row for the next sweep
+  const down = await redispatchStaleIntakes(rowsIn, {
+    enqueue: async () => { throw new Error('redis down'); },
+    record: async () => { throw new Error('must not count a failed re-dispatch'); }
   });
-  check('failed replay terminates as failed (no retry loop)', statuses3.at(-1) === 'failed', statuses3.join(','));
+  check('a failed re-dispatch leaves the row for the next sweep', down.every((r) => r.redispatched === false));
+
+  // rows without identity are ignored rather than dispatched blindly
+  const bad = await redispatchStaleIntakes([{ provider: 'meta' }, { eventId: 'x' }, null], {
+    enqueue: async () => { enqueued.push('SHOULD_NOT_HAPPEN'); },
+    record: async () => { counted.push('SHOULD_NOT_HAPPEN'); }
+  });
+  check('rows without a complete identity are skipped', bad.length === 0 && enqueued.length === 2);
 
   // empty input is a no-op
-  const none = await replayStaleIntakes([], deps);
+  const none = await redispatchStaleIntakes([], { enqueue: async () => {}, record: async () => {} });
   check('empty claim set is a no-op', Array.isArray(none) && none.length === 0);
+
+  // the sweeper itself must contain no customer-processing call at all
+  const workerSrc = (await import('node:fs')).readFileSync('src/workers/metaEventWorker.js', 'utf8');
+  const sweeperBody = workerSrc.slice(workerSrc.indexOf('startStaleIntakeSweeper'));
+  check('the sweeper never runs message/comment logic',
+    !/onMessage\(|onComment\(|processMessage|processComment|buildCtx/.test(sweeperBody));
 }
 
 /* ===================== 6. EXHAUSTED JOB -> DURABLE DLQ ===================== */
@@ -255,7 +247,7 @@ console.log('\n--- 6. exhausted retries leave a durable record ---');
   const src = fs.readFileSync('src/workers/metaEventWorker.js', 'utf8');
   check('worker marks an exhausted job as dlq', /attempts >= max/.test(src) && /markEventDlq/.test(src));
   check('dlq uses the sanitized JOB_EXHAUSTED code', /WEBHOOK_ERROR\.JOB_EXHAUSTED/.test(src));
-  check('worker never auto-replays a dlq row', !/dlq[\s\S]{0,200}replayStaleIntakes/.test(src));
+  check('worker never auto-replays a dlq row', !/dlq[\s\S]{0,200}(redispatchStaleIntakes|claimStaleWebhookEvents)/.test(src));
   check('worker logs no raw error message', !/err\?\.message \?\? 'error'/.test(src));
 }
 
@@ -293,7 +285,10 @@ console.log('\n--- 8. missing FB_APP_SECRET must reject events ---');
   check('verifySignature rejects when the secret is missing', /if \(!secret\) return false;/.test(src));
   check('the old fail-open branch is gone', !/if \(!secret\) return true;/.test(src));
   check('signature comparison is timing-safe', /timingSafeEqual/.test(src));
-  check('signed POST path is unchanged', /res\.sendStatus\(200\); \/\/ ACK immediately so Meta doesn't retry/.test(src));
+  check('signed POST path still answers 200 only after durable intake',
+  /intakeWebhookBody\(req\.body\)/.test(src) &&
+  /res\.sendStatus\(200\)/.test(src) &&
+  !/ACK immediately so Meta doesn't retry/.test(src));
   check('GET verification path is unchanged', /mode === 'subscribe' && token === process\.env\.WEBHOOK_VERIFY_TOKEN/.test(src));
 }
 

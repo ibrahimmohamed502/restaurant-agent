@@ -10,7 +10,13 @@
 import { buildRouteContext } from '../services/routeContext.js';
 import { processComment, processMessage } from '../webhook.js';
 import { normalizeMetaComment, normalizeMetaMessage } from '../providers/meta/normalizer.js';
-import { getWebhookEvent, updateWebhookEvent } from '../services/webhookEvents.js';
+import {
+  claimWebhookEventForProcessing,
+  updateWebhookEvent,
+  claimStaleWebhookEvents,
+  recordRedispatch
+} from '../services/webhookEvents.js';
+import { enqueueMetaEvent } from '../queues/metaEvents.js';
 import { deliveryErrorCategory } from '../services/conversations.js';
 import { enabled } from '../db/pg.js';
 
@@ -44,39 +50,24 @@ export function normalizedFromPayload(payload) {
  *     twice;
  *   - bounded by the claim query's limit; there is no retry loop here.
  */
-export async function replayStaleIntakes(rows, deps = {}) {
-  const {
-    buildCtx = buildRouteContext,
-    onComment = processComment,
-    onMessage = processMessage,
-    updateEvent = updateWebhookEvent,
-    pgEnabled = enabled
-  } = deps;
+export async function redispatchStaleIntakes(rows, deps = {}) {
+  const { enqueue = enqueueMetaEvent, record = recordRedispatch } = deps;
 
   const results = [];
   for (const row of rows ?? []) {
-    const { provider = 'meta', external_id: eventId } = row ?? {};
+    const { provider = 'meta', external_id: eventId, redispatches = 0 } = row ?? {};
+    if (!provider || !eventId) continue;
     try {
-      const normalized = normalizedFromPayload(row?.payload);
-      let ctx;
-      try {
-        ctx = await buildCtx({ id: normalized.pageId });
-      } catch (err) {
-        await updateEvent({ provider, externalId: eventId, status: 'failed', error: err?.code ?? 'ROUTING_FAILED' });
-        results.push({ eventId, skipped: 'routing_failed' });
-        continue;
-      }
-      await updateEvent({ provider, externalId: eventId, status: 'processing', tenantId: ctx.tenantId });
-      if (normalized.eventType === 'message') {
-        await onMessage(normalized.rawMessaging, ctx, { pgEnabled });
-      } else {
-        await onComment(normalized.rawChange?.value, ctx, { pgEnabled });
-      }
-      await updateEvent({ provider, externalId: eventId, status: 'done' });
-      results.push({ eventId, ok: true });
-    } catch (err) {
-      await updateEvent({ provider, externalId: eventId, status: 'failed', error: 'PROCESSING_FAILED' });
-      results.push({ eventId, failed: true });
+      // Only identity is needed: the job id is deterministic, so re-adding a
+      // job that is still waiting/active/delayed is a no-op and a lost job is
+      // restored. NOTHING about the customer event is processed here.
+      await enqueue({ provider, eventId, eventType: 'unknown', pageId: null, receivedAt: row?.received_at });
+      await record(provider, eventId, Number(redispatches) + 1);
+      results.push({ eventId, redispatched: true });
+    } catch {
+      // Queue still unavailable: leave the row untouched so the next sweep can
+      // try again, bounded by the sweep's own limits.
+      results.push({ eventId, redispatched: false });
     }
   }
   return results;
@@ -88,7 +79,7 @@ export async function replayStaleIntakes(rows, deps = {}) {
  */
 export async function processQueuedMetaEvent(job, deps = {}) {
   const {
-    getEvent = getWebhookEvent,
+    claim = claimWebhookEventForProcessing,
     updateEvent = updateWebhookEvent,
     buildCtx = buildRouteContext,
     onComment = processComment,
@@ -97,11 +88,13 @@ export async function processQueuedMetaEvent(job, deps = {}) {
   } = deps;
 
   const { provider = 'meta', eventId } = job ?? {};
-  const row = await getEvent(provider, eventId);
-  if (!row) throw new Error('webhook event not found');
 
-  // Idempotency: a completed event is never processed twice.
-  if (row.status === 'done') return { skipped: 'already_done' };
+  // ATOMIC CLAIM. Two workers racing for the same event produce exactly one
+  // winner; the loser gets null and must not process anything. Rows that are
+  // 'processing' (in flight, or died mid-flight) and 'done' are never claimed,
+  // so a partially applied event is never replayed automatically.
+  const row = await claim({ provider, externalId: eventId });
+  if (!row) return { skipped: 'not_claimed' };
 
   const normalized = normalizedFromPayload(row.payload);
 
@@ -115,6 +108,7 @@ export async function processQueuedMetaEvent(job, deps = {}) {
     return { skipped: 'routing_failed' };
   }
 
+  // The claim already set 'processing'; only the resolved tenant is added.
   await updateEvent({ provider, externalId: eventId, status: 'processing', tenantId: ctx.tenantId });
 
   try {
@@ -125,9 +119,11 @@ export async function processQueuedMetaEvent(job, deps = {}) {
     }
   } catch (err) {
     const category = deliveryErrorCategory(err) ?? 'processing_error';
-    // 'failed' is a TRANSIENT marker here: the pipeline only short-circuits on
-    // 'done', so BullMQ's next attempt still runs (and message-level dedupe
-    // guarantees a single outbound reply even if an earlier attempt half-finished).
+    // 'failed' is a TERMINAL marker for that ATTEMPT only: the atomic claim
+    // accepts 'failed', so BullMQ's next attempt runs again. The attempt budget
+    // is BullMQ's (attempts: 3), and message-level dedupe guarantees a single
+    // outbound reply even if an earlier attempt half-finished. A worker that
+    // dies mid-flight leaves 'processing' instead, which is never auto-claimed.
     await updateEvent({ provider, externalId: eventId, status: 'failed', error: category });
     console.error(`❌ processing failed for ${eventId} [${category}]`);
     throw err; // let BullMQ apply bounded retries

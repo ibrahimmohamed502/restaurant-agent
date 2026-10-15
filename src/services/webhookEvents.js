@@ -21,11 +21,15 @@ export const WEBHOOK_STATUS = {
   DLQ: 'dlq'
 };
 
+/** Prefix used to count re-dispatch attempts on a stranded row. */
+export const REDISPATCH_PREFIX = 'REDISPATCHED:';
+/** Regex that extracts the counter; also the SQL pattern used in the claim. */
+export const REDISPATCH_PATTERN = '^REDISPATCHED:([0-9]+)$';
+
 /** Error codes written to `webhook_events.error` (sanitized, never raw text). */
 export const WEBHOOK_ERROR = {
   ENQUEUE_FAILED_INLINE: 'ENQUEUE_FAILED_INLINE',
   INLINE_FAILED: 'INLINE_FAILED',
-  STALE_REPLAY: 'STALE_REPLAY',
   ROUTING_FAILED: 'ROUTING_FAILED',
   PROCESSING_FAILED: 'PROCESSING_FAILED',
   JOB_EXHAUSTED: 'JOB_EXHAUSTED'
@@ -92,30 +96,81 @@ export async function markWebhookEventInline(provider, externalId) {
 }
 
 /**
- * Claim intake rows that were recorded but NEVER started processing (still
- * 'received'), e.g. the API died between the INSERT and the queue add.
+ * ATOMIC PROCESSING CLAIM — the single gate that decides who may run the
+ * business logic for an event.
  *
- * Claiming is a single atomic UPDATE guarded on `status = 'received'`, so two
- * concurrent sweeps can never claim the same row. Rows already in 'processing'
- * are deliberately NOT claimed: their side effects may be partially applied and
- * replaying them could produce a duplicate outbound reply.
+ * The decision is made by the database in one conditional UPDATE, so it cannot
+ * be won by a read-then-write race between two workers:
  *
- * Bounded by `limit` and `olderThanSeconds`; never loops.
+ *   - 'received'   -> first attempt;
+ *   - 'failed'     -> bounded retry of an attempt that terminated (BullMQ owns
+ *                     the attempt budget, attempts: 3);
+ *   - 'processing' -> an attempt is in flight, or died mid-flight. NEVER claimed
+ *                     automatically: its side effects are unknown, so replaying
+ *                     it could send a second reply to the customer;
+ *   - 'done'       -> never claimed.
+ *
+ * Returns the claimed row, or null when the claim was refused (another worker
+ * won it, or it is in progress / already complete). A null result MUST NOT be
+ * processed.
  */
-export async function claimStaleWebhookEvents({ olderThanSeconds = 120, limit = 10 } = {}) {
-  const capped = Math.max(1, Math.min(Number(limit) || 10, 50));
+export async function claimWebhookEventForProcessing({ provider, externalId, tenantId = null } = {}) {
+  if (!provider || !externalId) return null;
   const { rows } = await pool.query(
     `UPDATE webhook_events
-        SET status = 'processing', error = $1
+        SET status = 'processing',
+            error = NULL,
+            tenant_id = COALESCE($3, tenant_id)
+      WHERE provider = $1
+        AND external_id = $2
+        AND status IN ('received', 'failed')
+      RETURNING id, status, tenant_id, payload, error`,
+    [provider, externalId, tenantId]
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Find intake rows that were recorded but never started (still 'received'), so
+ * they can be RE-DISPATCHED to the queue.
+ *
+ * The sweeper NEVER processes customer events itself: it only puts the job back
+ * on the queue, so the worker stays the single processor. Because the job id is
+ * a deterministic function of (provider, external_id), re-adding a job that is
+ * still waiting/active/delayed is a no-op and one that was lost is restored.
+ *
+ * The status is intentionally NOT changed here: the row must stay 'received'
+ * so the worker's atomic claim is the only thing that can start processing.
+ * Re-dispatch is capped so an unavailable queue cannot loop forever.
+ */
+export async function claimStaleWebhookEvents({ olderThanSeconds = 120, limit = 10, maxRedispatches = 5 } = {}) {
+  const capped = Math.max(1, Math.min(Number(limit) || 10, 50));
+  const older = Math.max(1, Number(olderThanSeconds) || 120);
+  const maxAttempts = Math.max(0, Number(maxRedispatches) || 0);
+  const { rows } = await pool.query(
+    `UPDATE webhook_events
+        SET error = COALESCE(error, $1)
       WHERE id IN (
         SELECT id FROM webhook_events
          WHERE status = 'received'
            AND received_at < now() - ($2 || ' seconds')::interval
+           AND COALESCE((regexp_match(COALESCE(error, ''), $3))[1]::int, 0) < $4
          ORDER BY received_at ASC
-         LIMIT $3
+         LIMIT $5
       )
-     RETURNING id, provider, external_id, payload, received_at`,
-    [WEBHOOK_ERROR.STALE_REPLAY, String(Math.max(1, Number(olderThanSeconds) || 120)), capped]
+     RETURNING id, provider, external_id, payload, received_at,
+               COALESCE((regexp_match(COALESCE(error, ''), $3))[1]::int, 0) AS redispatches`,
+    [`${REDISPATCH_PREFIX}0`, String(older), REDISPATCH_PATTERN, maxAttempts, capped]
   );
   return rows;
+}
+
+/** Count one re-dispatch attempt. Never changes the status. */
+export async function recordRedispatch(provider, externalId, attempt = 1) {
+  await pool.query(
+    `UPDATE webhook_events
+        SET error = $3
+      WHERE provider = $1 AND external_id = $2 AND status = 'received'`,
+    [provider, externalId, `${REDISPATCH_PREFIX}${Math.max(1, Number(attempt) || 1)}`]
+  );
 }

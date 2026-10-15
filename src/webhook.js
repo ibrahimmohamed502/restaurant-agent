@@ -50,19 +50,34 @@ webhookRouter.get('/webhook', (req, res) => {
 /* POST /webhook — incoming comment events                             */
 /* ------------------------------------------------------------------ */
 webhookRouter.post('/webhook', (req, res) => {
+  // 1. Signature first: an unsigned or forged event never reaches the database.
   if (!verifySignature(req)) {
     console.warn('⛔ Invalid X-Hub-Signature-256 — request rejected');
     return res.sendStatus(401);
   }
-  // Never log the payload: it carries message text, PSIDs and profile names.
+
+  // 2. Shape only — never the payload (it carries text, PSIDs and names).
   const entries = Array.isArray(req.body?.entry) ? req.body.entry.length : 0;
-  const fields = [
-    ...new Set((req.body?.entry ?? []).flatMap((e) => (e?.changes ?? []).map((c) => c?.field).filter(Boolean)))
-  ];
   const dmCount = (req.body?.entry ?? []).reduce((n, e) => n + (e?.messaging?.length ?? 0), 0);
-  console.log(`📩 Webhook POST received: entries=${entries} feed=${fields.join(',') || 'none'} dm=${dmCount}`);
-  res.sendStatus(200); // ACK immediately so Meta doesn't retry
-  handlePayload(req.body).catch((err) => console.error('❌ Handler error:', safeErrorCode(err)));
+  console.log(`📩 Webhook POST received: entries=${entries} dm=${dmCount}`);
+
+  // 3. DURABLE INTAKE BEFORE THE ACK.
+  //    The event is recorded (provider, external_id) — the idempotency record —
+  //    and only then acknowledged. No AI call, no outbound Meta call and no
+  //    queue push happens before the 200, so the response stays fast.
+  intakeWebhookBody(req.body)
+    .then((intake) => {
+      res.sendStatus(200); // accepted durably — Meta will not retry
+      // 4. After the ACK: queue it, or handle inline if the queue is down.
+      dispatchWebhookBody(req.body, intake)
+        .catch((err) => console.error('❌ dispatch failed:', safeErrorCode(err)));
+    })
+    .catch((err) => {
+      // Intake could not be persisted: answering 200 would silently lose the
+      // event. 503 is retryable, so Meta re-delivers it later.
+      console.error('⛔ durable intake failed — returning 503 for Meta retry:', safeErrorCode(err));
+      if (!res.headersSent) res.sendStatus(503);
+    });
 });
 
 /**
@@ -94,44 +109,64 @@ export function webhookProcessingMode() {
 }
 
 /**
- * Stage 4 completion — queue-mode intake: normalize → dedupe (webhook_events)
- * → enqueue → fast ACK. Falls back to inline processing when the queue is
- * unavailable, so behavior is never silently lost.
+ * INTAKE PHASE — runs BEFORE the HTTP 200 and never processes anything.
  *
- * `queueIntake` is the per-event seam (exported for tests): record → enqueue,
- * and on enqueue failure it removes the intake row and returns the event so the
- * caller processes it inline exactly once.
+ * Normalizes the payload and writes one idempotency row per event. The
+ * UNIQUE (provider, external_id) constraint is what makes concurrent Meta
+ * redelivery safe: the second insert returns nothing and is counted as a
+ * duplicate.
+ *
+ * Throws if the row cannot be persisted, which the route turns into a 503 so
+ * Meta re-delivers instead of the event being lost.
+ */
+export async function intakeWebhookBody(body, deps = {}) {
+  if (body?.object !== 'page') return { events: [], duplicates: 0 };
+  const { normalizeMetaWebhook } = await import('./providers/meta/normalizer.js');
+  const normalize = deps.normalize ?? normalizeMetaWebhook;
+  const events = normalize(body);
+
+  // Legacy / local mode: no database is configured, so there is nothing to
+  // record against. Behaviour is unchanged from before (inline only).
+  const { enabled } = await import('./db/pg.js');
+  if (!deps.record && !enabled) return { events, duplicates: 0, legacy: true };
+
+  let record = deps.record;
+  if (!record) {
+    const svc = await import('./services/webhookEvents.js');
+    record = svc.recordWebhookEvent;
+  }
+  const accepted = [];
+  let duplicates = 0;
+  for (const ev of events) {
+    const row = await record(ev); // throws => 503 (Meta retries, nothing is lost)
+    if (!row) { duplicates++; continue; }
+    accepted.push(ev);
+  }
+  return { events: accepted, duplicates };
+}
+
+/**
+ * DISPATCH PHASE — runs AFTER the 200 and never touches the database for
+ * deduplication (that already happened).
+ *
+ * Each already-recorded event is pushed onto the queue. If the queue is
+ * unavailable the event is handled inline and its durable row is kept, so a
+ * redelivery is still suppressed.
  */
 export async function queueIntake(events, deps = {}) {
   const {
-    recordWebhookEvent,
     enqueueMetaEvent,
     markWebhookEventInline
   } = deps;
   const result = { enqueued: 0, duplicates: 0, fallbackEvents: [], noIntake: [] };
-  for (const ev of events) {
-    let recorded;
-    try {
-      recorded = await recordWebhookEvent(ev);
-    } catch (e) {
-      // The idempotency record could not be written, so deduplication is NOT
-      // available for this event. Dropping it would lose a customer message
-      // (Meta was already ACKed and will not retry); skipping it is the only
-      // safe alternative, so it is processed inline and reported separately.
-      console.warn(`⚠️ intake record unavailable (${safeErrorCode(e)}) — event handled without deduplication`);
-      result.noIntake.push(ev);
-      continue;
-    }
-    if (!recorded) { result.duplicates++; continue; }
+  for (const ev of events ?? []) {
     try {
       await enqueueMetaEvent(ev);
       result.enqueued++;
     } catch (e) {
-      // Enqueue failed AFTER the row was recorded. The row is the idempotency
-      // record, so it is KEPT: deleting it would free the (provider, external_id)
-      // slot and a concurrent Meta redelivery could then be processed inline a
-      // second time — producing a duplicate AI reply. Instead the event is
-      // marked as being handled inline.
+      // The row is the idempotency record and is KEPT: deleting it would free
+      // the (provider, external_id) slot and let a concurrent redelivery be
+      // processed a second time — a duplicate AI reply.
       console.warn(`⚠️ enqueue failed (${safeErrorCode(e)}) — handling inline, intake row kept`);
       await markWebhookEventInline(ev.provider, ev.eventId).catch(() => undefined);
       result.fallbackEvents.push(ev);
@@ -153,63 +188,87 @@ async function completeInlineEvents(events, status) {
   }
 }
 
-async function enqueuePayload(body) {
-  try {
-    const { normalizeMetaWebhook } = await import('./providers/meta/normalizer.js');
-    const { recordWebhookEvent, markWebhookEventInline } = await import('./services/webhookEvents.js');
-    const { enqueueMetaEvent } = await import('./queues/metaEvents.js');
+/**
+ * Queue an already-recorded intake. Only queue infrastructure can fail here —
+ * the idempotency row is already durable, so a redelivery stays suppressed.
+ */
+async function enqueueRecordedEvents(events) {
+  const { markWebhookEventInline } = await import('./services/webhookEvents.js');
+  const { enqueueMetaEvent } = await import('./queues/metaEvents.js');
+  return queueIntake(events, { enqueueMetaEvent, markWebhookEventInline });
+}
 
-    // Stale-intake recovery is NOT done here: it is owned by the worker process
-    // (see startStaleIntakeSweeper). Claiming from the request path as well
-    // would let the API and the worker race for the same event, which is exactly
-    // how a duplicate outbound reply happens.
-    const events = normalizeMetaWebhook(body);
-    return await queueIntake(events, { recordWebhookEvent, enqueueMetaEvent, markWebhookEventInline });
+/**
+ * DISPATCH PHASE — everything below runs AFTER the 200, so no AI inference and
+ * no outbound Meta call delays the webhook response.
+ *
+ * `intake` is the result of intakeWebhookBody(): the events that were durably
+ * recorded, plus the duplicate count.
+ */
+export async function dispatchWebhookBody(body, intake = { events: [], duplicates: 0 }, handlers = {}) {
+  const {
+    buildCtx = buildRouteContext,
+    onComment = processComment,
+    onMessage = processMessage,
+    enqueueFn = enqueueRecordedEvents
+  } = handlers;
+  if (body?.object !== 'page') return;
+
+  const recorded = intake?.events ?? [];
+  const duplicates = intake?.duplicates ?? 0;
+
+  // Legacy mode (no database configured): there is no intake to deduplicate
+  // against, so the whole payload is processed — exactly as before intake
+  // existed.
+  if (intake?.legacy) {
+    await processInline(body, { buildCtx, onComment, onMessage }, null);
+    return;
+  }
+
+  // Inline mode: everything recorded is handled here, still deduplicated by the
+  // durable rows (a redelivery never reaches this point twice).
+  if (webhookProcessingMode() !== 'queue' || handlers.skipQueue) {
+    if (recorded.length) {
+      await processInline(body, { buildCtx, onComment, onMessage }, new Set(recorded.map((e) => e.eventId)));
+      await completeInlineEvents(recorded, 'done');
+    }
+    return;
+  }
+
+  let outcome;
+  try {
+    outcome = await enqueueFn(recorded);
   } catch (err) {
-    // queue infrastructure unavailable → inline fallback (never drop the event)
-    console.warn(`⚠️ queue intake unavailable (${safeErrorCode(err)}) — processing inline`);
-    return null;
+    // Queue infrastructure is unavailable: answer the customer inline instead
+    // of dropping the event. The intake rows stay, so a redelivery of the same
+    // event is still suppressed.
+    console.warn(`⚠️ queue unavailable (${safeErrorCode(err)}) — handling inline`);
+    outcome = { enqueued: 0, duplicates: 0, fallbackEvents: recorded, noIntake: [] };
+  }
+
+  if (outcome.fallbackEvents?.length) {
+    try {
+      await processInline(body, { buildCtx, onComment, onMessage }, new Set(outcome.fallbackEvents.map((e) => e.eventId)));
+      await completeInlineEvents(outcome.fallbackEvents, 'done');
+    } catch (err) {
+      await completeInlineEvents(outcome.fallbackEvents, 'failed');
+      throw err;
+    }
+  }
+  if (outcome.enqueued || duplicates) {
+    console.log(`📥 queued ${outcome.enqueued} event(s)${duplicates ? `, ${duplicates} duplicate(s) skipped` : ''}`);
   }
 }
 
-async function handlePayload(body, handlers = {}) {
-  if (body.object !== 'page') return;
-
-  const { buildCtx = buildRouteContext, onComment = processComment, onMessage = processMessage, enqueueFn = enqueuePayload, queueIntakeFn = queueIntake } = handlers;
-
-  // ---- Stage 4 queue mode (default remains inline) ----
-  if (webhookProcessingMode() === 'queue' && !handlers.skipQueue) {
-    const outcome = await enqueueFn(body);
-    if (outcome === null) {
-      // intake infrastructure failed entirely → inline fallback below
-    } else if ((outcome.fallbackEvents?.length ?? 0) + (outcome.noIntake?.length ?? 0) > 0) {
-      // Everything the queue did not take is handled here, exactly once.
-      // fallbackEvents still have a durable intake row to close out; noIntake
-      // events have none, so only they are reported, never marked.
-      const handled = outcome.fallbackEvents ?? [];
-      const inlineSet = new Set(
-        [...handled, ...(outcome.noIntake ?? [])].map((e) => e.eventId)
-      );
-      if (outcome.noIntake?.length) {
-        console.warn(`⚠️ ${outcome.noIntake.length} event(s) processed WITHOUT an intake record — dedupe unavailable for those`);
-      }
-      try {
-        await processInline(body, { buildCtx, onComment, onMessage }, inlineSet);
-        await completeInlineEvents(handled, 'done');
-      } catch (err) {
-        await completeInlineEvents(handled, 'failed');
-        throw err;
-      }
-      return;
-    } else {
-      if (outcome.enqueued || outcome.duplicates) {
-        console.log(`📥 queued ${outcome.enqueued} event(s)${outcome.duplicates ? `, ${outcome.duplicates} duplicate(s) skipped` : ''}`);
-      }
-      return; // everything handled by the worker (or duplicates skipped)
-    }
-  }
-
-  await processInline(body, { buildCtx, onComment, onMessage }, null);
+/**
+ * Legacy entry point: normalise → dispatch. Callers that already hold a durable
+ * intake must use dispatchWebhookBody instead. Kept for the inline/test paths.
+ */
+export async function handlePayload(body, handlers = {}) {
+  // A caller that already holds a durable intake can pass it in (tests, and
+  // any future caller that records elsewhere). Otherwise it is computed here.
+  const intake = handlers.intake ?? await intakeWebhookBody(body);
+  return dispatchWebhookBody(body, intake, handlers);
 }
 
 /** Original inline processing loop. `onlyEventIds` restricts processing to a subset. */
@@ -337,7 +396,7 @@ async function finalAiSendCheck({ tenantId, conversationId, pgEnabled }) {
   return { suppressed: gate.suppressed, state: gate.state };
 }
 
-export { handlePayload };
+// handlePayload is exported inline above (legacy inline/test entry point).
 export { processComment, processMessage };
 
 /* ------------------------------------------------------------------ */
