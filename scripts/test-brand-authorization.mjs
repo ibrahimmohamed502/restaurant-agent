@@ -186,7 +186,7 @@ console.log('--- 7. every conversation route enforces ability and scope ---');
 
   const auditOutcomes = (retry.match(/action: 'message\.retry'/g) || []).length;
   check('every retry outcome is audited', auditOutcomes >= 4, `audit calls=${auditOutcomes}`);
-  for (const outcome of ['denied', 'refused', 'claimed', 'sent', 'failed']) {
+  for (const outcome of ['denied', 'refused', 'claimed', 'sent', 'send_failed']) {
     check(`audit records outcome "${outcome}"`, retry.includes(`outcome: '${outcome}'`));
   }
   check('the audit metadata carries no customer content',

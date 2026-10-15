@@ -13,10 +13,11 @@ import {
   claimFailedOutboundForRetry,
   finishMessageDelivery,
   getConversationChannelContext,
-  deliveryErrorCategory
 } from './services/conversations.js';
 import { resolveMetaChannel } from './services/channelResolver.js';
 import { can } from './auth/abilities.js';
+import { classifyDeliveryError, createOutboundLedger } from './services/deliveryOutcome.js';
+import { safeErrorCode } from './services/redact.js';
 import {
   brandScopeFromSession,
   brandScopeSql
@@ -287,37 +288,119 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
       metadata: { outcome: 'claimed', conversationId, brandScope: scope.mode }
     });
 
+    // ===================================================================
+    // THREE ISOLATED PHASES
+    //
+    // The Meta call is the ONLY irreversible step, so it is isolated from both
+    // the guards before it and the bookkeeping after it. They previously shared
+    // ONE try/catch, so a failure to RECORD a successful send was handled by
+    // the same branch as a failed send and written back as 'failed' — which is
+    // what could make an already-delivered reply eligible for another send.
+    //
+    // The ledger records that an irreversible request was started. Once it is
+    // set, no later failure may write a retryable state.
+    // ===================================================================
+    const ledger = createOutboundLedger();
+
     try {
-      // 2) re-resolve current routing + credential from the DB (no env fallback)
+      // ---- Phase 1: resolve routing + credential (nothing sent yet) ----
       const context = await getConversationChannelContext({ tenantId, conversationId });
       if (!context || context.tenant_id !== tenantId || !context.channel_id) {
         await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'failed', errorCategory: 'routing_unavailable' });
         return res.status(409).json({ error: 'not retryable', code: 'ROUTING_UNAVAILABLE' });
       }
-      const resolved = await resolveMetaChannel(context.external_id, { includeCredential: true }).catch((e) => { throw e; });
+      const resolved = await resolveMetaChannel(context.external_id, { includeCredential: true });
       if (resolved.channelId !== context.channel_id || resolved.tenantId !== tenantId || !resolved.credential) {
         await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'failed', errorCategory: 'credential_unavailable' });
         return res.status(409).json({ error: 'not retryable', code: 'CREDENTIAL_UNAVAILABLE' });
       }
-      const client = createMetaClient({ accessToken: resolved.credential });
-
-      // 3) exactly ONE Meta POST for the winning request
-      let providerId = null;
       const threadKey = context.external_key ?? null;
       if (!threadKey) {
         await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'failed', errorCategory: 'missing_thread_context' });
         return res.status(409).json({ error: 'not retryable', code: 'MISSING_THREAD_CONTEXT' });
       }
-      if (context.provider === 'meta_dm') {
-        const resp = await client.sendMessengerReply(threadKey, claimed.text); // threadKey = PSID
-        providerId = resp?.message_id ?? null;
-      } else {
-        const resp = await client.replyToComment(threadKey, claimed.text); // threadKey = comment id
-        providerId = resp?.id ?? null;
+      const client = createMetaClient({ accessToken: resolved.credential });
+
+      // ---- Phase 2: the single Meta POST (the irreversible step) ----
+      let providerId = null;
+      try {
+        // Flagged BEFORE the call, so neither a crash nor a late error can be
+        // mistaken for "nothing was attempted".
+        ledger.started = true;
+        ledger.outcome = 'attempted';
+        const resp = context.provider === 'meta_dm'
+          ? await client.sendMessengerReply(threadKey, claimed.text)   // threadKey = PSID
+          : await client.replyToComment(threadKey, claimed.text);     // threadKey = comment id
+        providerId = resp?.message_id ?? resp?.id ?? null;
+        ledger.outcome = 'delivered';
+        ledger.category = null;
+      } catch (err) {
+        // The STRICT classifier decides the stored state:
+        //   verified refusal -> 'failed' + a category the retry gate may allow
+        //   unknown outcome  -> 'pending' + delivery_unknown, NEVER retryable
+        // No automatic retry is introduced for an unknown outcome.
+        const outcome = classifyDeliveryError(err);
+        await finishMessageDelivery({
+          tenantId, messageId,
+          deliveryStatus: outcome.deliveryStatus,
+          errorCategory: outcome.category
+        }).catch(() => undefined);
+        console.warn(`⚠️ retry ${messageId} send failed [${outcome.category}] outcome=${outcome.outcome}`);
+        // Sanitized category only — never a provider message, token or reply text.
+        audit({
+          tenantId,
+          actorUserId: req.auth?.user?.id ?? null,
+          action: 'message.retry',
+          objectType: 'message',
+          objectId: messageId,
+          ip: req.ip,
+          metadata: {
+            outcome: 'send_failed',
+            category: outcome.category,
+            deliveryOutcome: outcome.outcome,
+            retryable: outcome.retryable,
+            conversationId
+          }
+        });
+        return res.status(502).json({
+          ok: false,
+          code: 'RETRY_FAILED',
+          category: outcome.category,
+          deliveryOutcome: outcome.outcome,
+          retryable: outcome.retryable
+        });
       }
 
-      // 4) terminal state
-      const updated = await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'sent', providerMessageId: providerId });
+      // ---- Phase 3: bookkeeping (delivery already CONFIRMED) ----
+      let updated = null;
+      try {
+        updated = await finishMessageDelivery({
+          tenantId, messageId,
+          deliveryStatus: 'sent',
+          providerMessageId: providerId
+        });
+      } catch (dbErr) {
+        // Meta ACCEPTED this reply; only the bookkeeping failed.
+        //
+        // The row is deliberately left exactly as the claim set it — 'pending'
+        // with a cleared category — which claimFailedOutboundForRetry refuses.
+        // Writing 'failed' here is precisely what would let an operator re-send
+        // a message the customer has already received.
+        console.error(`❌ retry ${messageId} delivered to Meta but not recorded [${safeErrorCode(dbErr)}]`);
+        audit({
+          tenantId,
+          actorUserId: req.auth?.user?.id ?? null,
+          action: 'message.retry',
+          objectType: 'message',
+          objectId: messageId,
+          ip: req.ip,
+          metadata: { outcome: 'delivered_unrecorded', code: safeErrorCode(dbErr), conversationId }
+        });
+        // 200: the reply reached the customer. recorded=false tells the operator
+        // not to retry; the row is not re-sendable in any case.
+        return res.json({ ok: true, recorded: false, code: 'DELIVERED_UNRECORDED' });
+      }
+
       logEvent({ channel: 'retry', customerName: null, customerId: null, message: `retry ${messageId} → sent`, reply: null, intent: null, inScope: true, lang: null, escalate: false });
       audit({
         tenantId,
@@ -330,10 +413,9 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
       });
       return res.json({ ok: true, message: updated });
     } catch (err) {
-      const category = deliveryErrorCategory(err);
-      await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'failed', errorCategory: category }).catch(() => {});
-      console.warn(`⚠️ retry ${messageId} failed [${category}]`);
-      // Audited with a sanitized category only — never a provider message.
+      // Phase 1 failed before any send. Recording the failure is safe because
+      // the ledger proves nothing was sent.
+      console.warn(`⚠️ retry ${messageId} could not be prepared [${safeErrorCode(err)}]`);
       audit({
         tenantId,
         actorUserId: req.auth?.user?.id ?? null,
@@ -341,9 +423,13 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
         objectType: 'message',
         objectId: messageId,
         ip: req.ip,
-        metadata: { outcome: 'failed', category, conversationId }
+        metadata: {
+          outcome: ledger.started ? 'aborted_after_send' : 'prepare_failed',
+          code: safeErrorCode(err),
+          conversationId
+        }
       });
-      return res.status(502).json({ ok: false, code: 'RETRY_FAILED', category });
+      return res.status(409).json({ ok: false, code: ledger.started ? 'ABORTED_AFTER_SEND' : 'PREPARE_FAILED' });
     } finally {
       retryLocks.delete(messageId);
     }

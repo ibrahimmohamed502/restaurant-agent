@@ -406,6 +406,111 @@ console.log('\n--- 3d. the claim enforces brand scope atomically ---');
   check('a restricted scope sees only its own brand', brandVisibleToScope(brandA.id, ONLY_A));
 }
 
+/* ============ 3e. RETRY-STATE TRANSITIONS ON REAL ROWS ==================== */
+console.log('\n--- 3e. state transitions a Manual Retry can produce ---');
+{
+  const { classifyDeliveryError } = await import('../src/services/deliveryOutcome.js');
+  const { claimFailedOutboundForRetry, finishMessageDelivery } = await import('../src/services/conversations.js');
+  const AUTHORISED = { mode: 'tenant', brandIds: null };
+
+  const state = async (id) =>
+    (await pool.query(
+      `SELECT delivery_status, delivery_error, retry_count, provider_message_id FROM messages WHERE id = $1`,
+      [id])).rows[0];
+
+  // --- Phase 2: a VERIFIED throttling refusal is stored as retryable ---
+  {
+    const id = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
+    const outcome = classifyDeliveryError({ status: 429, graphCode: 4, isGraphError: true });
+    await finishMessageDelivery({
+      tenantId: tenant.id, messageId: id,
+      deliveryStatus: outcome.deliveryStatus, errorCategory: outcome.category
+    });
+    const row = await state(id);
+    check('a verified throttle refusal is stored failed + meta_rate_limit',
+      row.delivery_status === 'failed' && row.delivery_error === 'meta_rate_limit', JSON.stringify(row));
+    check('and it is claimable again',
+      (await claimFailedOutboundForRetry({
+        messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
+      }))?.id === id);
+    const after = await state(id);
+    check('the claim reset it to pending with no category',
+      after.delivery_status === 'pending' && after.delivery_error === null, JSON.stringify(after));
+  }
+
+  // --- Phase 2: an UNKNOWN outcome is stored pending and is NOT claimable ---
+  {
+    const id = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
+    await claimFailedOutboundForRetry({
+      messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
+    });
+    const outcome = classifyDeliveryError(Object.assign(new TypeError('fetch failed'), { isTransportError: true }));
+    await finishMessageDelivery({
+      tenantId: tenant.id, messageId: id,
+      deliveryStatus: outcome.deliveryStatus, errorCategory: outcome.category
+    });
+    const row = await state(id);
+    check('a timeout is stored pending + delivery_unknown',
+      row.delivery_status === 'pending' && row.delivery_error === 'delivery_unknown', JSON.stringify(row));
+    check('and the claim refuses it forever',
+      (await claimFailedOutboundForRetry({
+        messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
+      })) === null);
+    check('the row was left exactly as the claim set it',
+      (await state(id)).retry_count === 1);
+  }
+
+  // --- Phase 3: DELIVERED BUT NOT RECORDED -> the row must stay un-sendable ---
+  // The handler deliberately performs NO write in this case; the row keeps the
+  // claim's state. Proving that state is refused is what prevents a duplicate.
+  {
+    const id = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
+    await claimFailedOutboundForRetry({
+      messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
+    });
+    const row = await state(id);
+    check('after a confirmed delivery the row is pending with no category',
+      row.delivery_status === 'pending' && row.delivery_error === null, JSON.stringify(row));
+    check('a delivered-but-unrecorded row cannot be sent again',
+      (await claimFailedOutboundForRetry({
+        messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
+      })) === null);
+    check('and no second transition was applied', (await state(id)).retry_count === 1);
+  }
+
+  // --- A 'failed' write after a confirmed delivery would be UNSAFE: prove the
+  //     gate refuses every category the handler could wrongly write. ---
+  {
+    const writable = ['meta_rate_limit', 'delivery_unknown', 'meta_api_error', 'meta_auth_expired'];
+    for (const category of writable) {
+      const id = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
+      await claimFailedOutboundForRetry({
+        messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
+      });
+      await finishMessageDelivery({ tenantId: tenant.id, messageId: id, deliveryStatus: 'failed', errorCategory: category });
+      const claimable = (await claimFailedOutboundForRetry({
+        messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
+      })) !== null;
+      const safe = category !== 'meta_rate_limit';
+      check(`writing '${category}' after a delivery is ${safe ? 'refused' : 'ALLOWED (the bug we removed)'}`,
+        claimable === !safe);
+    }
+  }
+
+  // --- The CHECK constraint still admits every state the handler writes ---
+  {
+    const id = await addOutbound({ status: 'pending', error: null });
+    await finishMessageDelivery({ tenantId: tenant.id, messageId: id, deliveryStatus: 'sent', providerMessageId: 'mid_x' });
+    const row = await state(id);
+    check('the sent + provider id write is accepted by the schema',
+      row.delivery_status === 'sent' && row.provider_message_id === 'mid_x', JSON.stringify(row));
+    check('and a sent row is never claimable',
+      (await claimFailedOutboundForRetry({
+        messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
+      })) === null);
+  }
+}
+
 /* ================== 4. THE ATOMIC CLAIM ON REAL webhook_events ============= */
 console.log('\n--- 4. exactly one worker may claim an event ---');
 {
