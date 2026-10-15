@@ -10,6 +10,7 @@
 import { Worker } from 'bullmq';
 import { getRedisConnection } from '../queues/redis.js';
 import { closeRedisConnection } from '../queues/redis.js';
+import { safeErrorCode } from '../services/redact.js';
 import { META_EVENT_QUEUE } from '../queues/metaEvents.js';
 import { processQueuedMetaEvent } from './metaEventPipeline.js';
 import { createKnowledgeIndexWorker } from './knowledgeIndexWorker.js';
@@ -35,6 +36,21 @@ export function createMetaEventWorker() {
   );
 }
 
+/** Move an exhausted job's intake row to 'dlq' (sanitized reason only). */
+async function markEventDlq(job, err) {
+  const provider = job?.data?.provider;
+  const eventId = job?.data?.eventId;
+  if (!provider || !eventId) return;
+  const { updateWebhookEvent, WEBHOOK_ERROR } = await import('../services/webhookEvents.js');
+  await updateWebhookEvent({
+    provider,
+    externalId: eventId,
+    status: 'dlq',
+    error: WEBHOOK_ERROR.JOB_EXHAUSTED
+  }).catch(() => undefined);
+  console.error(`❌ job ${job.id} exhausted its retries — intake marked dlq (${safeErrorCode(err)})`);
+}
+
 async function main() {
   console.log(`👷 meta event worker starting (queue=${META_EVENT_QUEUE}, concurrency=${CONCURRENCY})`);
   const worker = createMetaEventWorker();
@@ -47,7 +63,7 @@ async function main() {
     if (!job) return;
     const attempts = job.attemptsMade ?? 0;
     const max = job.opts?.attempts ?? 3;
-    console.warn(`⚠️ index job ${job.id} failed (attempt ${attempts}/${max}): ${(err?.code ?? err?.message ?? 'error').toString().slice(0, 140)}`);
+    console.warn(`⚠️ index job ${job.id} failed (attempt ${attempts}/${max}): ${safeErrorCode(err)}`);
   });
 
   worker.on('completed', (job) => console.log(`✅ job done: ${job.id}`));
@@ -55,7 +71,13 @@ async function main() {
     if (!job) return;
     const attempts = job.attemptsMade ?? 0;
     const max = job.opts?.attempts ?? 3;
-    console.warn(`⚠️ job ${job.id} failed (attempt ${attempts}/${max}): ${(err?.message ?? 'error').slice(0, 120)}`);
+    console.warn(`⚠️ job ${job.id} failed (attempt ${attempts}/${max}): ${safeErrorCode(err)}`);
+    // Exhausted retries must leave a durable, visible record instead of a job
+    // that silently sits in the BullMQ failed set. The intake row moves to
+    // 'dlq' and is NEVER auto-replayed, so this cannot duplicate a reply.
+    if (attempts >= max) {
+      markEventDlq(job, err).catch(() => undefined);
+    }
   });
 
   const shutdown = async (sig) => {
@@ -74,7 +96,7 @@ async function main() {
 // only auto-start when executed directly (not when imported by tests)
 if (process.argv[1] && process.argv[1].endsWith('metaEventWorker.js')) {
   main().catch((err) => {
-    console.error('❌ worker fatal:', err.message);
+    console.error('❌ worker fatal:', safeErrorCode(err));
     process.exit(1);
   });
 }

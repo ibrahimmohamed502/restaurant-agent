@@ -23,6 +23,7 @@ import { evaluateAiGate } from './services/aiGate.js';
 import { detectCustomerHumanRequest, detectAutoEscalation, HANDOFF_REASONS } from './services/handoffDetector.js';
 import { requestHandoff, REQUESTED_BY } from './services/handoff.js';
 import { alreadyReplied, markReplied, userOverLimit } from './store.js';
+import { redactId, textSummary, safeErrorCode } from './services/redact.js';
 
 export const webhookRouter = express.Router();
 
@@ -53,14 +54,26 @@ webhookRouter.post('/webhook', (req, res) => {
     console.warn('⛔ Invalid X-Hub-Signature-256 — request rejected');
     return res.sendStatus(401);
   }
-  console.log('📩 Webhook POST received:', JSON.stringify(req.body).slice(0, 600));
+  // Never log the payload: it carries message text, PSIDs and profile names.
+  const entries = Array.isArray(req.body?.entry) ? req.body.entry.length : 0;
+  const fields = [
+    ...new Set((req.body?.entry ?? []).flatMap((e) => (e?.changes ?? []).map((c) => c?.field).filter(Boolean)))
+  ];
+  const dmCount = (req.body?.entry ?? []).reduce((n, e) => n + (e?.messaging?.length ?? 0), 0);
+  console.log(`📩 Webhook POST received: entries=${entries} feed=${fields.join(',') || 'none'} dm=${dmCount}`);
   res.sendStatus(200); // ACK immediately so Meta doesn't retry
-  handlePayload(req.body).catch((err) => console.error('❌ Handler error:', err));
+  handlePayload(req.body).catch((err) => console.error('❌ Handler error:', safeErrorCode(err)));
 });
 
+/**
+ * Verify the Meta webhook signature.
+ *
+ * FAIL CLOSED: a missing FB_APP_SECRET rejects every POST. Accepting unverified
+ * events would let anyone forge an event and drive real outbound AI replies.
+ */
 function verifySignature(req) {
   const secret = process.env.FB_APP_SECRET;
-  if (!secret) return true; // signature check disabled — set FB_APP_SECRET in production!
+  if (!secret) return false; // fail closed: no secret => no event is trusted
   const signature = req.headers['x-hub-signature-256'];
   if (!signature || !req.rawBody) return false;
 
@@ -93,7 +106,7 @@ export async function queueIntake(events, deps = {}) {
   const {
     recordWebhookEvent,
     enqueueMetaEvent,
-    deleteWebhookEvent
+    markWebhookEventInline
   } = deps;
   const result = { enqueued: 0, duplicates: 0, fallbackEvents: [] };
   for (const ev of events) {
@@ -103,26 +116,54 @@ export async function queueIntake(events, deps = {}) {
       await enqueueMetaEvent(ev);
       result.enqueued++;
     } catch (e) {
-      // enqueue failed AFTER the row was recorded: undo the row so the event is
-      // not permanently blocked, and process it inline exactly once.
-      console.warn(`⚠️ enqueue failed for ${ev.eventId} — falling back to inline (${e?.code ?? 'error'})`);
-      await deleteWebhookEvent(ev.provider, ev.eventId).catch(() => undefined);
+      // Enqueue failed AFTER the row was recorded. The row is the idempotency
+      // record, so it is KEPT: deleting it would free the (provider, external_id)
+      // slot and a concurrent Meta redelivery could then be processed inline a
+      // second time — producing a duplicate AI reply. Instead the event is
+      // marked as being handled inline.
+      console.warn(`⚠️ enqueue failed (${safeErrorCode(e)}) — handling inline, intake row kept`);
+      await markWebhookEventInline(ev.provider, ev.eventId).catch(() => undefined);
       result.fallbackEvents.push(ev);
     }
   }
   return result;
 }
 
+/** Terminal state for events that were handled inline instead of queued. */
+async function completeInlineEvents(events, status) {
+  const { updateWebhookEvent } = await import('./services/webhookEvents.js');
+  for (const ev of events) {
+    await updateWebhookEvent({
+      provider: ev.provider,
+      externalId: ev.eventId,
+      status,
+      error: status === 'done' ? null : 'INLINE_FAILED'
+    }).catch(() => undefined);
+  }
+}
+
 async function enqueuePayload(body) {
   try {
     const { normalizeMetaWebhook } = await import('./providers/meta/normalizer.js');
-    const { recordWebhookEvent, deleteWebhookEvent } = await import('./services/webhookEvents.js');
+    const { recordWebhookEvent, markWebhookEventInline, claimStaleWebhookEvents } =
+      await import('./services/webhookEvents.js');
     const { enqueueMetaEvent } = await import('./queues/metaEvents.js');
+    const { replayStaleIntakes } = await import('./workers/metaEventPipeline.js');
+
+    // Crash recovery: events that were recorded but never started processing
+    // (e.g. the process died between the INSERT and the queue add) are claimed
+    // and replayed once. Bounded, and never replays anything already started.
+    const claimed = await claimStaleWebhookEvents().catch(() => []);
+    if (claimed.length) {
+      console.warn(`♻️  replaying ${claimed.length} stale intake event(s) that never started`);
+      await replayStaleIntakes(claimed).catch((e) => console.error('❌ stale replay failed:', safeErrorCode(e)));
+    }
+
     const events = normalizeMetaWebhook(body);
-    return await queueIntake(events, { recordWebhookEvent, enqueueMetaEvent, deleteWebhookEvent });
+    return await queueIntake(events, { recordWebhookEvent, enqueueMetaEvent, markWebhookEventInline });
   } catch (err) {
     // queue infrastructure unavailable → inline fallback (never drop the event)
-    console.warn(`⚠️ queue intake unavailable (${err?.code ?? 'error'}) — processing inline`);
+    console.warn(`⚠️ queue intake unavailable (${safeErrorCode(err)}) — processing inline`);
     return null;
   }
 }
@@ -138,7 +179,14 @@ async function handlePayload(body, handlers = {}) {
     if (outcome === null) {
       // intake infrastructure failed entirely → inline fallback below
     } else if (outcome.fallbackEvents?.length) {
-      await processInline(body, { buildCtx, onComment, onMessage }, new Set(outcome.fallbackEvents.map((e) => e.eventId)));
+      const handled = outcome.fallbackEvents;
+      try {
+        await processInline(body, { buildCtx, onComment, onMessage }, new Set(handled.map((e) => e.eventId)));
+        await completeInlineEvents(handled, 'done');
+      } catch (err) {
+        await completeInlineEvents(handled, 'failed');
+        throw err;
+      }
       return;
     } else {
       if (outcome.enqueued || outcome.duplicates) {
@@ -173,7 +221,7 @@ async function processInline(body, { buildCtx, onComment, onMessage }, onlyEvent
       if (onlyEventIds && !onlyEventIds.has(v?.comment_id)) continue;
 
       await onComment(v, ctx).catch((err) =>
-        console.error(`❌ Failed on comment ${v?.comment_id}:`, err.message)
+        console.error(`❌ Failed on comment (${redactId(v?.comment_id)}):`, safeErrorCode(err))
       );
     }
 
@@ -182,7 +230,7 @@ async function processInline(body, { buildCtx, onComment, onMessage }, onlyEvent
       const mid = event?.message?.mid;
       if (onlyEventIds && !onlyEventIds.has(mid)) continue;
       await onMessage(event, ctx).catch((err) =>
-        console.error(`❌ Failed on DM from ${event?.sender?.id}:`, err.message)
+        console.error(`❌ Failed on DM (${redactId(event?.sender?.id)}):`, safeErrorCode(err))
       );
     }
   }
@@ -232,7 +280,7 @@ async function applyStage7Gate({ tenantId, conversationId, text, pgEnabled }) {
     } catch (e) {
       const after = await evaluateAiGate({ tenantId, conversationId });
       if (after.suppressed) return { suppressed: true, state: after.state };
-      console.error('⚠️ stage7 customer handoff failed:', e?.message ?? 'error');
+      console.error('⚠️ stage7 customer handoff failed:', safeErrorCode(e));
     }
     return { suppressed: true, state: 'QUEUED' };
   }
@@ -254,7 +302,7 @@ async function applyStage7Gate({ tenantId, conversationId, text, pgEnabled }) {
     } catch (e) {
       const after = await evaluateAiGate({ tenantId, conversationId });
       if (after.suppressed) return { suppressed: true, state: after.state };
-      console.error('⚠️ stage7 auto-escalation handoff failed:', e?.message ?? 'error');
+      console.error('⚠️ stage7 auto-escalation handoff failed:', safeErrorCode(e));
     }
     return { suppressed: true, state: 'QUEUED' };
   }
@@ -303,12 +351,12 @@ async function processMessage(event, ctx, deps = {}) {
 
   const limit = Number(process.env.MAX_REPLIES_PER_USER_PER_HOUR || 30);
   if (overLimit(psid, limit)) {
-    console.warn(`⚠️ DM anti-abuse cap hit for ${psid} — skipping`);
+    console.warn(`⚠️ DM anti-abuse cap hit for ${redactId(psid)} — skipping`);
     return;
   }
 
   const text = msg.text || '';
-  console.log(`💬 New DM from ${psid}: "${text || '(media only)'}"`);
+  console.log(`💬 New DM: who=${redactId(psid)} chars=${textSummary(text).chars} media=${textSummary(text).mediaOnly}`);
 
   await ctx.metaClient.sendTypingIndicator(psid);
   const authorName = await ctx.metaClient.getUserFirstName(psid);
@@ -324,19 +372,19 @@ async function processMessage(event, ctx, deps = {}) {
         conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey: psid, customerId });
         const inbound = await persistInboundMessage({ tenantId, conversationId, text, providerMessageId: msg.mid, providerTs: event.timestamp ? new Date(event.timestamp) : null });
         if (inbound.duplicate) {
-          console.log(`↩️  DM ${msg.mid} already persisted — skipping (webhook redelivery)`);
+          console.log(`↩️  DM (${redactId(msg.mid)}) already persisted — skipping (webhook redelivery)`);
           return;
         }
       }
     } catch (e) {
-      console.error('⚠️ inbound persist failed (dm):', e.message);
+      console.error('⚠️ inbound persist failed (dm):', safeErrorCode(e));
     }
   }
 
   // Stage 7 gate: check if AI should be suppressed BEFORE generation
   const gate = await applyStage7Gate({ tenantId: ctx?.tenantId, conversationId, text, pgEnabled });
   if (gate.suppressed) {
-    console.log(`🤝 [stage7] AI suppressed for DM ${msg.mid} — state=${gate.state}`);
+    console.log(`🤝 [stage7] AI suppressed for DM ${redactId(msg.mid)} — state=${gate.state}`);
     return;
   }
 
@@ -350,7 +398,7 @@ async function processMessage(event, ctx, deps = {}) {
     if (err?.code === 'AI_CONTEXT_UNAVAILABLE') {
       console.warn(`⛔ [${ctx.pageId}] scoped AI context unavailable — DM not answered (fail closed)`);
     } else {
-      console.error(`❌ AI failed on DM ${msg.mid}:`, err.message);
+      console.error(`❌ AI failed on DM ${redactId(msg.mid)}:`, safeErrorCode(err));
     }
     await persistOutboundFailure(conversationId, ctx, { pgEnabled });
     return;
@@ -370,7 +418,7 @@ async function processMessage(event, ctx, deps = {}) {
   // Stage 7 final check before sending
   const finalCheck = await finalAiSendCheck({ tenantId: ctx?.tenantId, conversationId, pgEnabled });
   if (finalCheck.suppressed) {
-    console.log(`🤝 [stage7] AI suppressed at final check for DM ${msg.mid} — state=${finalCheck.state}`);
+    console.log(`🤝 [stage7] AI suppressed at final check for DM ${redactId(msg.mid)} — state=${finalCheck.state}`);
     return;
   }
 
@@ -383,7 +431,7 @@ async function processMessage(event, ctx, deps = {}) {
     if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'sent', providerMessageId: sendResp?.message_id ?? null });
   } catch (err) {
     const category = deliveryErrorCategory(err);
-    console.error(`❌ Failed to deliver DM to ${psid}: [${category}]`);
+    console.error(`❌ Failed to deliver DM to ${redactId(psid)}: [${category}]`);
     if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'failed', errorCategory: category }).catch(() => {});
     else await persistOutboundFailure(conversationId, ctx, { pgEnabled, text: draft.reply, errorCategory: category });
     mark(msg.mid, psid);
@@ -398,7 +446,7 @@ async function processMessage(event, ctx, deps = {}) {
     messageId: outboundRow?.id ?? null, conversationId
   }).catch(() => {});
   console.log(
-    `✅ DM replied to ${psid} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
+    `✅ DM replied to ${redactId(psid)} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
   );
 
   // ---- Dashboard activity log ----
@@ -428,7 +476,7 @@ async function processMessage(event, ctx, deps = {}) {
       try {
         await createEscalationRecord({ tenantId: ctx?.tenantId, conversationId, category: escalationCategory(reason), reason, summary: draft.intent });
       } catch (e) {
-        console.error('⚠️ escalation persist failed (dm):', e.message);
+        console.error('⚠️ escalation persist failed (dm):', safeErrorCode(e));
       }
     }
     await notify({
@@ -471,11 +519,11 @@ async function processComment(value, ctx, deps = {}) {
   // Anti-abuse cap only — genuine commenters still always get a reply
   const limit = Number(process.env.MAX_REPLIES_PER_USER_PER_HOUR || 30);
   if (overLimit(from.id, limit)) {
-    console.warn(`⚠️ User ${from.id} hit the hourly anti-abuse cap — skipping`);
+    console.warn(`⚠️ User ${redactId(from.id)} hit the hourly anti-abuse cap — skipping`);
     return;
   }
 
-  console.log(`💬 New comment from ${from.name ?? from.id}: "${message || '(media only)'}"`);
+  console.log(`💬 New comment: who=${redactId(from.id)} chars=${textSummary(message).chars} media=${textSummary(message).mediaOnly}`);
 
   // ---- Stage 4.4.6: PERSIST INBOUND FIRST (before AI / grounding / Meta) ----
   // The customer's message must survive even if the LLM, grounding, or the Meta
@@ -492,19 +540,19 @@ async function processComment(value, ctx, deps = {}) {
         conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey, customerId });
         const inbound = await persistInboundMessage({ tenantId, conversationId, text: message, providerMessageId: commentId, providerTs: value.created_time ? new Date(value.created_time * 1000) : null });
         if (inbound.duplicate) {
-          console.log(`↩️  Comment ${commentId} already persisted — skipping (webhook redelivery)`);
+          console.log(`↩️  Comment (${redactId(commentId)}) already persisted — skipping (webhook redelivery)`);
           return;
         }
       }
     } catch (e) {
-      console.error('⚠️ inbound persist failed (comment):', e.message);
+      console.error('⚠️ inbound persist failed (comment):', safeErrorCode(e));
     }
   }
 
   // Stage 7 gate: check if AI should be suppressed BEFORE generation
   const gate = await applyStage7Gate({ tenantId: ctx?.tenantId, conversationId, text: message, pgEnabled });
   if (gate.suppressed) {
-    console.log(`🤝 [stage7] AI suppressed for comment ${commentId} — state=${gate.state}`);
+    console.log(`🤝 [stage7] AI suppressed for comment ${redactId(commentId)} — state=${gate.state}`);
     return;
   }
 
@@ -518,7 +566,7 @@ async function processComment(value, ctx, deps = {}) {
     if (err?.code === 'AI_CONTEXT_UNAVAILABLE') {
       console.warn(`⛔ [${ctx.pageId}] scoped AI context unavailable — comment not answered (fail closed)`);
     } else {
-      console.error(`❌ AI failed on comment ${commentId}:`, err.message);
+      console.error(`❌ AI failed on comment ${redactId(commentId)}:`, safeErrorCode(err));
     }
     await persistOutboundFailure(conversationId, ctx, { pgEnabled });
     return;
@@ -540,7 +588,7 @@ async function processComment(value, ctx, deps = {}) {
   // Stage 7 final check before sending
   const finalCheck = await finalAiSendCheck({ tenantId: ctx?.tenantId, conversationId, pgEnabled });
   if (finalCheck.suppressed) {
-    console.log(`🤝 [stage7] AI suppressed at final check for comment ${commentId} — state=${finalCheck.state}`);
+    console.log(`🤝 [stage7] AI suppressed at final check for comment ${redactId(commentId)} — state=${finalCheck.state}`);
     return;
   }
 
@@ -561,7 +609,7 @@ async function processComment(value, ctx, deps = {}) {
     if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'sent', providerMessageId: replyResp?.id ?? null });
   } catch (err) {
     const category = deliveryErrorCategory(err);
-    console.error(`❌ Failed to deliver reply for comment ${commentId}: [${category}]`);
+    console.error(`❌ Failed to deliver reply for comment (${redactId(commentId)}): [${category}]`);
     if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'failed', errorCategory: category }).catch(() => {});
     else if (conversationId) await persistOutboundFailure(conversationId, ctx, { pgEnabled, text: finalMessage, errorCategory: category });
     mark(commentId, from.id); // prevent duplicate Meta retries from re-attempting publish
@@ -570,7 +618,7 @@ async function processComment(value, ctx, deps = {}) {
   mark(commentId, from.id);
 
   console.log(
-    `✅ Replied to ${commentId} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
+    `✅ Replied to ${redactId(commentId)} | intent=${draft.intent} | inScope=${draft.inScope} | lang=${draft.lang} | escalate=${draft.escalate}`
   );
 
   // Stage 6 Batch 2 — SHADOW retrieval (AFTER the reply is delivered).
@@ -608,7 +656,7 @@ async function processComment(value, ctx, deps = {}) {
       try {
         await createEscalationRecord({ tenantId: ctx?.tenantId, conversationId, category: escalationCategory(reason), reason, summary: draft.intent });
       } catch (e) {
-        console.error('⚠️ escalation persist failed (comment):', e.message);
+        console.error('⚠️ escalation persist failed (comment):', safeErrorCode(e));
       }
     }
     await notify({ channel: 'comment', commentId, from, message, reason, draft });
@@ -621,7 +669,7 @@ async function persistOutboundFailure(conversationId, ctx, { pgEnabled, text = n
   try {
     await persistOutboundMessage({ tenantId: ctx.tenantId, conversationId, text, deliveryStatus: 'failed', errorCategory });
   } catch (e) {
-    console.error('⚠️ outbound failure persist failed (comment):', e.message);
+    console.error('⚠️ outbound failure persist failed (comment):', safeErrorCode(e));
   }
 }
 

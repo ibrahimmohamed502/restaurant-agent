@@ -30,6 +30,59 @@ export function normalizedFromPayload(payload) {
 }
 
 /**
+ * Replay intake rows that were recorded but NEVER started processing.
+ *
+ * Crash between the intake INSERT and the queue add leaves a row in
+ * 'received'. Those rows are claimed atomically (status guard), so exactly one
+ * sweeper can ever take a given row.
+ *
+ * Deliberate safety rules:
+ *   - only rows still in 'received' are ever replayed; a row that reached
+ *     'processing' may already have produced side effects, so it is never
+ *     auto-replayed (an operator reviews it instead);
+ *   - the terminal status is written on both paths, so a row cannot be claimed
+ *     twice;
+ *   - bounded by the claim query's limit; there is no retry loop here.
+ */
+export async function replayStaleIntakes(rows, deps = {}) {
+  const {
+    buildCtx = buildRouteContext,
+    onComment = processComment,
+    onMessage = processMessage,
+    updateEvent = updateWebhookEvent,
+    pgEnabled = enabled
+  } = deps;
+
+  const results = [];
+  for (const row of rows ?? []) {
+    const { provider = 'meta', external_id: eventId } = row ?? {};
+    try {
+      const normalized = normalizedFromPayload(row?.payload);
+      let ctx;
+      try {
+        ctx = await buildCtx({ id: normalized.pageId });
+      } catch (err) {
+        await updateEvent({ provider, externalId: eventId, status: 'failed', error: err?.code ?? 'ROUTING_FAILED' });
+        results.push({ eventId, skipped: 'routing_failed' });
+        continue;
+      }
+      await updateEvent({ provider, externalId: eventId, status: 'processing', tenantId: ctx.tenantId });
+      if (normalized.eventType === 'message') {
+        await onMessage(normalized.rawMessaging, ctx, { pgEnabled });
+      } else {
+        await onComment(normalized.rawChange?.value, ctx, { pgEnabled });
+      }
+      await updateEvent({ provider, externalId: eventId, status: 'done' });
+      results.push({ eventId, ok: true });
+    } catch (err) {
+      await updateEvent({ provider, externalId: eventId, status: 'failed', error: 'PROCESSING_FAILED' });
+      results.push({ eventId, failed: true });
+    }
+  }
+  return results;
+}
+
+/**
  * Process one queued Meta event end-to-end. Throws on failure (BullMQ retries).
  * `deps` is an injection point for tests; production uses the real modules.
  */

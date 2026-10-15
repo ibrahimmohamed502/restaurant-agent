@@ -122,14 +122,19 @@ console.log('\n🧪 Stage 4 completion tests (mocked)\n');
   {
     const rows = new Set();
     let enqueueAttempts = 0;
-    let deleted = 0;
+    let marked = 0;
     const outcome = await queueIntake(evs, {
-      recordWebhookEvent: async (ev) => { rows.add('meta|' + ev.eventId); return { id: 'e5' }; },
+      recordWebhookEvent: async (ev) => {
+        const k = 'meta|' + ev.eventId;
+        if (rows.has(k)) return null;
+        rows.add(k);
+        return { id: 'e5' };
+      },
       enqueueMetaEvent: async () => { enqueueAttempts++; throw new Error('redis down'); },
-      deleteWebhookEvent: async (p, id) => { deleted++; rows.delete(`${p}|${id}`); return true; }
+      markWebhookEventInline: async () => { marked++; }
     });
-    check('fallback 2C: enqueue failure after row recorded → row deleted, event returned for inline',
-      enqueueAttempts === 1 && deleted === 1 && rows.size === 0 && outcome.fallbackEvents.length === 1 && outcome.enqueued === 0);
+    check('fallback 2C: enqueue failure → intake row KEPT and marked, event returned for inline',
+      enqueueAttempts === 1 && marked === 1 && rows.size === 1 && outcome.fallbackEvents.length === 1 && outcome.enqueued === 0);
 
     // the returned event must be processed inline exactly once
     let inlineCalls = 0;
@@ -149,7 +154,7 @@ console.log('\n🧪 Stage 4 completion tests (mocked)\n');
     const deps = {
       recordWebhookEvent: async (ev) => { const k = 'meta|' + ev.eventId; if (rows.has(k)) return null; rows.add(k); return { id: 'e6' }; },
       enqueueMetaEvent: async () => { enqueued++; },
-      deleteWebhookEvent: async () => true
+      markWebhookEventInline: async () => true
     };
     const first = await queueIntake(evs, deps);
     const redelivery = await queueIntake(evs, deps);
