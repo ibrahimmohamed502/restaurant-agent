@@ -471,3 +471,39 @@ export const companiesApi = {
   disableBrand: (id: string) =>
     api.post<BrandInfo>(`/companies/brands/${id}/disable`, {})
 };
+
+/* ----------------------------------- Stage 8 Batch 2: integrations ----------------------------------- */
+
+export type ProviderInfo = {
+  key: string;
+  label: string;
+  channelProviders: string[];
+  capabilities: { comments: boolean; directMessages: boolean };
+};
+
+export type IntegrationInfo = {
+  id: string;
+  provider: string;
+  providerLabel: string;
+  externalId: string | null;
+  displayName: string | null;
+  status: 'active' | 'disabled' | string;
+  createdAt: string;
+  brand: { id: string; name: string | null } | null;
+  /** Presence + expiry only — the API never exposes a credential value. */
+  credentials: { present: boolean; expiresAt: string | null };
+  health: { status: 'ok' | 'degraded' | 'down' | 'unknown' | string; lastEventAt: string | null; lastError: string | null };
+};
+
+export type IntegrationsResponse = {
+  integrations: IntegrationInfo[];
+  providers: ProviderInfo[];
+};
+
+export const integrationsApi = {
+  /** Tenant-scoped on the server; `brandId` is only a narrowing filter. */
+  list: (brandId?: string) =>
+    api.get<IntegrationsResponse>(`/integrations${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ''}`),
+  status: (channelId: string) =>
+    api.get<{ integration: IntegrationInfo }>(`/integrations/${encodeURIComponent(channelId)}/status`)
+};

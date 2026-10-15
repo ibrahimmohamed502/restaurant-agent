@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest';
 import en from '@/messages/en.json';
 import ar from '@/messages/ar.json';
 
-const PLACEHOLDER_PAGES = ['audit', 'customers', 'integrations', 'settings'];
-const IMPLEMENTED_PAGES = ['brands', 'companies'];
+// `/integrations` left the placeholder set in Stage 8 Batch 2 (read-only listing UI).
+const PLACEHOLDER_PAGES = ['audit', 'customers', 'settings'];
+const IMPLEMENTED_PAGES = ['brands', 'companies', 'integrations'];
 
 /** Roadmap modules that are still placeholders must render the localized placeholder text — never the raw key. */
 describe('roadmap placeholder pages', () => {

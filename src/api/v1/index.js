@@ -23,6 +23,7 @@ import { createDashboardRouter } from './dashboard.js';
 import { createConversationsRouter } from './conversations.js';
 import { createPlatformRouter } from './platform.js';
 import { createCompaniesRouter } from './companies.js';
+import { createIntegrationsRouter } from './integrations.js';
 
 const CSRF_COOKIE = 'csrf_token';
 const CSRF_HEADER = 'x-csrf-token';
@@ -305,6 +306,9 @@ export function createApiV1Router(deps = {}) {
 
   /* --------------------- Stage 8 Batch 1: Company Admin --------------------- */
   router.use('/companies', createCompaniesRouter());
+
+  /* --------- Stage 8 Batch 2: integrations (provider-neutral, read-only) --------- */
+  router.use('/integrations', createIntegrationsRouter({ pool }));
 
   /* --------------------- Stage 5: Team & Access (tenant users + roles) --------------------- */
   router.use('/users', createUsersRouter());

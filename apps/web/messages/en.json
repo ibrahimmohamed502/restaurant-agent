@@ -572,4 +572,51 @@
     "brands": "Brands",
     "emptyTitle": "No brands yet",
     "emptyDescription": "Create your first brand to get started"
-  }}
+  },
+  "integrations": {
+    "title": "Integrations",
+    "description": "Channels connected to your company and their live status.",
+    "allBrands": "All brands",
+    "filterByBrand": "Filter by brand",
+    "noBrand": "Company-wide",
+    "summary": {
+      "total": "Channels",
+      "active": "Active",
+      "attention": "Needs attention",
+      "disabled": "Disabled"
+    },
+    "columns": {
+      "brand": "Brand",
+      "health": "Health",
+      "credentials": "Credentials",
+      "lastEvent": "Last event",
+      "lastError": "Last error",
+      "externalId": "External ID"
+    },
+    "statusLabels": {
+      "active": "Active",
+      "disabled": "Disabled"
+    },
+    "healthLabels": {
+      "ok": "Healthy",
+      "degraded": "Degraded",
+      "down": "Down",
+      "unknown": "No data"
+    },
+    "credentialsLabels": {
+      "present": "Connected",
+      "missing": "Not connected",
+      "expires": "expires"
+    },
+    "capabilities": {
+      "comments": "Comments",
+      "directMessages": "Direct messages"
+    },
+    "providersTitle": "Supported providers",
+    "emptyTitle": "No integrations yet",
+    "emptyDescription": "Channels connected to this company will appear here.",
+    "loadFailedTitle": "Could not load integrations",
+    "loadFailedDescription": "Something went wrong while loading integrations.",
+    "readOnlyNotice": "Connection management (connect, disconnect and token rotation) is not available yet — this view is read-only."
+  }
+}

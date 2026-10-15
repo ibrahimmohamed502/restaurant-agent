@@ -572,5 +572,51 @@
     "brands": "العلامات التجارية",
     "emptyTitle": "لا توجد علامات تجارية بعد",
     "emptyDescription": "أنشئ أول علامة تجارية للبدء"
+  },
+  "integrations": {
+    "title": "التكاملات",
+    "description": "القنوات المتصلة بشركتك وحالتها الحالية.",
+    "allBrands": "كل العلامات التجارية",
+    "filterByBrand": "تصفية حسب العلامة التجارية",
+    "noBrand": "على مستوى الشركة",
+    "summary": {
+      "total": "القنوات",
+      "active": "نشطة",
+      "attention": "تحتاج انتباه",
+      "disabled": "معطّلة"
+    },
+    "columns": {
+      "brand": "العلامة التجارية",
+      "health": "الحالة",
+      "credentials": "بيانات الاعتماد",
+      "lastEvent": "آخر حدث",
+      "lastError": "آخر خطأ",
+      "externalId": "المعرّف الخارجي"
+    },
+    "statusLabels": {
+      "active": "نشطة",
+      "disabled": "معطّلة"
+    },
+    "healthLabels": {
+      "ok": "سليمة",
+      "degraded": "متدهّلة",
+      "down": "متوقفة",
+      "unknown": "لا توجد بيانات"
+    },
+    "credentialsLabels": {
+      "present": "متصلة",
+      "missing": "غير متصلة",
+      "expires": "تنتهي في"
+    },
+    "capabilities": {
+      "comments": "التعليقات",
+      "directMessages": "الرسائل المباشرة"
+    },
+    "providersTitle": "المزوّدون المدعومون",
+    "emptyTitle": "لا توجد تكاملات بعد",
+    "emptyDescription": "ستظهر هنا القنوات المتصلة بهذه الشركة.",
+    "loadFailedTitle": "تعذّر تحميل التكاملات",
+    "loadFailedDescription": "حدث خطأ أثناء تحميل التكاملات.",
+    "readOnlyNotice": "إدارة الاتصال (ربط وفصل وتدوير الرموز) غير متاحة بعد — هذه الصفحة للعرض فقط."
   }
 }
