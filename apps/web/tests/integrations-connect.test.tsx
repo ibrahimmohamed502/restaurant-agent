@@ -111,6 +111,22 @@ describe('OAuth flow hygiene', () => {
     expect(pageSrc).toContain('OAUTH_NOT_CONFIGURED');
     expect(pageSrc).toContain('notConfiguredHint');
   });
+
+  it('connects with the brand bound to the authorization, not the current filter', () => {
+    // The server binds the brand at authorize time and rejects any other brand
+    // at connect time, so the wizard must follow the flow, not the dropdown.
+    expect(pageSrc).toContain('setFlowBrandId(res.brandId ?? null)');
+    expect(pageSrc).toContain('flowBrandId ?? undefined');
+    expect(pageSrc).not.toMatch(/connect\(flow\.flowId, flow\.flowToken, selectedPage, brandId/);
+  });
+
+  it('states the bound brand in both locales', () => {
+    expect(enI.wizard.boundToBrand).toContain('{brand}');
+    expect(arI.wizard.boundToBrand).toContain('{brand}');
+    expect(arI.wizard.boundToBrand).not.toBe(enI.wizard.boundToBrand);
+    expect(enI.wizard.boundToNoBrand).toBeTruthy();
+    expect(arI.wizard.boundToNoBrand).toBeTruthy();
+  });
 });
 
 describe('direction & responsiveness', () => {

@@ -73,6 +73,9 @@ export default function IntegrationsPage() {
   const [connecting, setConnecting] = React.useState(false);
   const [oauthBlocked, setOauthBlocked] = React.useState(false);
   const [flow, setFlow] = React.useState<FlowState | null>(null);
+  // The brand bound to the active authorization. The server rejects any other
+  // brand at connect time, so the wizard follows the flow, not the filter.
+  const [flowBrandId, setFlowBrandId] = React.useState<string | null>(null);
   const [pages, setPages] = React.useState<MetaPageOption[]>([]);
   const [pagesLoading, setPagesLoading] = React.useState(false);
   const [selectedPage, setSelectedPage] = React.useState<string>('');
@@ -110,6 +113,8 @@ export default function IntegrationsPage() {
 
   React.useEffect(() => { void load(brandId); }, [load, brandId]);
 
+  const flowBrandName = flowBrandId ? (brands.find((b) => b.id === flowBrandId)?.name ?? flowBrandId) : null;
+
   // Load the page list as soon as a flow exists.
   React.useEffect(() => {
     if (!flow) return;
@@ -120,6 +125,7 @@ export default function IntegrationsPage() {
       .then((res) => {
         if (cancelled) return;
         setPages(res.pages ?? []);
+        setFlowBrandId(res.brandId ?? null);
         if (!res.pages?.length) push({ title: t('wizard.noPages'), variant: 'destructive' });
       })
       .catch(() => {
@@ -179,9 +185,10 @@ export default function IntegrationsPage() {
     if (!flow || !selectedPage) return;
     setConnectingPage(true);
     try {
-      const res = await metaOAuthApi.connect(flow.flowId, flow.flowToken, selectedPage, brandId || undefined);
+      const res = await metaOAuthApi.connect(flow.flowId, flow.flowToken, selectedPage, flowBrandId ?? undefined);
       setFlow(null);
       setPages([]);
+      setFlowBrandId(null);
       setSelectedPage('');
       await load(brandId);
       push({
@@ -251,6 +258,11 @@ export default function IntegrationsPage() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm">{t('wizard.pickPage')}</CardTitle>
+                <p className="text-[12px] text-muted-foreground">
+                  {flowBrandName
+                    ? t('wizard.boundToBrand', { brand: flowBrandName })
+                    : t('wizard.boundToNoBrand')}
+                </p>
               </CardHeader>
               <CardContent className="space-y-3">
                 {pagesLoading ? (

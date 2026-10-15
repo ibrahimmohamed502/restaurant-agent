@@ -638,6 +638,8 @@
       "connect": "Connect Facebook Page",
       "starting": "Starting…",
       "pickPage": "Choose a page",
+      "boundToBrand": "This page will be connected to: {brand}",
+      "boundToNoBrand": "This page will be connected without a brand.",
       "loadingPages": "Loading your pages…",
       "noPages": "No Facebook pages are available for this login.",
       "flowInvalid": "This connection flow is invalid or has expired. Start again.",

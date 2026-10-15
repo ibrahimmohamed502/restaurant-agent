@@ -23,7 +23,13 @@ import { requireV1Auth, apiError } from './index.js';
 import { requireAbility } from './stage7-rbac.js';
 import { providerCatalog, providerLabel } from '../../providers/registry.js';
 import { safeHealthStatus, safeHealthErrorCode } from '../../services/healthCodes.js';
+import { subscribePageWebhook } from '../../services/metaOAuth.js';
+import { decrypt } from '../../db/crypto.js';
+import { audit } from '../../auth/audit.js';
 import { brandScopeFromSession, brandVisibleToScope, brandIsAccessible, BRAND_SCOPE_RESTRICTED } from './brandAccess.js';
+
+/** Channel ids are uuids; anything else is rejected before touching the database. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Shared projection — no credential columns are ever selected. */
 const PROJECTION = `
@@ -108,7 +114,7 @@ export function createIntegrationsRouter({ pool }) {
         }
       });
     } catch (err) {
-      console.error('integrations list failed:', err.message);
+      console.error('integrations list failed:', err?.code ?? err?.name ?? 'error');
       return apiError(res, 500, 'INTERNAL', 'unexpected error');
     }
   });
@@ -129,7 +135,7 @@ export function createIntegrationsRouter({ pool }) {
       }
       return res.json({ data: { integration: toIntegration(rows[0]) } });
     } catch (err) {
-      console.error('integration status failed:', err.message);
+      console.error('integration status failed:', err?.code ?? err?.name ?? 'error');
       return apiError(res, 500, 'INTERNAL', 'unexpected error');
     }
   });
@@ -144,6 +150,12 @@ export function createIntegrationsRouter({ pool }) {
       const { rows } = await req.db.query(STATUS_SQL, [id, req.v1.tenantId]);
       if (!rows[0] || !brandVisibleToScope(rows[0].brand_id, scope)) {
         return apiError(res, 404, 'CHANNEL_NOT_FOUND', 'integration not found');
+      }
+      // Brand restriction: the channel brand must still be owned by this tenant
+      // and inside the caller's current brand scope.
+      if (rows[0].brand_id) {
+        const ok = await brandIsAccessible({ db: req.db, tenantId: req.v1.tenantId, brandId: rows[0].brand_id, scope });
+        if (!ok) return apiError(res, 404, 'CHANNEL_NOT_FOUND', 'integration not found');
       }
       const channel = rows[0];
       const { rows: creds } = await req.db.query(
@@ -169,7 +181,7 @@ export function createIntegrationsRouter({ pool }) {
       });
       return res.json({ data: { subscriptionState: sub.ok ? 'subscribed' : 'subscription_failed', errorCode: sub.errorCode } });
     } catch (err) {
-      console.error('integration resubscribe failed:', err.message);
+      console.error('integration resubscribe failed:', err?.code ?? err?.name ?? 'error');
       return apiError(res, 500, 'INTERNAL', 'unexpected error');
     }
   });
@@ -183,6 +195,12 @@ export function createIntegrationsRouter({ pool }) {
       const { rows } = await req.db.query(STATUS_SQL, [id, req.v1.tenantId]);
       if (!rows[0] || !brandVisibleToScope(rows[0].brand_id, scope)) {
         return apiError(res, 404, 'CHANNEL_NOT_FOUND', 'integration not found');
+      }
+      // Brand restriction: the channel brand must still be owned by this tenant
+      // and inside the caller's current brand scope.
+      if (rows[0].brand_id) {
+        const ok = await brandIsAccessible({ db: req.db, tenantId: req.v1.tenantId, brandId: rows[0].brand_id, scope });
+        if (!ok) return apiError(res, 404, 'CHANNEL_NOT_FOUND', 'integration not found');
       }
       const channel = rows[0];
       const { rows: creds } = await req.db.query(
@@ -206,7 +224,7 @@ export function createIntegrationsRouter({ pool }) {
       });
       return res.json({ data: { subscriptionState: sub.ok ? 'subscribed' : 'subscription_failed', errorCode: sub.errorCode } });
     } catch (err) {
-      console.error('integration reverify failed:', err.message);
+      console.error('integration reverify failed:', err?.code ?? err?.name ?? 'error');
       return apiError(res, 500, 'INTERNAL', 'unexpected error');
     }
   });

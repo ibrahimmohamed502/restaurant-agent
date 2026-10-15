@@ -258,15 +258,25 @@ export async function validateFlow({ flowId, flowToken, tenantId, userId }, { db
   return rows[0] ?? null;
 }
 
-/** Final, single use of the flow (called by the connect step). */
-export async function consumeFlow({ flowId, tenantId, userId }, { db = pool } = {}) {
+/**
+ * ATOMIC validation + consumption of the connection flow.
+ *
+ * One UPDATE verifies EVERYTHING that authorizes the connect step — token
+ * hash, tenant, user, expiry and unused status — and consumes it. A valid
+ * flowId without the matching token matches ZERO rows: it connects nothing
+ * and leaves the flow unused for the rightful owner. Concurrent requests
+ * therefore race on the row lock and exactly one wins.
+ */
+export async function consumeFlow({ flowId, flowToken, tenantId, userId }, { db = pool } = {}) {
+  if (typeof flowToken !== 'string' || flowToken.length < 16 || flowToken.length > 128) return null;
   const { rows } = await db.query(
     `UPDATE oauth_connect_flows
         SET consumed_at = now(), last_used_at = now()
       WHERE id::text = $1 AND tenant_id = $2 AND user_id = $3
+        AND token_hash = $4
         AND consumed_at IS NULL AND expires_at > now()
-      RETURNING id, brand_id`,
-    [String(flowId), tenantId, userId]
+      RETURNING id, state_id, brand_id, user_token_expires_at, expires_at`,
+    [String(flowId), tenantId, userId, sha256(flowToken)]
   );
   return rows[0] ?? null;
 }
@@ -328,8 +338,15 @@ export async function purgeExpiredFlows({ db = pool } = {}) {
 
 /* ------------------------------------------------------------ meta calls */
 
+/**
+ * Map a Graph error payload to an allow-listed short code.
+ * Accepts the provider payload object OR a string. The payload text is used
+ * ONLY for this classification and is never stored on, logged from or returned
+ * with the thrown error.
+ */
 function mapGraphError(err) {
-  const msg = String(err?.message ?? '');
+  const payload = typeof err === 'object' && err !== null ? err : null;
+  const msg = `${payload?.message ?? (typeof err === 'string' ? err : '')} code ${payload?.code ?? ''}`;
   if (/code 190|Invalid OAuth 2.0 Access Token|access token has expired/i.test(msg)) return 'META_GRAPH_AUTH';
   if (/code 200|Permission|OAuthException|not authorized/i.test(msg)) return 'META_GRAPH_PERMISSION';
   if (/code 4\d\d|rate limit|too many requests|#17/i.test(msg)) return 'META_GRAPH_RATE_LIMIT';
@@ -340,8 +357,8 @@ async function graphGet(path, accessToken) {
   const res = await fetch(`${GRAPH_BASE}${path}`, { headers: { Authorization: `Bearer ${accessToken}` } });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data?.error) {
-    const e = new Error(`Graph error: ${data?.error?.message ?? res.status}`);
-    e.safeCode = mapGraphError(e);
+    const e = new Error('Graph API request failed');
+    e.safeCode = mapGraphError(data?.error);
     throw e;
   }
   return data;
@@ -355,8 +372,8 @@ async function graphPost(path, accessToken) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data?.error) {
-    const e = new Error(`Graph error: ${data?.error?.message ?? res.status}`);
-    e.safeCode = mapGraphError(e);
+    const e = new Error('Graph API request failed');
+    e.safeCode = mapGraphError(data?.error);
     throw e;
   }
   return data;

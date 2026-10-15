@@ -67,11 +67,13 @@ const db = {
       row.last_used_at = new Date();
       return { rows: [row] };
     }
+    // consumeFlow: token hash + tenant + user + expiry + unused, ALL in one statement
     if (/update oauth_connect_flows\s+set consumed_at = now\(\), last_used_at = now\(\)/.test(s)) {
-      const [flowId, tenantId, userId] = params;
+      const [flowId, tenantId, userId, tokenHash] = params;
       const row = flows.find((r) => r.id === flowId);
       if (!row) return { rows: [] };
       if (row.tenant_id !== tenantId || row.user_id !== userId) return { rows: [] };
+      if (row.token_hash !== tokenHash) return { rows: [] };
       if (row.consumed_at || new Date(row.expires_at) <= new Date()) return { rows: [] };
       row.consumed_at = new Date();
       return { rows: [row] };
@@ -171,9 +173,26 @@ console.log('\n--- Separate short-lived flow authorization ---');
   const badUser = await oauth.validateFlow({ flowId: flow.flowId, flowToken: flow.flowToken, tenantId: TENANT, userId: 'u-other' }, { db });
   check('flow token is session-bound (other user rejected)', badUser === null);
 
-  const consumedFlow = await oauth.consumeFlow({ flowId: flow.flowId, tenantId: TENANT, userId: USER }, { db });
+  // Finding 2: the connect step must prove the flow token IN THE SAME statement
+  // that consumes the flow.
+  const noToken = await oauth.consumeFlow({ flowId: flow.flowId, tenantId: TENANT, userId: USER }, { db });
+  check('consumeFlow without a flow token is refused', noToken === null);
+  check('flow NOT consumed by a token-less attempt', flows.find((f) => f.id === flow.flowId).consumed_at === null);
+  const shortToken = await oauth.consumeFlow({ flowId: flow.flowId, flowToken: 'short', tenantId: TENANT, userId: USER }, { db });
+  check('consumeFlow rejects a malformed flow token', shortToken === null);
+  const wrongToken = await oauth.consumeFlow({ flowId: flow.flowId, flowToken: `${flow.flowToken}-wrong`, tenantId: TENANT, userId: USER }, { db });
+  check('consumeFlow rejects a wrong flow token', wrongToken === null);
+  check('flow NOT consumed by a wrong-token attempt', flows.find((f) => f.id === flow.flowId).consumed_at === null);
+  const otherUserToken = await oauth.consumeFlow({ flowId: flow.flowId, flowToken: flow.flowToken, tenantId: TENANT, userId: 'u-other' }, { db });
+  check('consumeFlow is session-bound (other user refused)', otherUserToken === null);
+  check('flow NOT consumed by a cross-user attempt', flows.find((f) => f.id === flow.flowId).consumed_at === null);
+  const otherTenant = await oauth.consumeFlow({ flowId: flow.flowId, flowToken: flow.flowToken, tenantId: 't-other', userId: USER }, { db });
+  check('consumeFlow is tenant-bound (other tenant refused)', otherTenant === null);
+
+  const consumedFlow = await oauth.consumeFlow({ flowId: flow.flowId, flowToken: flow.flowToken, tenantId: TENANT, userId: USER }, { db });
   check('connect step consumes the flow (single use)', Boolean(consumedFlow));
-  const reuse = await oauth.consumeFlow({ flowId: flow.flowId, tenantId: TENANT, userId: USER }, { db });
+  check('consumed flow carries the brand bound at authorization', consumedFlow?.brand_id === BRAND);
+  const reuse = await oauth.consumeFlow({ flowId: flow.flowId, flowToken: flow.flowToken, tenantId: TENANT, userId: USER }, { db });
   check('flow cannot be reused after connect', reuse === null);
 
   // OAuth state alone must NOT be enough for the picker/connect step
