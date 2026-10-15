@@ -18,6 +18,7 @@ const SAFE_STATUSES = new Set(['ok', 'degraded', 'down']);
  *  - services/channelResolver.js  (RESOLVE_ERRORS)
  *  - services/routeContext.js    (ROUTE_ERRORS)
  *  - services/conversations.js   (deliveryErrorCategory)
+ *  - services/deliveryOutcome.js  (DELIVERY_CATEGORY)
  *  - workers/metaEventPipeline.js (terminal pipeline codes)
  */
 const SAFE_ERROR_CODES = new Set([
@@ -34,10 +35,21 @@ const SAFE_ERROR_CODES = new Set([
   'META_PERMISSION',
   'META_RATE_LIMIT',
   'META_API_ERROR',
+  // 'NETWORK_ERROR' is retained: it can no longer be produced (a transport
+  // failure is now DELIVERY_UNKNOWN) but historical rows may still carry it.
   'NETWORK_ERROR',
+  // the outcome of a send was never established — must never be re-sent
+  'DELIVERY_UNKNOWN',
   // pipeline
   'ROUTING_FAILED',
-  'PROCESSING_ERROR'
+  'PROCESSING_ERROR',
+  // fail-closed inbound persistence
+  'INBOUND_PERSIST_FAILED',
+  'INBOUND_CONTEXT_MISSING',
+  // a send was attempted before the event failed; no automatic retry
+  'OUTBOUND_ATTEMPTED',
+  // a stranded intake row hit the re-dispatch cap
+  'REDISPATCH_EXHAUSTED'
 ]);
 
 /** Returned instead of any unrecognized value. Carries no information. */

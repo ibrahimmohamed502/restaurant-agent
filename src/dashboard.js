@@ -181,7 +181,13 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
   const lock = (async () => {
     // 1) atomic claim
     const claimed = await claimFailedOutboundForRetry({ tenantId, conversationId, messageId });
-    if (!claimed) return res.status(409).json({ error: 'not retryable', code: 'NOT_RETRYABLE' });
+    if (!claimed) {
+      // The database refused the claim. Explain why so the operator is not left
+      // clicking a button that can never work — and, more importantly, so an
+      // UNKNOWN delivery outcome is never mistaken for a safe retry.
+      const why = await describeRetryRefusal({ tenantId, conversationId, messageId });
+      return res.status(409).json({ error: 'not retryable', code: 'NOT_RETRYABLE', reason: why });
+    }
 
     try {
       // 2) re-resolve current routing + credential from the DB (no env fallback)
@@ -228,6 +234,35 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
   retryLocks.set(messageId, lock);
   return lock;
 });
+
+/**
+ * Why claimFailedOutboundForRetry refused, in operator-facing terms.
+ *
+ * The retry gate is enforced in SQL; this only makes the refusal legible. It
+ * never widens what is allowed — claimFailedOutboundForRetry has already run and
+ * said no.
+ */
+async function describeRetryRefusal({ tenantId, conversationId, messageId }) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT delivery_status, delivery_error FROM messages
+         WHERE id = $1 AND conversation_id = $2 AND tenant_id = $3`,
+      [messageId, conversationId, tenantId]
+    );
+    const row = rows[0];
+    if (!row) return 'NOT_FOUND';
+    if (row.delivery_status === 'sent') return 'ALREADY_SENT';
+    if (row.delivery_status === 'pending' && row.delivery_error === 'delivery_unknown') {
+      return 'DELIVERY_UNKNOWN_DO_NOT_RESEND';
+    }
+    if (row.delivery_status === 'pending') return 'STILL_PENDING';
+    if (row.delivery_error === 'meta_auth_expired') return 'NEEDS_REAUTH';
+    if (row.delivery_error === 'meta_permission') return 'NEEDS_PERMISSION';
+    return 'NON_RETRYABLE_CATEGORY';
+  } catch {
+    return 'UNKNOWN';
+  }
+}
 
 function _renderDashboard(res, auth) {
   const isAdmin = auth.roles.includes('Company Admin');
@@ -409,8 +444,20 @@ async function openConv(id) {
           : m.delivery_error === 'meta_rate_limit' ? 'فشل الإرسال — تجاوز الحد'
           : m.delivery_error === 'network_error' ? 'فشل الإرسال — مشكلة شبكة'
           : 'فشل الإرسال';
-        st = ' <span class="tag" style="background:#b3261e;color:#fff">' + label + '</span>'
-          + ' <button class="retrybtn" data-mid="' + m.id + '">إعادة المحاولة</button>';
+        st = ' <span class="tag" style="background:#b3261e;color:#fff">' + label + '</span>';
+        // The retry button is offered ONLY for categories the database will
+        // actually accept. Everything else needs a human decision first, and
+        // showing a button that the server refuses just teaches staff to retry.
+        if (m.delivery_error === 'meta_rate_limit') {
+          st += ' <button class="retrybtn" data-mid="' + m.id + '">إعادة المحاولة</button>';
+        } else {
+          st += ' <span class="tag" style="background:#5a5a5a;color:#fff">لا تُعاد تلقائياً — تحتاج مراجعة</span>';
+        }
+      } else if (m.delivery_status === 'pending' && m.delivery_error === 'delivery_unknown') {
+        // The provider outcome was never established. The reply may already have
+        // reached the customer, so re-sending can duplicate it. Never offer Retry.
+        st = ' <span class="tag" style="background:#8a6d00;color:#fff">نتيجة الإرسال غير مؤكدة — لا تُعاد</span>'
+          + ' <span class="tag" style="background:#5a5a5a;color:#fff">يحتاج مراجعة يدوية</span>';
       } else if (m.delivery_status === 'pending') {
         st = ' <span class="tag" style="background:#8a6d00;color:#fff">قيد الإرسال</span>';
       } else {

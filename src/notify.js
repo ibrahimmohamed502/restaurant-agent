@@ -1,3 +1,5 @@
+import { redactId, textSummary } from './services/redact.js';
+
 /**
  * Staff alerts — fired on escalations (complaints, collaborations, complex
  * reservations) and whenever a customer shares contact details.
@@ -8,8 +10,37 @@
  *       RESEND_API_KEY + STAFF_EMAIL_TO (comma-separated for multiple recipients)
  */
 
+/**
+ * Redacted, log-safe view of an escalation.
+ *
+ * The payload that reaches the STAFF CHANNELS is deliberately unchanged — a staff
+ * member needs the customer's own words to act on them. Only the CONSOLE line is
+ * redacted: container logs are broadly readable, retained for a long time and
+ * routinely shipped to log aggregators, so raw message text and raw PSIDs must
+ * never be written there. Identifiers become stable digests and the text is
+ * reduced to its shape (services/redact.js).
+ */
+export function escalationLogView(info = {}) {
+  const from = info.from ?? {};
+  const draft = info.draft ?? {};
+  const message = textSummary(info.message ?? '');
+  const reply = textSummary(draft.reply ?? '');
+  return {
+    channel: info.channel ?? null,
+    reason: info.reason ?? null,
+    commentId: info.commentId ? redactId(info.commentId) : null,
+    customerName: from.name ? redactId(from.name) : null,
+    customerId: from.id ? redactId(from.id) : null,
+    messageChars: message.chars,
+    messageMediaOnly: message.mediaOnly,
+    replyChars: reply.chars,
+    intent: draft.intent ?? null,
+    lang: draft.lang ?? null
+  };
+}
+
 export async function notifyStaff(info) {
-  console.warn('🚨 ESCALATION — staff follow-up needed:', JSON.stringify(info, null, 2));
+  console.warn('🚨 ESCALATION — staff follow-up needed:', JSON.stringify(escalationLogView(info)));
   await Promise.allSettled([sendWebhookAlert(info), sendEmailAlert(info)]);
 }
 

@@ -61,7 +61,17 @@ console.log('--- 1. the claim is a conditional database update ---');
   check('claimWebhookEventForProcessing is exported', /export async function claimWebhookEventForProcessing/.test(eventsSrc));
   check('claim is an UPDATE (not read-then-write)', /UPDATE webhook_events[\s\S]*status = 'processing'/.test(eventsSrc));
   check('claim is conditional on the status', /AND status IN \('received', 'failed'\)/.test(eventsSrc));
-  check("claim refuses 'processing' (no partial replay)", /AND status IN \('received', 'failed'\)/.test(eventsSrc) && !/status IN \([^)]*'processing'[^)]*\)/.test(eventsSrc));
+  // Scope the negative assertion to the CLAIM statement only. The file also
+  // contains summarizeStrandedEvents(), whose reporting query legitimately lists
+  // 'processing' rows — a whole-file scan would flag the report as a claim.
+  const claimSrc = eventsSrc.slice(
+    eventsSrc.indexOf('export async function claimWebhookEventForProcessing'),
+    eventsSrc.indexOf('/**', eventsSrc.indexOf('export async function claimWebhookEventForProcessing') + 10)
+  );
+  check("claim refuses 'processing' (no partial replay)",
+    /AND status IN \('received', 'failed'\)/.test(claimSrc) && !/status IN \([^)]*'processing'[^)]*\)/.test(claimSrc));
+  check("claim refuses 'unknown' (a send was already attempted)",
+    !/status IN \([^)]*'unknown'[^)]*\)/.test(claimSrc) && /WEBHOOK_STATUS\.UNKNOWN/.test(pipelineSrc));
   check("claim refuses 'done'", /status IN \('received', 'failed'\)/.test(eventsSrc));
   check('claim RETURNING the row', /RETURNING id, status, tenant_id, payload/.test(eventsSrc));
   check('claim preserves tenant via COALESCE', /tenant_id = COALESCE\(\$3, tenant_id\)/.test(eventsSrc));

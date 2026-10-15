@@ -15,10 +15,10 @@ import {
   persistInboundMessage,
   persistOutboundMessage,
   updateMessageDelivery,
-  deliveryErrorCategory,
   createEscalationRecord,
   escalationCategory
 } from './services/conversations.js';
+import { classifyDeliveryError, createOutboundLedger } from './services/deliveryOutcome.js';
 import { evaluateAiGate } from './services/aiGate.js';
 import { detectCustomerHumanRequest, detectAutoEscalation, HANDOFF_REASONS } from './services/handoffDetector.js';
 import { requestHandoff, REQUESTED_BY } from './services/handoff.js';
@@ -411,7 +411,8 @@ async function processMessage(event, ctx, deps = {}) {
     isReplied = alreadyReplied,
     mark = markReplied,
     overLimit = userOverLimit,
-    pgEnabled = enabled
+    pgEnabled = enabled,
+    ledger = null
   } = deps;
   const msg = event.message;
   const psid = event.sender?.id;
@@ -436,20 +437,28 @@ async function processMessage(event, ctx, deps = {}) {
   // ---- Stage 4.4.6: PERSIST INBOUND FIRST (before AI / grounding / Meta) ----
   let conversationId = null;
   if (pgEnabled) {
+    // FAIL CLOSED. No durable inbound row means no idempotency record and no
+    // duplicate detection for this event, so no AI reply may be generated or
+    // sent. Throwing (rather than continuing) lets the worker's bounded retry
+    // finish the job once the database recovers — and because nothing was sent,
+    // that retry can never duplicate a reply.
+    const tenantId = ctx?.tenantId;
+    if (!tenantId) {
+      console.error('⛔ DM not answered — no resolved tenant for a durable inbound record');
+      throw inboundPersistFailed('INBOUND_CONTEXT_MISSING');
+    }
     try {
-      const tenantId = ctx?.tenantId;
-      if (tenantId) {
-        const channelId = await findOrCreateChannel({ tenantId, brandId: ctx.brandId ?? null, provider: 'meta_dm', externalId: ctx.pageId, displayName: 'Messenger DM' });
-        const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_dm', externalId: psid, name: authorName });
-        conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey: psid, customerId });
-        const inbound = await persistInboundMessage({ tenantId, conversationId, text, providerMessageId: msg.mid, providerTs: event.timestamp ? new Date(event.timestamp) : null });
-        if (inbound.duplicate) {
-          console.log(`↩️  DM (${redactId(msg.mid)}) already persisted — skipping (webhook redelivery)`);
-          return;
-        }
+      const channelId = await findOrCreateChannel({ tenantId, brandId: ctx.brandId ?? null, provider: 'meta_dm', externalId: ctx.pageId, displayName: 'Messenger DM' });
+      const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_dm', externalId: psid, name: authorName });
+      conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey: psid, customerId });
+      const inbound = await persistInboundMessage({ tenantId, conversationId, text, providerMessageId: msg.mid, providerTs: event.timestamp ? new Date(event.timestamp) : null });
+      if (inbound.duplicate) {
+        console.log(`↩️  DM (${redactId(msg.mid)}) already persisted — skipping (webhook redelivery)`);
+        return;
       }
     } catch (e) {
-      console.error('⚠️ inbound persist failed (dm):', safeErrorCode(e));
+      console.error('⛔ inbound persist failed (dm) — not answering:', safeErrorCode(e));
+      throw inboundPersistFailed('INBOUND_PERSIST_FAILED', e);
     }
   }
 
@@ -494,20 +503,42 @@ async function processMessage(event, ctx, deps = {}) {
     return;
   }
 
-  // ---- Deliver with explicit outbound lifecycle (Stage 4.4.6) ----
-  let sendResp = null;
+  // ---- Deliver with an explicit three-phase outbound lifecycle (Stage 4.4.6) ----
+  // The Meta call is the only irreversible step, so it is isolated: an error
+  // AFTER a confirmed send can no longer be recorded as a retryable failure.
   let outboundRow = null;
+  if (conversationId) {
+    outboundRow = await persistOutboundMessage({
+      tenantId: ctx.tenantId, conversationId, text: draft.reply, deliveryStatus: 'pending'
+    });
+  }
+
+  // Flag the ledger BEFORE the irreversible call, so a crash or a late error can
+  // never be mistaken for "no send was attempted".
+  noteOutboundAttempt(ledger, 'attempted');
+
+  let sendResp = null;
   try {
-    outboundRow = conversationId ? await persistOutboundMessage({ tenantId: ctx.tenantId, conversationId, text: draft.reply, deliveryStatus: 'pending' }) : null;
     sendResp = await ctx.metaClient.sendMessengerReply(psid, draft.reply);
-    if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'sent', providerMessageId: sendResp?.message_id ?? null });
   } catch (err) {
-    const category = deliveryErrorCategory(err);
-    console.error(`❌ Failed to deliver DM to ${redactId(psid)}: [${category}]`);
-    if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'failed', errorCategory: category }).catch(() => {});
-    else await persistOutboundFailure(conversationId, ctx, { pgEnabled, text: draft.reply, errorCategory: category });
+    const outcome = classifyDeliveryError(err);
+    console.error(`❌ Failed to deliver DM to ${redactId(psid)}: [${outcome.category}] outcome=${outcome.outcome}`);
+    await recordOutboundFailure(outboundRow, conversationId, ctx, { pgEnabled, text: draft.reply, outcome });
     mark(msg.mid, psid);
     return;
+  }
+
+  // Meta accepted the message. Nothing from here on may re-open the retry path.
+  noteOutboundAttempt(ledger, 'delivered');
+  if (outboundRow?.id) {
+    try {
+      await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'sent', providerMessageId: sendResp?.message_id ?? null });
+    } catch (dbErr) {
+      // SEND CONFIRMED but the bookkeeping write failed. Leaving the row
+      // 'pending' is deliberate: 'failed' would make it retryable and could send
+      // a second copy to a customer who already received the first one.
+      console.error(`❌ DM delivered to ${redactId(psid)} but the delivery was not recorded: ${safeErrorCode(dbErr)}`);
+    }
   }
   mark(msg.mid, psid);
 
@@ -570,7 +601,8 @@ async function processComment(value, ctx, deps = {}) {
     isReplied = alreadyReplied,
     mark = markReplied,
     overLimit = userOverLimit,
-    pgEnabled = enabled
+    pgEnabled = enabled,
+    ledger = null
   } = deps;
 
   const { comment_id: commentId, message = '', from } = value;
@@ -603,21 +635,25 @@ async function processComment(value, ctx, deps = {}) {
   // via ON CONFLICT on (conversation_id, provider_message_id) and skips processing.
   let conversationId = null;
   if (pgEnabled) {
+    // FAIL CLOSED — same rule as the DM path. See the DM block for rationale.
+    const tenantId = ctx?.tenantId;
+    if (!tenantId) {
+      console.error('⛔ comment not answered — no resolved tenant for a durable inbound record');
+      throw inboundPersistFailed('INBOUND_CONTEXT_MISSING');
+    }
     try {
-      const tenantId = ctx?.tenantId;
-      if (tenantId) {
-        const channelId = await findOrCreateChannel({ tenantId, brandId: ctx.brandId ?? null, provider: 'meta_comment', externalId: ctx.pageId, displayName: 'Facebook comments' });
-        const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_comment', externalId: from.id, name: from.name });
-        const externalKey = value.parent_id && value.parent_id !== value.post_id ? value.parent_id : commentId;
-        conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey, customerId });
-        const inbound = await persistInboundMessage({ tenantId, conversationId, text: message, providerMessageId: commentId, providerTs: value.created_time ? new Date(value.created_time * 1000) : null });
-        if (inbound.duplicate) {
-          console.log(`↩️  Comment (${redactId(commentId)}) already persisted — skipping (webhook redelivery)`);
-          return;
-        }
+      const channelId = await findOrCreateChannel({ tenantId, brandId: ctx.brandId ?? null, provider: 'meta_comment', externalId: ctx.pageId, displayName: 'Facebook comments' });
+      const customerId = await findOrCreateCustomer({ tenantId, provider: 'meta_comment', externalId: from.id, name: from.name });
+      const externalKey = value.parent_id && value.parent_id !== value.post_id ? value.parent_id : commentId;
+      conversationId = await findOrCreateConversation({ tenantId, channelId, externalKey, customerId });
+      const inbound = await persistInboundMessage({ tenantId, conversationId, text: message, providerMessageId: commentId, providerTs: value.created_time ? new Date(value.created_time * 1000) : null });
+      if (inbound.duplicate) {
+        console.log(`↩️  Comment (${redactId(commentId)}) already persisted — skipping (webhook redelivery)`);
+        return;
       }
     } catch (e) {
-      console.error('⚠️ inbound persist failed (comment):', safeErrorCode(e));
+      console.error('⛔ inbound persist failed (comment) — not answering:', safeErrorCode(e));
+      throw inboundPersistFailed('INBOUND_PERSIST_FAILED', e);
     }
   }
 
@@ -675,17 +711,31 @@ async function processComment(value, ctx, deps = {}) {
   // ---- Publish via the request-scoped routed Meta client (ctx.metaClient) ----
   let replyResp = null;
   let outboundRow = null;
+  if (conversationId) {
+    outboundRow = await persistOutboundMessage({
+      tenantId: ctx.tenantId, conversationId, text: finalMessage, deliveryStatus: 'pending'
+    });
+  }
+
+  noteOutboundAttempt(ledger, 'attempted');
+
   try {
-    outboundRow = conversationId ? await persistOutboundMessage({ tenantId: ctx.tenantId, conversationId, text: finalMessage, deliveryStatus: 'pending' }) : null;
     replyResp = await ctx.metaClient.replyToComment(commentId, finalMessage);
-    if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'sent', providerMessageId: replyResp?.id ?? null });
   } catch (err) {
-    const category = deliveryErrorCategory(err);
-    console.error(`❌ Failed to deliver reply for comment (${redactId(commentId)}): [${category}]`);
-    if (outboundRow?.id) await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'failed', errorCategory: category }).catch(() => {});
-    else if (conversationId) await persistOutboundFailure(conversationId, ctx, { pgEnabled, text: finalMessage, errorCategory: category });
-    mark(commentId, from.id); // prevent duplicate Meta retries from re-attempting publish
+    const outcome = classifyDeliveryError(err);
+    console.error(`❌ Failed to deliver reply for comment (${redactId(commentId)}): [${outcome.category}] outcome=${outcome.outcome}`);
+    await recordOutboundFailure(outboundRow, conversationId, ctx, { pgEnabled, text: finalMessage, outcome });
+    mark(commentId, from.id); // stop a further redelivery re-attempting the publish
     return;
+  }
+
+  noteOutboundAttempt(ledger, 'delivered');
+  if (outboundRow?.id) {
+    try {
+      await updateMessageDelivery({ tenantId: ctx.tenantId, messageId: outboundRow.id, deliveryStatus: 'sent', providerMessageId: replyResp?.id ?? null });
+    } catch (dbErr) {
+      console.error(`❌ comment reply published (${redactId(commentId)}) but the delivery was not recorded: ${safeErrorCode(dbErr)}`);
+    }
   }
   mark(commentId, from.id);
 
@@ -736,13 +786,59 @@ async function processComment(value, ctx, deps = {}) {
 }
 
 /** Stage 4.4.6 — record a sanitized delivery failure for an outbound AI message. */
-async function persistOutboundFailure(conversationId, ctx, { pgEnabled, text = null, errorCategory = 'llm_error' } = {}) {
+async function persistOutboundFailure(conversationId, ctx, { pgEnabled, text = null, errorCategory = 'llm_error', deliveryStatus = 'failed' } = {}) {
   if (!pgEnabled || !conversationId || !ctx?.tenantId) return;
   try {
-    await persistOutboundMessage({ tenantId: ctx.tenantId, conversationId, text, deliveryStatus: 'failed', errorCategory });
+    await persistOutboundMessage({ tenantId: ctx.tenantId, conversationId, text, deliveryStatus, errorCategory });
   } catch (e) {
     console.error('⚠️ outbound failure persist failed (comment):', safeErrorCode(e));
   }
+}
+
+/** Flag the ledger immediately BEFORE the irreversible provider call. */
+function noteOutboundAttempt(ledger, outcome, category) {
+  if (!ledger) return;
+  ledger.started = true;
+  if (outcome !== undefined) ledger.outcome = outcome;
+  if (category !== undefined) ledger.category = category;
+}
+
+/**
+ * Persist the outcome of a send that did not succeed.
+ *
+ * A CONFIRMED refusal is written as 'failed' and becomes a candidate for the
+ * narrow retry allow-list. An UNKNOWN outcome (timeout, reset socket, 5xx, or a
+ * response we could not interpret) is written as 'pending', which the database
+ * retry gate refuses both automatically and to an operator — so an unknown
+ * outcome can never turn into a second copy of a delivered reply.
+ */
+async function recordOutboundFailure(outboundRow, conversationId, ctx, { pgEnabled, text, outcome }) {
+  const { deliveryStatus, category } = outcome;
+  if (outboundRow?.id) {
+    await updateMessageDelivery({
+      tenantId: ctx.tenantId,
+      messageId: outboundRow.id,
+      deliveryStatus,
+      errorCategory: category
+    }).catch(() => undefined);
+    return;
+  }
+  await persistOutboundFailure(conversationId, ctx, { pgEnabled, text, errorCategory: category, deliveryStatus });
+}
+
+/**
+ * Fail-closed guard for the durable inbound record.
+ *
+ * Without a persisted inbound row there is no idempotency record and no
+ * duplicate detection for this event, so no reply may be generated or sent. The
+ * error propagates on purpose: the worker's bounded retry can then finish the job
+ * once the database recovers, and because NOTHING was sent, a retry cannot
+ * produce a duplicate reply.
+ */
+function inboundPersistFailed(code, err) {
+  const e = err instanceof Error ? err : new Error(code);
+  if (!e.code) e.code = code;
+  return e;
 }
 
 /** Safety net: catches phone numbers / emails / social handles even if the LLM missed them. */

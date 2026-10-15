@@ -18,7 +18,17 @@ export const WEBHOOK_STATUS = {
   PROCESSING: 'processing',
   DONE: 'done',
   FAILED: 'failed',
-  DLQ: 'dlq'
+  DLQ: 'dlq',
+  /**
+   * An outbound Meta send was attempted and the event then failed. Whether the
+   * customer received the reply is NOT knowable, so the event must never be
+   * claimed again — it is deliberately absent from the claim's status list.
+   * Requires operator review, never automatic replay.
+   *
+   * Safe without a migration: webhook_events.status has no CHECK constraint
+   * (migrations/001_init.sql — the status comment is documentation only).
+   */
+  UNKNOWN: 'unknown'
 };
 
 /** Prefix used to count re-dispatch attempts on a stranded row. */
@@ -32,7 +42,11 @@ export const WEBHOOK_ERROR = {
   INLINE_FAILED: 'INLINE_FAILED',
   ROUTING_FAILED: 'ROUTING_FAILED',
   PROCESSING_FAILED: 'PROCESSING_FAILED',
-  JOB_EXHAUSTED: 'JOB_EXHAUSTED'
+  JOB_EXHAUSTED: 'JOB_EXHAUSTED',
+  /** The event failed AFTER an outbound send was attempted (status UNKNOWN). */
+  OUTBOUND_ATTEMPTED: 'OUTBOUND_ATTEMPTED',
+  /** A stranded intake row reached the re-dispatch cap and needs a human. */
+  REDISPATCH_EXHAUSTED: 'REDISPATCH_EXHAUSTED'
 };
 
 /** Record an intake event. Returns the created row, or null when it is a duplicate. */
@@ -67,7 +81,9 @@ export async function getWebhookEvent(provider, externalId) {
 
 /** Update processing state. `error` must be a sanitized category, never raw text. */
 export async function updateWebhookEvent({ provider, externalId, status, tenantId = undefined, error = null }) {
-  const sets = ['status = $3', 'processed_at = CASE WHEN $3 IN (\'done\',\'failed\',\'dlq\') THEN now() ELSE processed_at END', 'error = $4'];
+  // 'unknown' is terminal-for-retry too: processed_at lets the stranded-event
+  // report age these rows even though they are still claimable-looking.
+  const sets = ['status = $3', 'processed_at = CASE WHEN $3 IN (\'done\',\'failed\',\'dlq\',\'unknown\') THEN now() ELSE processed_at END', 'error = $4'];
   const params = [provider, externalId, status, error];
   if (tenantId) {
     sets.push('tenant_id = $5');
@@ -108,11 +124,14 @@ export async function markWebhookEventInline(provider, externalId) {
  *   - 'processing' -> an attempt is in flight, or died mid-flight. NEVER claimed
  *                     automatically: its side effects are unknown, so replaying
  *                     it could send a second reply to the customer;
- *   - 'done'       -> never claimed.
+ *   - 'done'       -> never claimed;
+ *   - 'unknown'     -> an outbound send was already attempted for this event.
+ *                      Whether the customer received the reply is unknowable, so
+ *                      re-processing could send a second copy. Never claimed.
  *
  * Returns the claimed row, or null when the claim was refused (another worker
- * won it, or it is in progress / already complete). A null result MUST NOT be
- * processed.
+ * won it, or it is in progress / unknown / already complete). A null result MUST
+ * NOT be processed.
  */
 export async function claimWebhookEventForProcessing({ provider, externalId, tenantId = null } = {}) {
   if (!provider || !externalId) return null;
@@ -143,10 +162,16 @@ export async function claimWebhookEventForProcessing({ provider, externalId, ten
  * so the worker's atomic claim is the only thing that can start processing.
  * Re-dispatch is capped so an unavailable queue cannot loop forever.
  */
-export async function claimStaleWebhookEvents({ olderThanSeconds = 120, limit = 10, maxRedispatches = 5 } = {}) {
+/**
+ * Default re-dispatch cap. A stranded row that reaches it is left 'received'
+ * for a human and is reported by summarizeStrandedEvents().
+ */
+export const DEFAULT_MAX_REDISPATCHES = 5;
+
+export async function claimStaleWebhookEvents({ olderThanSeconds = 120, limit = 10, maxRedispatches = DEFAULT_MAX_REDISPATCHES } = {}) {
   const capped = Math.max(1, Math.min(Number(limit) || 10, 50));
   const older = Math.max(1, Number(olderThanSeconds) || 120);
-  const maxAttempts = Math.max(0, Number(maxRedispatches) || 0);
+  const maxAttempts = Math.max(0, Number(maxRedispatches) ?? DEFAULT_MAX_REDISPATCHES);
   const { rows } = await pool.query(
     `UPDATE webhook_events
         SET error = COALESCE(error, $1)
@@ -172,5 +197,64 @@ export async function recordRedispatch(provider, externalId, attempt = 1) {
         SET error = $3
       WHERE provider = $1 AND external_id = $2 AND status = 'received'`,
     [provider, externalId, `${REDISPATCH_PREFIX}${Math.max(1, Number(attempt) || 1)}`]
+  );
+}
+
+/**
+ * Operational snapshot of events that need a human.
+ *
+ * Three failure modes are silent by design — nothing throws and nothing alerts
+ * — so they are surfaced explicitly here instead:
+ *
+ *   stuck_processing : a worker died mid-flight. Deliberately never reclaimed,
+ *                      because the outbound side effects are unknown.
+ *   unknown_delivery : an outbound send was attempted and the event then failed.
+ *                      The customer may or may not have received the reply.
+ *   redispatch_capped: a stranded intake row hit the re-dispatch cap. It will
+ *                      never be retried automatically again.
+ *
+ * Read-only, aggregate counts only — never event payloads or customer data.
+ */
+export async function summarizeStrandedEvents({ olderThanSeconds = 900 } = {}) {
+  const older = Math.max(60, Number(olderThanSeconds) || 900);
+  const { rows } = await pool.query(
+    `SELECT
+        status,
+        COUNT(*)::int AS total,
+        -- Age by the newest meaningful milestone. A row stuck in 'processing'
+        -- never has processed_at set, so measuring only that would report the
+        -- most urgent rows as fresh. received_at is the fallback.
+        COUNT(*) FILTER (
+          WHERE COALESCE(processed_at, received_at) < now() - ($1 || ' seconds')::interval
+        )::int AS aged
+       FROM webhook_events
+      WHERE status IN ('processing', 'unknown')
+         OR (status = 'received' AND COALESCE((regexp_match(COALESCE(error, ''), $2))[1]::int, 0) >= $3)
+      GROUP BY status
+     ORDER BY status`,
+    [String(older), REDISPATCH_PATTERN, DEFAULT_MAX_REDISPATCHES]
+  );
+
+  const summary = {
+    stuck_processing: 0,
+    unknown_delivery: 0,
+    redispatch_capped: 0,
+    aged_total: 0
+  };
+  for (const row of rows) {
+    if (row.status === 'processing') summary.stuck_processing = row.total;
+    if (row.status === 'unknown') summary.unknown_delivery = row.total;
+    if (row.status === 'received') summary.redispatch_capped = row.total;
+    summary.aged_total += row.aged;
+  }
+  return summary;
+}
+
+/** Total events needing human attention, for a single at-a-glance check. */
+export function strandedEventTotal(summary) {
+  return (
+    (summary?.stuck_processing ?? 0) +
+    (summary?.unknown_delivery ?? 0) +
+    (summary?.redispatch_capped ?? 0)
   );
 }

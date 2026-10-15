@@ -139,6 +139,44 @@ The sweeper interval is `STALE_SWEEP_INTERVAL_MS` (default 60s, 15s floor),
 unref’d so it never holds the process open, and disabled when no database is
 configured.
 
+### Outbound delivery states
+
+Every AI reply is recorded in `messages` and moves through an explicit
+lifecycle. The important rule: **a delivery whose outcome was never
+established is never retried.**
+
+| `delivery_status` | `delivery_error` | Meaning | Retry offered? |
+| --- | --- | --- | --- |
+| `sent` | — | Meta returned success | no |
+| `failed` | `meta_rate_limit` | Meta refused it (throttling), so nothing was created | **yes** |
+| `failed` | `meta_auth_expired` / `meta_permission` | Meta refused it; needs a credential fix | no |
+| `pending` | `delivery_unknown` | timeout, reset socket, 5xx, or a bookkeeping write failed after a confirmed send — **the customer may already have the reply** | **never** |
+
+The allow-list lives in the SQL of `claimFailedOutboundForRetry`, so the rule is
+enforced by the database, not by the UI. The dashboard shows a Retry button only
+for `meta_rate_limit` and explains every refusal it makes. This is deliberate:
+the Graph API has no idempotency key, so re-sending after an unknown outcome is
+the only way to guarantee a duplicate reply.
+
+Fail-closed rule: if the inbound customer message cannot be persisted, no reply
+is generated or sent at all — otherwise the event would have no idempotency
+record and no duplicate detection.
+
+Events that will not be retried automatically (they are silent by design, and
+reported by the worker on every sweep):
+
+- `processing` — a worker died mid-flight; its side effects are unknown.
+- `unknown` — a send was attempted and the event then failed.
+- `received` with `error` like `REDISPATCHED:%` — a stranded row hit the
+  re-dispatch cap.
+
+```sql
+SELECT status, error, count(*) FROM webhook_events
+WHERE status IN ('processing', 'unknown')
+   OR (status = 'received' AND error LIKE 'REDISPATCHED:%')
+GROUP BY 1, 2;
+```
+
 Cutover: set `WEBHOOK_QUEUE_MODE=queue` in the stack env and
 `docker compose -p restaurant-agent up -d` (worker already deployed).
 Rollback: set it back to `inline`.

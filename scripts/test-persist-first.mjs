@@ -42,6 +42,7 @@ pool.query = async (sql, params = []) => {
 };
 
 const { persistInboundMessage, persistOutboundMessage, updateMessageDelivery, deliveryErrorCategory } = await import('../src/services/conversations.js');
+const { isRetryableDeliveryCategory, isRetryableDeliveryRow } = await import('../src/services/deliveryOutcome.js');
 const { processComment } = await import('../src/webhook.js');
 
 let passed = 0, failed = 0;
@@ -98,8 +99,14 @@ console.log('\n🧪 Stage 4.4.6 — persist-first + delivery status\n');
   const ctx = makeCtx();
   ctx.metaClient.replyToComment = async () => { throw new Error('Graph API 500 (code 1): An unknown error has occurred.'); };
   await processComment({ comment_id: 'cD', message: 'hi', from: { id: 'u1' } }, ctx, base());
-  const out = [...store.values()].find(r => r.direction === 'outbound');
-  check('D. Meta 500 → inbound persists; outbound failed(meta_api_error)', [...store.values()].some(r => r.direction === 'inbound' && r.provider_message_id === 'cD') && out?.delivery_status === 'failed' && out?.delivery_error === 'meta_api_error');
+  const out = [...store.values()].find(r => r.direction === 'outbound');  // A 5xx means Meta's own edge failed: the message may already exist, so the
+  // outcome is UNKNOWN. It is recorded as 'pending' + 'delivery_unknown', which
+  // the retry gate refuses. Marking it 'failed' (the old behaviour) is exactly
+  // what let an operator re-send a reply the customer had already received.
+  check('D. Meta 500 - inbound persists; outbound pending + delivery_unknown (never retryable)',
+    [...store.values()].some(r => r.direction === 'inbound' && r.provider_message_id === 'cD') &&
+    out?.delivery_status === 'pending' && out?.delivery_error === 'delivery_unknown' &&
+    !isRetryableDeliveryRow({ deliveryStatus: out?.delivery_status, deliveryError: out?.delivery_error }));
 }
 
 // F: duplicate webhook → no duplicates, second run skips processing
@@ -147,7 +154,23 @@ console.log('\n🧪 Stage 4.4.6 — persist-first + delivery status\n');
   check('persistOutboundMessage rejects sent+error', bad === 'INVALID_DELIVERY_STATUS');
   const upd = await updateMessageDelivery({ tenantId: TEN, messageId: row.id, deliveryStatus: 'failed', errorCategory: 'meta_auth_expired' });
   check('updateMessageDelivery works', upd?.delivery_status === 'failed');
-  check('deliveryErrorCategory mapping', deliveryErrorCategory(new Error('Graph API 401 x session expired')) === 'meta_auth_expired' && deliveryErrorCategory(new Error('Graph API 403')) === 'meta_permission' && deliveryErrorCategory(new Error('fetch failed')) === 'network_error' && deliveryErrorCategory(new Error('whatever')) === 'meta_api_error');
+  // 401/403 are definitive refusals and stay 'failed' (non-retryable: they need a
+  // credential fix, and each attempt risks duplicating a delivered reply).
+  // A transport failure and a 5xx are UNKNOWN and no longer produce a category
+  // that could be mistaken for safe-to-retry.
+  check('deliveryErrorCategory: definitive refusals unchanged',
+    deliveryErrorCategory(new Error('Graph API 401 x session expired')) === 'meta_auth_expired' &&
+    deliveryErrorCategory(new Error('Graph API 403')) === 'meta_permission');
+  check('deliveryErrorCategory: transport failure is delivery_unknown, not network_error',
+    deliveryErrorCategory(new Error('fetch failed')) === 'delivery_unknown');
+  check('deliveryErrorCategory: unrecognised error fails closed to delivery_unknown',
+    deliveryErrorCategory(new Error('whatever')) === 'delivery_unknown');
+  check('deliveryErrorCategory: only rate limits are retryable',
+    isRetryableDeliveryCategory('meta_rate_limit') === true &&
+    !isRetryableDeliveryCategory('meta_auth_expired') &&
+    !isRetryableDeliveryCategory('meta_permission') &&
+    !isRetryableDeliveryCategory('meta_api_error') &&
+    !isRetryableDeliveryCategory('delivery_unknown'));
 }
 
 console.log(`\n${failed === 0 ? '🎉' : '💥'} ${passed} passed, ${failed} failed\n`);

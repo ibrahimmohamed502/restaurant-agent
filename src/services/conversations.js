@@ -1,4 +1,5 @@
 import { pool } from '../db/pg.js';
+import { classifyDeliveryError, DELIVERY_CATEGORY, RETRYABLE_DELIVERY_CATEGORIES } from './deliveryOutcome.js';
 import crypto from 'node:crypto';
 
 /**
@@ -179,15 +180,20 @@ export async function updateMessageDelivery({ tenantId, messageId, deliveryStatu
   return rows[0] ?? null;
 }
 
-/** Stage 4.4.6 — sanitized failure categories (never raw Meta errors/tokens). */
+/**
+ * Backward-compatible category accessor.
+ *
+ * Delegates to the single classification table in services/deliveryOutcome.js so
+ * this helper and claimFailedOutboundForRetry can never disagree about what may
+ * be re-sent. Returns only a sanitized category token — never raw provider text.
+ *
+ * Behavioural change: a 5xx, a timeout or a connection reset used to be reported
+ * as 'meta_api_error'/'network_error' on a 'failed' row, which the dashboard then
+ * offered for retry. A send whose outcome was never established is now
+ * 'delivery_unknown' on a 'pending' row, which is not retryable.
+ */
 export function deliveryErrorCategory(err) {
-  const msg = String(err?.message ?? '');
-  if (/Graph API 401|Error validating access token|session has expired/i.test(msg)) return 'meta_auth_expired';
-  if (/Graph API 403|permission|OAuthException/i.test(msg)) return 'meta_permission';
-  if (/Graph API 4\d\d|rate limit|too many requests/i.test(msg)) return 'meta_rate_limit';
-  if (/Graph API 5\d\d/.test(msg)) return 'meta_api_error';
-  if (/fetch failed|ECONNREFUSED|ETIMEDOUT|network/i.test(msg)) return 'network_error';
-  return 'meta_api_error';
+  return classifyDeliveryError(err).category ?? DELIVERY_CATEGORY.API_ERROR;
 }
 
 export async function createEscalationRecord({ tenantId, conversationId, category, reason, summary }) {
@@ -203,7 +209,10 @@ export async function createEscalationRecord({ tenantId, conversationId, categor
  * Only one caller can win the failed → pending transition (UPDATE … WHERE
  * delivery_status = 'failed' acts as the DB lock). The winner is returned to
  * the caller, which is the ONLY request allowed to perform the Meta POST.
- * Returns null when the message is not retryable (sent/pending/missing/foreign tenant).
+ *
+ * Returns null — i.e. refuses to re-send — when the row is sent, pending (which
+ * is where every UNKNOWN delivery outcome lives), missing, owned by another
+ * tenant, or failed with a category that is not provably safe to re-send.
  */
 export async function claimFailedOutboundForRetry({ tenantId, conversationId, messageId }) {
   if (!tenantId || !conversationId || !messageId) {
@@ -226,8 +235,15 @@ export async function claimFailedOutboundForRetry({ tenantId, conversationId, me
         AND m.direction = 'outbound'
         AND m.sender_type = 'ai'
         AND m.delivery_status = 'failed'
+        -- RETRY GATE — enforced by the database, never only by the UI.
+        -- Only categories we can show mean "Meta refused the message and did
+        -- not create it". An UNKNOWN outcome is stored as 'pending', never
+        -- 'failed', so it cannot reach this branch at all. A permanent refusal
+        -- (auth / permission) IS 'failed' but is not in the allow-list. A NULL
+        -- delivery_error fails the comparison and is refused as well.
+        AND m.delivery_error = ANY($4::text[])
       RETURNING m.id, m.conversation_id, m.tenant_id, m.text, m.retry_count, m.provider_message_id`,
-    [messageId, conversationId, tenantId]
+    [messageId, conversationId, tenantId, [...RETRYABLE_DELIVERY_CATEGORIES]]
   );
   return rows[0] ?? null;
 }

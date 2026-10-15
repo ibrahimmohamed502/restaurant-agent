@@ -35,11 +35,24 @@ function resolveToken(explicitToken) {
   return token;
 }
 
-/** Sanitized error — never includes tokens, request URLs, or raw response payloads. */
+/**
+ * Sanitized error — never includes tokens, request URLs, or raw response payloads.
+ *
+ * The HTTP status and the Graph API error code are attached as STRUCTURED fields
+ * so delivery classification never has to guess from the message text (see
+ * services/deliveryOutcome.js). The human-readable message is unchanged.
+ */
 function toGraphError(res, data) {
   const message = data?.error?.message || res.statusText || 'Graph API error';
-  const code = data?.error?.code ? ` (code ${data.error.code})` : '';
-  return new Error(`Graph API ${res.status}${code}: ${message}`);
+  const graphCode = data?.error?.code ?? null;
+  const subcode = data?.error?.error_subcode ?? null;
+  const code = graphCode ? ` (code ${graphCode})` : '';
+  const err = new Error(`Graph API ${res.status}${code}: ${message}`);
+  err.status = res.status;
+  err.graphCode = graphCode;
+  err.subcode = subcode;
+  err.isGraphError = true;
+  return err;
 }
 
 /**
@@ -51,14 +64,24 @@ export function createMetaClient({ accessToken } = {}) {
   const token = resolveToken(accessToken); // may throw META_CREDENTIAL_MISSING
 
   async function graphPost(path, body) {
-    const res = await fetch(`${GRAPH_BASE}${path}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}` // header auth — token never appears in URLs
-      },
-      body: JSON.stringify(body)
-    });
+    let res;
+    try {
+      res = await fetch(`${GRAPH_BASE}${path}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}` // header auth — token never appears in URLs
+        },
+        body: JSON.stringify(body)
+      });
+    } catch (cause) {
+      // No HTTP response reached us: the request may still have been delivered.
+      // Flagged so delivery classification treats the outcome as UNKNOWN rather
+      // than as a refusal. The original error (and its code) is preserved; its
+      // message is already free of the URL and the token.
+      cause.isTransportError = true;
+      throw cause;
+    }
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.error) throw toGraphError(res, data);
     return data;

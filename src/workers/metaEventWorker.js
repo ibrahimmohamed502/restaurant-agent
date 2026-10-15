@@ -11,7 +11,11 @@ import { Worker } from 'bullmq';
 import { getRedisConnection } from '../queues/redis.js';
 import { closeRedisConnection } from '../queues/redis.js';
 import { safeErrorCode } from '../services/redact.js';
-import { claimStaleWebhookEvents } from '../services/webhookEvents.js';
+import {
+  claimStaleWebhookEvents,
+  summarizeStrandedEvents,
+  strandedEventTotal
+} from '../services/webhookEvents.js';
 import { redispatchStaleIntakes } from './metaEventPipeline.js';
 import { enabled as pgEnabled } from '../db/pg.js';
 
@@ -52,6 +56,11 @@ export function startStaleIntakeSweeper({ intervalMs = STALE_SWEEP_INTERVAL_MS }
       const results = await redispatchStaleIntakes(claimed);
       const restored = results.filter((r) => r?.redispatched).length;
       if (restored) console.warn(`♻️  re-dispatched ${restored} stranded intake event(s)`);
+
+      // Report on every tick that did work, plus periodically. Counts only —
+      // never event payloads or customer data.
+      const summary = await summarizeStrandedEvents().catch(() => null);
+      if (summary) reportStrandedEvents(summary);
     } catch (err) {
       console.error('❌ stale intake sweep failed:', safeErrorCode(err));
     }
@@ -60,6 +69,35 @@ export function startStaleIntakeSweeper({ intervalMs = STALE_SWEEP_INTERVAL_MS }
   console.log(`♻️  stale intake sweeper armed (every ${Math.max(15_000, Number(intervalMs) || 60_000)}ms)`);
   return timer;
 }
+/**
+ * Surface the three silent failure modes.
+ *
+ *  - stuck_processing : a worker died mid-flight; never auto-reclaimed by design.
+ *  - unknown_delivery : a send was attempted and the event then failed, so the
+ *                       customer may or may not have the reply.
+ *  - redispatch_capped: a stranded row hit its cap and will not be retried again.
+ *
+ * These never throw and never page anyone by design — they are the operator's
+ * queue. Report at most once per interval so a persistent backlog does not turn
+ * into log spam.
+ */
+let lastStrandedReportAt = 0;
+const STRANDED_REPORT_MIN_GAP_MS = 5 * 60_000;
+
+function reportStrandedEvents(summary, now = Date.now()) {
+  const total = strandedEventTotal(summary);
+  if (total === 0 && now - lastStrandedReportAt < STRANDED_REPORT_MIN_GAP_MS) return;
+  if (total === 0) return;
+  lastStrandedReportAt = now;
+  console.warn(
+    `⚠️ events needing human review: stuck_processing=${summary.stuck_processing} ` +
+    `unknown_delivery=${summary.unknown_delivery} redispatch_capped=${summary.redispatch_capped} ` +
+    `(aged>15m=${summary.aged_total}) — none of these are retried automatically`
+  );
+}
+
+export { reportStrandedEvents };
+
 import { META_EVENT_QUEUE } from '../queues/metaEvents.js';
 import { processQueuedMetaEvent } from './metaEventPipeline.js';
 import { createKnowledgeIndexWorker } from './knowledgeIndexWorker.js';
