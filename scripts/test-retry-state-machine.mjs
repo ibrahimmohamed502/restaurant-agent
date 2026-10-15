@@ -261,8 +261,13 @@ console.log('--- 8. audit metadata carries no customer content ---------------')
   check('audit metadata never includes a PSID', !/metadata: \{[^}]*psid/i.test(handler));
   check('audit metadata never includes a credential', !/metadata: \{[^}]*(token|credential|secret)/i.test(handler));
   check('error codes are sanitized before auditing',
-    (handler.match(/code: safeErrorCode\((?:err|dbErr)\)/g) || []).length >= 2,
+    (handler.match(/code: safeErrorCode\((?:err|dbErr)\)/g) || []).length >= 1,
     `found=${(handler.match(/code: safeErrorCode\((?:err|dbErr)\)/g) || []).length}`);
+  check('the unrecorded reason is a sanitized token, never a raw message',
+    /reason: unrecordedReason/.test(handler) &&
+    /unrecordedReason = safeErrorCode\(dbErr\)/.test(handler));
+  check('the refusal path records whether the state was actually stored',
+    /recorded,\s*\n?\s*marked,/.test(handler));
   check('no raw provider message is ever logged',
     !/console\.(warn|error|log)\([^)]*\b(?:e|err|dbErr)\.message/.test(handler));
 }

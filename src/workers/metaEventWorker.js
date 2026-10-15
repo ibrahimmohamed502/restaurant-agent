@@ -16,6 +16,7 @@ import {
   summarizeStrandedEvents,
   strandedEventTotal
 } from '../services/webhookEvents.js';
+import { summarizeUnresolvedOutbound } from '../services/conversations.js';
 import { redispatchStaleIntakes } from './metaEventPipeline.js';
 import { enabled as pgEnabled } from '../db/pg.js';
 
@@ -61,6 +62,7 @@ export function startStaleIntakeSweeper({ intervalMs = STALE_SWEEP_INTERVAL_MS }
       // never event payloads or customer data.
       const summary = await summarizeStrandedEvents().catch(() => null);
       if (summary) reportStrandedEvents(summary);
+      await reportUnresolvedOutbound();
     } catch (err) {
       console.error('❌ stale intake sweep failed:', safeErrorCode(err));
     }
@@ -96,7 +98,41 @@ function reportStrandedEvents(summary, now = Date.now()) {
   );
 }
 
-export { reportStrandedEvents };
+/**
+ * Surface outbound messages whose record is incomplete.
+ *
+ * These are invisible by design: a reply that Meta accepted but that was never
+ * recorded leaves the row 'pending', which looks exactly like a message still in
+ * flight. Counts only — never ids, customer names, message text or credentials.
+ *
+ * Reported tenant-wide (aggregate counts) because the worker is an internal
+ * process with no request context. The operator-facing report is
+ * GET /dashboard/api/reconciliation, which applies the tenant AND brand policy.
+ */
+let lastUnresolvedReportAt = 0;
+const UNRESOLVED_REPORT_MIN_GAP_MS = 5 * 60_000;
+
+async function reportUnresolvedOutbound(now = Date.now()) {
+  if (now - lastUnresolvedReportAt < UNRESOLVED_REPORT_MIN_GAP_MS) return;
+  lastUnresolvedReportAt = now;
+  try {
+    const u = await summarizeUnresolvedOutbound({ scope: { mode: 'tenant', brandIds: null } });
+    if (u.unavailable) {
+      console.error('⚠️ unresolved-outbound report unavailable — cannot confirm a clean state');
+      return;
+    }
+    if (!u.unresolved_total) return;
+    console.warn(
+      `⚠️ unresolved outbound: delivered_unrecorded=${u.delivered_unrecorded} ` +
+      `refused_unrecorded=${u.refused_unrecorded} delivery_unknown=${u.delivery_unknown} ` +
+      `(stale>5m=${u.stale_total}) — none are retried automatically`
+    );
+  } catch {
+    // Never let reporting break the sweeper.
+  }
+}
+
+export { reportStrandedEvents, reportUnresolvedOutbound };
 
 import { META_EVENT_QUEUE } from '../queues/metaEvents.js';
 import { processQueuedMetaEvent } from './metaEventPipeline.js';

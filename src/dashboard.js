@@ -12,11 +12,17 @@ import { getStats, listEvents, listEscalations, resolveEscalation, logEvent } fr
 import {
   claimFailedOutboundForRetry,
   finishMessageDelivery,
+  recordReconciliationMarker,
+  summarizeUnresolvedOutbound,
   getConversationChannelContext,
 } from './services/conversations.js';
 import { resolveMetaChannel } from './services/channelResolver.js';
 import { can } from './auth/abilities.js';
-import { classifyDeliveryError, createOutboundLedger } from './services/deliveryOutcome.js';
+import {
+  classifyDeliveryError,
+  createOutboundLedger,
+  DELIVERY_CATEGORY
+} from './services/deliveryOutcome.js';
 import { safeErrorCode } from './services/redact.js';
 import {
   brandScopeFromSession,
@@ -221,6 +227,24 @@ dashboardRouter.get('/dashboard', requireAuth, (req, res) => {
   _renderDashboard(res, req.auth);
 });
 
+/* ------------- unresolved outbound reconciliation (read-only) ------------- */
+// GET /dashboard/api/reconciliation
+// Aggregate counts of outbound messages whose record is incomplete. Same
+// ability + tenant + brand policy as every other conversation-scoped route.
+// Returns counts only: no ids, no customer names, no message bodies, no tokens.
+dashboardRouter.get('/dashboard/api/reconciliation', requireAuth, async (req, res) => {
+  if (!enabled) return res.status(503).json({ error: 'unavailable', code: 'DB_DISABLED' });
+  const scope = authorizeConversationAccess(req, res, 'conversation.read', {
+    denyCode: 'INSUFFICIENT_PERMISSION'
+  });
+  if (!scope) return;
+
+  const summary = await summarizeUnresolvedOutbound({ tenantId: req.auth.tenantId, scope });
+  // Fail closed: an unavailable report is never reported as "nothing unresolved".
+  if (summary.unavailable) return res.status(503).json({ error: 'unavailable', code: 'RECONCILIATION_UNAVAILABLE' });
+  res.json(summary);
+});
+
 /* ---------------- Stage 4.4.7: manual delivery retry ---------------- */
 // POST /dashboard/api/conversations/:conversationId/messages/:messageId/retry
 // Atomic failed → pending claim; only the winner performs the single Meta POST.
@@ -340,12 +364,32 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
         //   unknown outcome  -> 'pending' + delivery_unknown, NEVER retryable
         // No automatic retry is introduced for an unknown outcome.
         const outcome = classifyDeliveryError(err);
-        await finishMessageDelivery({
-          tenantId, messageId,
-          deliveryStatus: outcome.deliveryStatus,
-          errorCategory: outcome.category
-        }).catch(() => undefined);
-        console.warn(`⚠️ retry ${messageId} send failed [${outcome.category}] outcome=${outcome.outcome}`);
+        let recorded = false;
+        try {
+          // A zero-row UPDATE returns null rather than throwing, so the RETURNING
+          // result must be checked — otherwise a write that changed nothing would
+          // be reported as a recorded failure.
+          const written = await finishMessageDelivery({
+            tenantId, messageId,
+            deliveryStatus: outcome.deliveryStatus,
+            errorCategory: outcome.category
+          });
+          recorded = Boolean(written);
+        } catch { /* the database rejected the write entirely */ }
+
+        // BEST-EFFORT reconciliation marker. Attempted only because the outcome
+        // is known, persisted only if the write succeeds, and never assumed.
+        // It records that a state may have been lost; it never enables a resend.
+        let marked = false;
+        if (!recorded) {
+          marked = await recordReconciliationMarker({
+            tenantId,
+            messageId,
+            category: DELIVERY_CATEGORY.REFUSED_UNRECORDED
+          }).catch(() => false);
+        }
+
+        console.warn(`⚠️ retry ${messageId} send failed [${outcome.category}] outcome=${outcome.outcome} recorded=${recorded} marked=${marked}`);
         // Sanitized category only — never a provider message, token or reply text.
         audit({
           tenantId,
@@ -359,6 +403,8 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
             category: outcome.category,
             deliveryOutcome: outcome.outcome,
             retryable: outcome.retryable,
+            recorded,
+            marked,
             conversationId
           }
         });
@@ -373,20 +419,40 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
 
       // ---- Phase 3: bookkeeping (delivery already CONFIRMED) ----
       let updated = null;
+      let unrecordedReason = null;
       try {
         updated = await finishMessageDelivery({
           tenantId, messageId,
           deliveryStatus: 'sent',
           providerMessageId: providerId
         });
+        // finishMessageDelivery returns rows[0] ?? null — a zero-row UPDATE does
+        // NOT throw. Treating that null as success would write a false audit
+        // record and a false success to the operator while nothing was stored.
+        if (!updated) {
+          unrecordedReason = 'no_row_updated';
+        }
       } catch (dbErr) {
-        // Meta ACCEPTED this reply; only the bookkeeping failed.
+        unrecordedReason = safeErrorCode(dbErr);
+      }
+
+      if (!updated) {
+        // Meta CONFIRMED this reply; the record was not updated.
         //
-        // The row is deliberately left exactly as the claim set it — 'pending'
-        // with a cleared category — which claimFailedOutboundForRetry refuses.
-        // Writing 'failed' here is precisely what would let an operator re-send
-        // a message the customer has already received.
-        console.error(`❌ retry ${messageId} delivered to Meta but not recorded [${safeErrorCode(dbErr)}]`);
+        // The row is left exactly as the claim set it — 'pending' with a cleared
+        // category — which claimFailedOutboundForRetry refuses. Writing 'failed'
+        // here is precisely what would let an operator re-send a message the
+        // customer has already received.
+        //
+        // BEST-EFFORT marker: attempted because Meta confirmed delivery,
+        // persisted only if the write succeeds, and never assumed to have landed.
+        const marked = await recordReconciliationMarker({
+          tenantId,
+          messageId,
+          category: DELIVERY_CATEGORY.DELIVERED_UNRECORDED
+        }).catch(() => false);
+
+        console.error(`❌ retry ${messageId} delivered to Meta but not recorded [${unrecordedReason}] marked=${marked}`);
         audit({
           tenantId,
           actorUserId: req.auth?.user?.id ?? null,
@@ -394,7 +460,12 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
           objectType: 'message',
           objectId: messageId,
           ip: req.ip,
-          metadata: { outcome: 'delivered_unrecorded', code: safeErrorCode(dbErr), conversationId }
+          metadata: {
+            outcome: 'delivered_unrecorded',
+            reason: unrecordedReason,
+            marked,
+            conversationId
+          }
         });
         // 200: the reply reached the customer. recorded=false tells the operator
         // not to retry; the row is not re-sendable in any case.
@@ -457,6 +528,15 @@ async function describeRetryRefusal({ tenantId, conversationId, messageId }) {
     if (row.delivery_status === 'sent') return 'ALREADY_SENT';
     if (row.delivery_status === 'pending' && row.delivery_error === 'delivery_unknown') {
       return 'DELIVERY_UNKNOWN_DO_NOT_RESEND';
+    }
+    // Meta CONFIRMED the send; the record was never updated. The customer has
+    // this reply, so it must never be re-sent.
+    if (row.delivery_status === 'pending' && row.delivery_error === 'delivered_unrecorded') {
+      return 'DELIVERED_UNRECORDED_DO_NOT_RESEND';
+    }
+    // Meta definitively refused; the refusal was never recorded. Nothing was sent.
+    if (row.delivery_status === 'pending' && row.delivery_error === 'refused_unrecorded') {
+      return 'REFUSED_UNRECORDED';
     }
     if (row.delivery_status === 'pending') return 'STILL_PENDING';
     if (row.delivery_error === 'meta_auth_expired') return 'NEEDS_REAUTH';

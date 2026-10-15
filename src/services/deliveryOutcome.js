@@ -82,8 +82,45 @@ export const DELIVERY_CATEGORY = {
   AUTH_EXPIRED: 'meta_auth_expired',
   PERMISSION: 'meta_permission',
   API_ERROR: 'meta_api_error',
-  UNKNOWN: 'delivery_unknown'
+  UNKNOWN: 'delivery_unknown',
+
+  /**
+   * RECONCILIATION MARKERS.
+   *
+   * Written ONLY when the provider's outcome was established but the row could
+   * not be updated with it, so the category still had to be recorded. They
+   * describe what is MISSING from the record, never a state from which a message
+   * may be re-sent.
+   *
+   *   DELIVERED_UNRECORDED - Meta CONFIRMED the send; only the bookkeeping
+   *                         write failed. The customer has the reply. Writing
+   *                         'failed' here would make it re-sendable, which is
+   *                         the exact defect this marker exists to prevent.
+   *   REFUSED_UNRECORDED   - Meta DEFINITIVELY refused (the classifier proved
+   *                         it); the refusal write failed. Nothing was sent,
+   *                         but a legitimately retryable state may have been
+   *                         lost, so it is surfaced rather than silently dropped.
+   *
+   * Neither appears in RETRYABLE_DELIVERY_CATEGORIES, and neither is ever
+   * written onto a row that is not already 'pending'.
+   */
+  DELIVERED_UNRECORDED: 'delivered_unrecorded',
+  REFUSED_UNRECORDED: 'refused_unrecorded'
 };
+
+/**
+ * Categories meaning "the record does not tell the whole story". Reported to
+ * operators so unresolved outbound messages can be reconciled. They are never a
+ * basis for re-sending.
+ */
+export const RECONCILIATION_CATEGORIES = Object.freeze([
+  DELIVERY_CATEGORY.DELIVERED_UNRECORDED,
+  DELIVERY_CATEGORY.REFUSED_UNRECORDED,
+  DELIVERY_CATEGORY.UNKNOWN
+]);
+
+/** Bucket for an ordinary pending row with no category (genuinely in flight). */
+export const PENDING_INFLIGHT = 'pending_inflight';
 
 /**
  * The ONLY category that may be re-sent. One entry, backed by one documented
@@ -249,9 +286,20 @@ export function classifyUnstructuredError(err) {
   return unknown('unstructured_unrecognised');
 }
 
-/** True only for a category proven to mean "refused, and safe to re-send". */
+/**
+ * True only for a category proven to mean "refused, and safe to re-send".
+ *
+ * A reconciliation marker can never satisfy this: the allow-list is a frozen
+ * one-element array and markers are not in it. That is the structural reason a
+ * delivered-but-unrecorded row can never be picked up for another send.
+ */
 export function isRetryableDeliveryCategory(category) {
   return RETRYABLE_DELIVERY_CATEGORIES.includes(category);
+}
+
+/** Does this category mean the record is incomplete and needs human review? */
+export function isReconciliationCategory(category) {
+  return RECONCILIATION_CATEGORIES.includes(category);
 }
 
 /**

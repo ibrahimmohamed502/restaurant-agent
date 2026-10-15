@@ -511,6 +511,116 @@ console.log('\n--- 3e. state transitions a Manual Retry can produce ---');
   }
 }
 
+/* ============ 3f. RECONCILIATION MARKERS + SCOPED REPORT ================ */
+console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---');
+{
+  const { recordReconciliationMarker, summarizeUnresolvedOutbound, claimFailedOutboundForRetry } =
+    await import('../src/services/conversations.js');
+  const { DELIVERY_CATEGORY, PENDING_INFLIGHT } =
+    await import('../src/services/deliveryOutcome.js');
+  const AUTHORISED = { mode: 'tenant', brandIds: null };
+
+  const state = (id) => pool.query(
+    `SELECT delivery_status, delivery_error FROM messages WHERE id = $1`, [id]
+  ).then((r) => r.rows[0]);
+
+  // --- the marker is written only onto a pending row ---
+  {
+    const pending = await addOutbound({ status: 'pending', error: null });
+    const ok = await recordReconciliationMarker({
+      tenantId: tenant.id, messageId: pending, category: DELIVERY_CATEGORY.DELIVERED_UNRECORDED
+    });
+    const row = await state(pending);
+    check('the marker is persisted on a pending row', ok === true, JSON.stringify(row));
+    check('and it does not change delivery_status',
+      row.delivery_status === 'pending' && row.delivery_error === 'delivered_unrecorded',
+      JSON.stringify(row));
+    check('a marked row is NOT claimable (no duplicate possible)',
+      (await claimFailedOutboundForRetry({
+        messageId: pending, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
+      })) === null);
+  }
+
+  // --- refused marker ---
+  {
+    const refused = await addOutbound({ status: 'pending', error: null });
+    await recordReconciliationMarker({
+      tenantId: tenant.id, messageId: refused, category: DELIVERY_CATEGORY.REFUSED_UNRECORDED
+    });
+    check('the refused marker persists',
+      (await state(refused)).delivery_error === 'refused_unrecorded');
+    check('and is NOT claimable either',
+      (await claimFailedOutboundForRetry({
+        messageId: refused, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
+      })) === null);
+  }
+
+  // --- a non-pending row can never be marked ---
+  {
+    const sent = await addOutbound({ status: 'sent', pmid: 'x1' });
+    const ok = await recordReconciliationMarker({
+      tenantId: tenant.id, messageId: sent, category: DELIVERY_CATEGORY.DELIVERED_UNRECORDED
+    });
+    check('a sent row is NOT marked', ok === false);
+    check('and is left untouched', (await state(sent)).delivery_error === null);
+  }
+
+  // --- a non-reconciliation category is refused by the writer itself ---
+  {
+    const row = await addOutbound({ status: 'pending', error: null });
+    let rejected = false;
+    try {
+      await recordReconciliationMarker({
+        tenantId: tenant.id, messageId: row, category: 'meta_rate_limit'
+      });
+    } catch (e) { rejected = e.code === 'INVALID_RECONCILIATION_MARKER'; }
+    check('the writer refuses a retryable category', rejected);
+  }
+
+  // --- tenant isolation ---
+  {
+    const mine = await addOutbound({ status: 'pending', error: null });
+    const crossTenant = await recordReconciliationMarker({
+      tenantId: OTHER_TENANT.id, messageId: mine, category: DELIVERY_CATEGORY.DELIVERED_UNRECORDED
+    });
+    check('another tenant cannot mark the row', crossTenant === false);
+    check('and the row keeps its own state', (await state(mine)).delivery_error === null);
+  }
+
+  // --- the scoped report ---
+  {
+    const summary = await summarizeUnresolvedOutbound({ tenantId: tenant.id, scope: AUTHORISED });
+    // One row was marked delivered_unrecorded and one refused_unrecorded above;
+    // anything else carrying a marker would come from earlier sections.
+    check('the report counts delivered_unrecorded',
+      summary.delivered_unrecorded >= 1, JSON.stringify(summary));
+    check('the report counts refused_unrecorded',
+      summary.refused_unrecorded >= 1, JSON.stringify(summary));
+    check('the report separates ordinary in-flight rows',
+      summary.pending_inflight >= 1, JSON.stringify(summary));
+    check('unresolved_total excludes ordinary in-flight rows',
+      summary.unresolved_total ===
+        summary.delivered_unrecorded + summary.refused_unrecorded + summary.delivery_unknown,
+      JSON.stringify(summary));
+    check('the report excludes the other tenant',
+      summary.unresolved_total < 100);
+
+    // A zero-brand scope sees nothing, even though rows exist.
+    const none = await summarizeUnresolvedOutbound({
+      tenantId: tenant.id, scope: { mode: 'restricted', brandIds: [] }
+    });
+    check('a zero-brand scope sees no unresolved rows',
+      none.delivered_unrecorded === 0 && none.refused_unrecorded === 0 && none.pending_inflight === 0,
+      JSON.stringify(none));
+
+    // Missing tenant fails closed rather than reporting everything.
+    const noTenant = await summarizeUnresolvedOutbound({ scope: AUTHORISED });
+    check('a missing tenant returns the empty shape', noTenant.unresolved_total === 0);
+    check('the in-flight bucket is a fixed token',
+      typeof PENDING_INFLIGHT === 'string' && PENDING_INFLIGHT === 'pending_inflight');
+  }
+}
+
 /* ================== 4. THE ATOMIC CLAIM ON REAL webhook_events ============= */
 console.log('\n--- 4. exactly one worker may claim an event ---');
 {

@@ -6,6 +6,8 @@ import {
   RETRYABLE_DELIVERY_CATEGORIES
 } from './deliveryOutcome.js';
 import { BRAND_SCOPE_TENANT } from '../api/v1/brandAccess.js';
+import { PENDING_INFLIGHT, RECONCILIATION_CATEGORIES } from './deliveryOutcome.js';
+import { safeErrorCode } from './redact.js';
 import crypto from 'node:crypto';
 
 /**
@@ -290,6 +292,110 @@ export async function finishMessageDelivery({ tenantId, messageId, deliveryStatu
     [deliveryStatus, errorCategory, providerMessageId, messageId, tenantId]
   );
   return rows[0] ?? null;
+}
+
+/**
+ * BEST-EFFORT reconciliation marker.
+ *
+ * Records that the provider outcome was established but could not be written to
+ * the row, so an operator can find the message later. Returns true when the
+ * marker was actually persisted, false otherwise — the caller MUST NOT assume
+ * it landed.
+ *
+ * Safety properties:
+ *  - NEVER changes delivery_status. The row keeps whatever state it had, so a
+ *    marker can never turn a non-retryable row into a retryable one.
+ *  - Only writes onto a row that is already 'pending', which
+ *    claimFailedOutboundForRetry refuses outright. This is the structural reason
+ *    marking a delivered-but-unrecorded row cannot create a duplicate send.
+ *  - Only accepts a marker from the reconciliation vocabulary.
+ */
+export async function recordReconciliationMarker({ tenantId, messageId, category }) {
+  if (!tenantId || !messageId) return false;
+  if (!RECONCILIATION_CATEGORIES.includes(category)) {
+    const err = new Error('recordReconciliationMarker: category is not a reconciliation marker');
+    err.code = 'INVALID_RECONCILIATION_MARKER';
+    throw err;
+  }
+  const { rows } = await pool.query(
+    `UPDATE messages
+        SET delivery_error = $3
+      WHERE id = $1 AND tenant_id = $2
+        AND direction = 'outbound'
+        AND delivery_status = 'pending'
+    RETURNING id`,
+    [messageId, tenantId, category]
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Count outbound messages whose record is incomplete, scoped to the caller's
+ * tenant AND brand, so an operator can reconcile them.
+ *
+ * Buckets:
+ *   delivered_unrecorded - Meta confirmed the send; the record was never updated.
+ *                          The customer HAS the reply. Never re-send.
+ *   refused_unrecorded   - Meta definitively refused; the refusal was never
+ *                          recorded. Nothing was sent.
+ *   delivery_unknown     - The send outcome was never established.
+ *   pending_inflight     - Ordinary pending row, no category. Genuinely in
+ *                          flight, or untouched.
+ *
+ * Aggregate counts only: no ids, no customer names, no message text, no
+ * credentials. Returns an all-zero shape on failure so a reporting outage can
+ * never be mistaken for "nothing is wrong".
+ */
+export async function summarizeUnresolvedOutbound({
+  tenantId, scope, olderThanSeconds = 300
+} = {}) {
+  const empty = {
+    delivered_unrecorded: 0,
+    refused_unrecorded: 0,
+    delivery_unknown: 0,
+    pending_inflight: 0,
+    unresolved_total: 0,
+    stale_total: 0
+  };
+  if (!tenantId) return empty;
+
+  const tenantWide = scope?.mode === BRAND_SCOPE_TENANT;
+  const brandIds = tenantWide ? [] : (scope?.brandIds ?? []);
+  const older = Math.max(30, Number(olderThanSeconds) || 300);
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+          COALESCE(m.delivery_error, $4) AS marker,
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE m.created_at < now() - ($5 || ' seconds')::interval)::int AS stale
+         FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         LEFT JOIN channels ch ON ch.id = c.channel_id
+        WHERE m.tenant_id = $1
+          AND c.tenant_id = $1
+          AND m.direction = 'outbound'
+          -- Unresolved = pending, or carrying a reconciliation marker.
+          AND (m.delivery_status = 'pending' OR m.delivery_error = ANY($6::text[]))
+          AND ($2::boolean OR (ch.brand_id IS NOT NULL AND ch.brand_id = ANY($3::uuid[])))
+        GROUP BY 1`,
+      [tenantId, tenantWide, brandIds, PENDING_INFLIGHT, String(older), [...RECONCILIATION_CATEGORIES]]
+    );
+
+    const out = { ...empty };
+    for (const row of rows) {
+      if (row.marker in out) {
+        out[row.marker] = row.total;
+        out.stale_total += row.stale;
+      }
+      if (row.marker !== PENDING_INFLIGHT) out.unresolved_total += row.total;
+    }
+    return out;
+  } catch (err) {
+    // Fail closed: a reporting failure must never read as "nothing unresolved".
+    console.error('⚠️ unresolved-outbound summary failed:', safeErrorCode(err));
+    return { ...empty, unavailable: true };
+  }
 }
 
 /** Stage 4.4.7 — sanitized lookup of a conversation + its channel (for retry context). */
