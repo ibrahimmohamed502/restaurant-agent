@@ -108,9 +108,36 @@ The database is never touched by either path.
 
 Processing mode (`WEBHOOK_QUEUE_MODE`):
 - `inline` (default) — current behavior, nothing changes.
-- `queue` — intake normalizes + dedupes + enqueues, Meta ACKs fast, worker
-  processes. If Redis/queue is unavailable at intake, it falls back to inline so
-  no event is dropped.
+- `queue` — the worker processes instead of the request path.
+
+Intake and dispatch are two separate phases in both modes, and the order is
+part of the contract:
+- **Intake** (before the HTTP 200) normalizes the payload and writes one
+  `webhook_events` row per event. The `UNIQUE (provider, external_id)` index
+  is what suppresses a concurrent Meta redelivery.
+- **Dispatch** (after the HTTP 200) enqueues, or processes inline when the
+  queue is unavailable. No AI inference and no outbound Meta call happens
+  before the ACK, so the webhook response stays fast.
+
+Failure behaviour:
+- **Queue (Redis) unavailable** → the durable row is KEPT and the event is
+  processed inline. The customer is still answered.
+- **Database unavailable** → the request is answered **503**, not 200. 200
+  would make Meta stop retrying and lose the event; 503 makes Meta redeliver.
+  Nothing is processed without a durable intake record.
+- **Worker dies mid-flight** → the row stays `processing` and is never
+  auto-reclaimed, because its side effects are unknown. Inspect those rows
+  manually; do not bulk-reset them.
+- **Stranded `received` row** (API died between intake and dispatch) → the
+  worker sweeper re-dispatches it once it has been `received` for more than
+  120s (`olderThanSeconds` in `claimStaleWebhookEvents`). It only re-queues;
+  it never runs message or comment logic. Attempts are counted in the row’s
+  `error` column and capped at 5 (`maxRedispatches`); a row that reaches the
+  cap is left `received` for manual intervention.
+
+The sweeper interval is `STALE_SWEEP_INTERVAL_MS` (default 60s, 15s floor),
+unref’d so it never holds the process open, and disabled when no database is
+configured.
 
 Cutover: set `WEBHOOK_QUEUE_MODE=queue` in the stack env and
 `docker compose -p restaurant-agent up -d` (worker already deployed).
