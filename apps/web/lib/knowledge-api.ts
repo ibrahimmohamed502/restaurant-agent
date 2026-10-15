@@ -14,7 +14,7 @@ export const knowledgeApi = {
   overview: (brandId?: string) => api.get<KnowledgeOverview>(`/knowledge${brandId ? `?brandId=${brandId}` : ''}`),
   createDraft: () => api.post<{ draft: Draft; created: boolean }>('/knowledge/draft'),
   saveDraft: (content: Record<string, unknown>, baseVersion: number) =>
-    api.post<{ draft: Draft; validation: { ok: boolean; errorCount: number; errors: ValidationError[] } }>('/knowledge/draft/put'.replace('/put', ''), { content, baseVersion }),
+    api.put<{ draft: Draft; validation: { ok: boolean; errorCount: number; errors: ValidationError[] } }>('/knowledge/draft', { content, baseVersion }),
   validate: () => api.post<{ ok: boolean; errorCount: number; errors: ValidationError[]; review: Review }>('/knowledge/validate'),
   preview: () => api.post<{ validation: { ok: boolean; errorCount: number; errors: ValidationError[] }; review: Review; preview: Record<string, unknown> }>('/knowledge/preview'),
   publish: () => api.post<{ version: number; history: KnowledgeOverview['history'] }>('/knowledge/publish'),

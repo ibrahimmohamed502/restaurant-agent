@@ -84,10 +84,17 @@ export default function KnowledgePage() {
   const patch = (next: Record<string, unknown>) => { setContent(next); setSaveState('dirty'); };
 
   const ensureDraft = async () => {
-    if (hasDraft || !content) return true;
+    if (hasDraft) return true;
     try {
       const created = await knowledgeApi.createDraft();
       setOverview((o) => (o ? { ...o, draft: created.draft } : o));
+      // First-time onboarding: no content existed yet (no published knowledge,
+      // no draft) — seed the editor from the draft the API just created so the
+      // workspace opens immediately instead of staying on the empty state.
+      if (!content) {
+        setContent(created.draft.content);
+        setBaseline(JSON.stringify(created.draft.content));
+      }
       return true;
     } catch (err) {
       push({ title: tk('toast.draftFailed'), description: (err as { message?: string }).message, variant: 'destructive' });
@@ -224,9 +231,12 @@ export default function KnowledgePage() {
     return (
       <div className="space-y-5">
         <PageHeader title={t('knowledge')} description={tk('description')} />
-        <div className="rounded-lg border border-dashed border-border px-6 py-14 text-center">
-          <p className="text-sm text-muted-foreground">{tk('empty.description')}</p>
-        </div>
+        <EmptyState
+          title={tk('emptyTitle')}
+          description={tk('emptyDescription')}
+          actionLabel={canEdit ? tk('actions.createDraft') : undefined}
+          onAction={canEdit ? async () => { const ok = await ensureDraft(); if (ok) push({ title: tk('actions.draftReady') }); } : undefined}
+        />
       </div>
     );
   }
@@ -248,7 +258,7 @@ export default function KnowledgePage() {
   ];
 
   const actions: KbAction[] = [
-    ...(canEdit && !editing ? [{ key: 'draft', label: tk('actions.createDraft'), onClick: () => ensureDraft().then(() => push({ title: tk('actions.draftReady') })), variant: 'primary' as const }] : []),
+    ...(canEdit && !editing ? [{ key: 'draft', label: tk('actions.createDraft'), onClick: () => ensureDraft().then((ok) => { if (ok) push({ title: tk('actions.draftReady') }); }), variant: 'primary' as const }] : []),
     { key: 'save', label: tk('actions.saveDraft'), onClick: saveDraft, variant: 'secondary', disabled: !canEdit || !editing || !dirty, busy: busy.save },
     { key: 'validate', label: tk('actions.validate'), onClick: validate, variant: 'secondary', disabled: !canEdit || !editing, busy: busy.validate },
     { key: 'preview', label: tk('actions.preview'), onClick: preview, variant: 'secondary', disabled: !canEdit || !editing, busy: busy.preview },

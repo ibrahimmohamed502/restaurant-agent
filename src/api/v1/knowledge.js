@@ -71,13 +71,39 @@ export function createKnowledgeRouter({ pool }) {
     return withSource(req, res, async (source) => {
       try {
         const published = await getPublishedKnowledge({ ...scope(req), sourceId: source.id });
-        if (!published) return apiError(res, 404, 'NO_PUBLISHED_KNOWLEDGE', 'nothing published yet');
         const existing = await getDraft({ ...scope(req), sourceId: source.id });
+
+        // If a draft already exists, return it (idempotent)
         if (existing) return res.json({ data: { draft: shapeDraft(existing), created: false } });
+
+        // If published knowledge exists, create draft from it
+        if (published) {
+          const { draft, created } = await saveDraft({
+            ...scope(req),
+            sourceId: source.id,
+            content: published.structured, baseVersion: published.version,
+            userId: req.v1.user?.id
+          });
+          return res.json({ data: { draft: shapeDraft(draft), created } });
+        }
+
+        // No published knowledge → create initial draft with minimal valid content
+        // that passes validateKnowledge (requires restaurantName)
+        const tenantName = req.v1.user?.name || source.title || 'New Company';
+        const initialContent = {
+          restaurantName: tenantName,
+          brandName: tenantName,
+          name: tenantName,
+          about: '',
+          currency: 'KD',
+          halal: 'Halal',
+          branches: [],
+          menus: {}
+        };
         const { draft, created } = await saveDraft({
           ...scope(req),
           sourceId: source.id,
-          content: published.structured, baseVersion: published.version,
+          content: initialContent, baseVersion: 0,
           userId: req.v1.user?.id
         });
         return res.json({ data: { draft: shapeDraft(draft), created } });
