@@ -2,26 +2,39 @@
 
 import * as React from 'react';
 import { useTranslations } from 'next-intl';
-import { Cable, Plug, ShieldAlert, Store } from 'lucide-react';
+import { Cable, CheckCircle2, CircleAlert, Clock, Plug, ShieldAlert, Store, Unplug } from 'lucide-react';
 import { PageHeader } from '@/components/page-header';
 import { BackButton } from '@/components/shell/back-button';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { EmptyState, ErrorState, PageLoading } from '@/components/ui/states';
-import { companiesApi, integrationsApi, type IntegrationInfo, type ProviderInfo } from '@/lib/api';
+import { useToast } from '@/components/ui/toaster';
+import {
+  companiesApi,
+  integrationsApi,
+  metaOAuthApi,
+  type IntegrationInfo,
+  type MetaPageOption,
+  type ProviderInfo
+} from '@/lib/api';
 
 /**
- * Stage 8 Batch 2 — integrations overview (read-only).
+ * Stage 8 Batch 3 — integrations workspace.
  *
- * Lists the channels connected to the signed-in company through
- * GET /api/v1/integrations. The server scopes the result to the session
- * tenant; the brand select is only a narrowing filter. No credential value
- * is ever received by the browser (presence + expiry only).
+ * Read-only listing (Batch 2) + Facebook Page self-service (Batch 3).
  *
- * Direction-aware: the document direction comes from the locale (see
- * app/layout.tsx) and all spacing/alignment uses logical utilities, so the
- * same markup reads correctly in Arabic (RTL) and English (LTR).
+ * Connection status is whatever the SERVER derived — never inferred from the
+ * presence of a token in the browser. A Page is "connected" only when the
+ * server confirmed both the credential and the webhook subscription.
+ *
+ * The OAuth flow token is handed back by the server in the URL *fragment*
+ * (never a query parameter), read once on mount and immediately stripped from
+ * the address bar.
+ *
+ * Direction-aware: all spacing/alignment uses logical utilities so the same
+ * markup reads correctly in Arabic (RTL) and English (LTR).
  */
 
 function timeAgo(iso: string | null): string {
@@ -42,9 +55,12 @@ function formatDate(iso: string | null): string {
   return d.toISOString().slice(0, 10);
 }
 
+type FlowState = { flowId: string; flowToken: string };
+
 export default function IntegrationsPage() {
   const t = useTranslations('integrations');
   const tc = useTranslations('common');
+  const { push } = useToast();
 
   const [integrations, setIntegrations] = React.useState<IntegrationInfo[] | null>(null);
   const [providers, setProviders] = React.useState<ProviderInfo[]>([]);
@@ -52,6 +68,16 @@ export default function IntegrationsPage() {
   const [brandId, setBrandId] = React.useState<string>('');
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
+
+  // connect wizard
+  const [connecting, setConnecting] = React.useState(false);
+  const [oauthBlocked, setOauthBlocked] = React.useState(false);
+  const [flow, setFlow] = React.useState<FlowState | null>(null);
+  const [pages, setPages] = React.useState<MetaPageOption[]>([]);
+  const [pagesLoading, setPagesLoading] = React.useState(false);
+  const [selectedPage, setSelectedPage] = React.useState<string>('');
+  const [connectingPage, setConnectingPage] = React.useState(false);
+  const [rowBusy, setRowBusy] = React.useState<string>('');
 
   const load = React.useCallback(async (brand: string) => {
     setLoading(true);
@@ -71,23 +97,123 @@ export default function IntegrationsPage() {
     }
   }, []);
 
+  // Read the flow token from the fragment exactly once, then scrub the URL.
+  React.useEffect(() => {
+    const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
+    if (!hash) return;
+    const params = new URLSearchParams(hash);
+    const flowId = params.get('flow');
+    const token = params.get('t');
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    if (flowId && token) setFlow({ flowId, flowToken: token });
+  }, []);
+
   React.useEffect(() => { void load(brandId); }, [load, brandId]);
+
+  // Load the page list as soon as a flow exists.
+  React.useEffect(() => {
+    if (!flow) return;
+    let cancelled = false;
+    setPagesLoading(true);
+    metaOAuthApi
+      .pages(flow.flowId, flow.flowToken)
+      .then((res) => {
+        if (cancelled) return;
+        setPages(res.pages ?? []);
+        if (!res.pages?.length) push({ title: t('wizard.noPages'), variant: 'destructive' });
+      })
+      .catch(() => {
+        if (!cancelled) push({ title: t('wizard.flowInvalid'), variant: 'destructive' });
+      })
+      .finally(() => { if (!cancelled) setPagesLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flow]);
 
   const counts = React.useMemo(() => {
     const list = integrations ?? [];
     return {
       total: list.length,
-      active: list.filter((i) => i.status === 'active').length,
-      attention: list.filter((i) => i.health.status === 'degraded' || i.health.status === 'down' || !i.credentials.present).length,
+      connected: list.filter((i) => i.connectionState === 'connected').length,
+      attention: list.filter((i) => i.connectionState === 'subscription_failed' || i.connectionState === 'needs_attention' || i.connectionState === 'pending_subscription').length,
       disabled: list.filter((i) => i.status !== 'active').length
     };
   }, [integrations]);
 
-  const healthVariant = (status: string): 'success' | 'warning' | 'destructive' | 'neutral' => {
-    if (status === 'ok') return 'success';
-    if (status === 'degraded') return 'warning';
-    if (status === 'down') return 'destructive';
-    return 'neutral';
+  const stateMeta = (state: string): { label: string; variant: 'success' | 'warning' | 'destructive' | 'neutral'; icon: React.ReactNode } => {
+    switch (state) {
+      case 'connected':
+        return { label: t('connection.connected'), variant: 'success', icon: <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> };
+      case 'pending_subscription':
+        return { label: t('connection.pendingSubscription'), variant: 'warning', icon: <Clock className="h-3.5 w-3.5" aria-hidden /> };
+      case 'subscription_failed':
+        return { label: t('connection.subscriptionFailed'), variant: 'destructive', icon: <Unplug className="h-3.5 w-3.5" aria-hidden /> };
+      case 'needs_attention':
+        return { label: t('connection.needsAttention'), variant: 'destructive', icon: <ShieldAlert className="h-3.5 w-3.5" aria-hidden /> };
+      case 'not_connected':
+        return { label: t('connection.notConnected'), variant: 'neutral', icon: <Plug className="h-3.5 w-3.5" aria-hidden /> };
+      default:
+        return { label: t('connection.unknown'), variant: 'neutral', icon: <CircleAlert className="h-3.5 w-3.5" aria-hidden /> };
+    }
+  };
+
+  const startConnect = async () => {
+    setConnecting(true);
+    setOauthBlocked(false);
+    try {
+      const res = await metaOAuthApi.authorize(brandId || undefined);
+      window.location.assign(res.authorizeUrl);
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === 'OAUTH_NOT_CONFIGURED') {
+        setOauthBlocked(true);
+        push({ title: t('wizard.notConfigured'), variant: 'destructive' });
+      } else {
+        push({ title: t('wizard.startFailed'), variant: 'destructive' });
+      }
+      setConnecting(false);
+    }
+  };
+
+  const doConnect = async () => {
+    if (!flow || !selectedPage) return;
+    setConnectingPage(true);
+    try {
+      const res = await metaOAuthApi.connect(flow.flowId, flow.flowToken, selectedPage, brandId || undefined);
+      setFlow(null);
+      setPages([]);
+      setSelectedPage('');
+      await load(brandId);
+      push({
+        title: res.connected
+          ? (res.reconnected ? t('wizard.reconnected') : t('wizard.connected'))
+          : t('wizard.connectedButSubscriptionFailed'),
+        variant: res.connected ? 'default' : 'destructive'
+      });
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      push({ title: code === 'PAGE_ALREADY_CONNECTED' ? t('wizard.alreadyConnected') : t('wizard.connectFailed'), variant: 'destructive' });
+    } finally {
+      setConnectingPage(false);
+    }
+  };
+
+  const resubscribe = async (row: IntegrationInfo, mode: 'resubscribe' | 'reverify') => {
+    setRowBusy(row.id);
+    try {
+      const res = mode === 'resubscribe'
+        ? await metaOAuthApi.resubscribe(row.id)
+        : await metaOAuthApi.reverify(row.id);
+      await load(brandId);
+      push({
+        title: res.subscriptionState === 'subscribed' ? t('connection.connected') : t('connection.subscriptionFailed'),
+        variant: res.subscriptionState === 'subscribed' ? 'default' : 'destructive'
+      });
+    } catch {
+      push({ title: t('wizard.retryFailed'), variant: 'destructive' });
+    } finally {
+      setRowBusy('');
+    }
   };
 
   return (
@@ -96,6 +222,11 @@ export default function IntegrationsPage() {
         title={t('title')}
         description={t('description')}
         breadcrumb={<BackButton />}
+        actions={
+          <Button onClick={startConnect} disabled={connecting} className="gap-1.5">
+            <Plug className="h-3.5 w-3.5" aria-hidden /> {connecting ? t('wizard.starting') : t('wizard.connect')}
+          </Button>
+        }
       />
 
       {loading ? (
@@ -109,10 +240,63 @@ export default function IntegrationsPage() {
         />
       ) : (
         <>
+          {oauthBlocked ? (
+            <div className="rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-[13px] text-warning">
+              {t('wizard.notConfiguredHint')}
+            </div>
+          ) : null}
+
+          {/* page picker (only while a flow is active) */}
+          {flow ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">{t('wizard.pickPage')}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {pagesLoading ? (
+                  <p className="text-[13px] text-muted-foreground">{t('wizard.loadingPages')}</p>
+                ) : pages.length === 0 ? (
+                  <p className="text-[13px] text-muted-foreground">{t('wizard.noPages')}</p>
+                ) : (
+                  <>
+                    <ul className="space-y-2">
+                      {pages.map((p) => (
+                        <li key={p.id}>
+                          <label className="flex cursor-pointer items-center gap-3 rounded-md border border-border px-3 py-2 text-[13px] hover:bg-muted/50">
+                            <input
+                              type="radio"
+                              name="meta-page"
+                              value={p.id}
+                              checked={selectedPage === p.id}
+                              onChange={() => setSelectedPage(p.id)}
+                              className="h-4 w-4"
+                            />
+                            <span className="min-w-0 flex-1 truncate">{p.name || p.id}</span>
+                            {p.tasks?.length ? (
+                              <Badge variant="neutral" className="text-xs">{p.tasks.join(' · ')}</Badge>
+                            ) : null}
+                          </label>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="flex items-center justify-end gap-2">
+                      <Button variant="secondary" size="sm" onClick={() => { setFlow(null); setPages([]); }}>
+                        {tc('cancel')}
+                      </Button>
+                      <Button size="sm" disabled={!selectedPage || connectingPage} onClick={doConnect}>
+                        {connectingPage ? t('wizard.connecting') : t('wizard.confirmConnect')}
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          ) : null}
+
           {/* summary + brand filter */}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <SummaryTile label={t('summary.total')} value={counts.total} icon={<Cable className="h-4 w-4" aria-hidden />} />
-            <SummaryTile label={t('summary.active')} value={counts.active} icon={<Plug className="h-4 w-4" aria-hidden />} tone="success" />
+            <SummaryTile label={t('summary.connected')} value={counts.connected} icon={<CheckCircle2 className="h-4 w-4" aria-hidden />} tone="success" />
             <SummaryTile label={t('summary.attention')} value={counts.attention} icon={<ShieldAlert className="h-4 w-4" aria-hidden />} tone={counts.attention > 0 ? 'warning' : undefined} />
             <SummaryTile label={t('summary.disabled')} value={counts.disabled} icon={<Store className="h-4 w-4" aria-hidden />} />
           </div>
@@ -138,51 +322,54 @@ export default function IntegrationsPage() {
             <EmptyState title={t('emptyTitle')} description={t('emptyDescription')} />
           ) : (
             <div className="grid gap-3 md:grid-cols-2">
-              {integrations.map((i) => (
-                <Card key={i.id}>
-                  <CardHeader className="pb-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <CardTitle className="truncate text-sm">{i.displayName || i.providerLabel}</CardTitle>
-                        <p className="truncate text-xs text-muted-foreground">{i.providerLabel}</p>
+              {integrations.map((i) => {
+                const meta = stateMeta(i.connectionState);
+                const canRetry = i.credentials.present && (i.connectionState === 'subscription_failed' || i.connectionState === 'unknown');
+                return (
+                  <Card key={i.id}>
+                    <CardHeader className="pb-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <CardTitle className="truncate text-sm">{i.displayName || i.providerLabel}</CardTitle>
+                          <p className="truncate text-xs text-muted-foreground">{i.providerLabel}</p>
+                        </div>
+                        <Badge variant={meta.variant}>
+                          <span className="inline-flex items-center gap-1">{meta.icon}{meta.label}</span>
+                        </Badge>
                       </div>
-                      <Badge variant={i.status === 'active' ? 'success' : 'destructive'}>
-                        {t(`statusLabels.${i.status === 'active' ? 'active' : 'disabled'}`)}
-                      </Badge>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-2.5 text-[13px]">
-                    <Row label={t('columns.brand')} value={i.brand?.name || t('noBrand')} />
-                    <Row label={t('columns.health')} value={<Badge variant={healthVariant(i.health.status)}>{t(`healthLabels.${i.health.status}`)}</Badge>} />
-                    <Row
-                      label={t('columns.credentials')}
-                      value={
-                        <span className="inline-flex items-center gap-2">
+                    </CardHeader>
+                    <CardContent className="space-y-2.5 text-[13px]">
+                      <Row label={t('columns.brand')} value={i.brand?.name || t('noBrand')} />
+                      <Row label={t('columns.health')} value={<Badge variant={i.health.status === 'ok' ? 'success' : 'neutral'}>{t(`healthLabels.${i.health.status}`)}</Badge>} />
+                      <Row
+                        label={t('columns.credentials')}
+                        value={
                           <Badge variant={i.credentials.present ? 'success' : 'neutral'}>
-                            {t(i.credentials.present ? 'credentialsLabels.present' : 'credentialsLabels.missing')}
+                            {i.credentials.present ? t('credentialsLabels.present') : t('credentialsLabels.missing')}
                           </Badge>
-                          {i.credentials.expiresAt ? (
-                            <span className="text-xs text-muted-foreground">
-                              {t('credentialsLabels.expires')} {formatDate(i.credentials.expiresAt)}
-                            </span>
-                          ) : null}
-                        </span>
-                      }
-                    />
-                    <Row label={t('columns.lastEvent')} value={timeAgo(i.health.lastEventAt)} />
-                    {i.health.lastError ? (
-                      <Row label={t('columns.lastError')} value={<span className="text-destructive">{i.health.lastError}</span>} />
-                    ) : null}
-                    {i.externalId ? (
-                      <Row label={t('columns.externalId')} value={<span className="font-mono text-xs">{i.externalId}</span>} />
-                    ) : null}
-                  </CardContent>
-                </Card>
-              ))}
+                        }
+                      />
+                      <Row label={t('columns.subscription')} value={<Badge variant={meta.variant}>{t(`subscriptionLabels.${i.subscription.state}`)}</Badge>} />
+                      <Row label={t('columns.lastEvent')} value={timeAgo(i.health.lastEventAt)} />
+                      <Row label={t('columns.lastVerified')} value={i.subscription.verifiedAt ? formatDate(i.subscription.verifiedAt) : '—'} />
+                      {canRetry ? (
+                        <div className="flex items-center justify-end gap-2 pt-1">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={rowBusy === i.id}
+                            onClick={() => resubscribe(i, i.connectionState === 'unknown' ? 'reverify' : 'resubscribe')}
+                          >
+                            {i.connectionState === 'unknown' ? t('actions.reverify') : t('actions.retrySubscription')}
+                          </Button>
+                        </div>
+                      ) : null}
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
-
-          <p className="text-xs text-muted-foreground">{t('readOnlyNotice')}</p>
 
           {providers.length > 0 ? (
             <Card>

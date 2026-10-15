@@ -24,6 +24,7 @@ import { createConversationsRouter } from './conversations.js';
 import { createPlatformRouter } from './platform.js';
 import { createCompaniesRouter } from './companies.js';
 import { createIntegrationsRouter } from './integrations.js';
+import { createIntegrationsMetaRouter } from './integrationsMeta.js';
 
 const CSRF_COOKIE = 'csrf_token';
 const CSRF_HEADER = 'x-csrf-token';
@@ -307,7 +308,10 @@ export function createApiV1Router(deps = {}) {
   /* --------------------- Stage 8 Batch 1: Company Admin --------------------- */
   router.use('/companies', createCompaniesRouter());
 
-  /* --------- Stage 8 Batch 2: integrations (provider-neutral, read-only) --------- */
+  /* --------- Stage 8 Batch 3: Facebook Page self-service OAuth (mounted first so /meta/* wins) --------- */
+  router.use('/integrations/meta', createIntegrationsMetaRouter({ pool }));
+
+/* --------- Stage 8 Batch 2: integrations (provider-neutral, read-only) --------- */
   router.use('/integrations', createIntegrationsRouter({ pool }));
 
   /* --------------------- Stage 5: Team & Access (tenant users + roles) --------------------- */

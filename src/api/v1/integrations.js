@@ -31,7 +31,8 @@ const PROJECTION = `
          b.name AS brand_name,
          EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.channel_id = c.id) AS credential_present,
          (SELECT MAX(pc.expires_at) FROM provider_credentials pc WHERE pc.channel_id = c.id) AS credential_expires_at,
-         h.status AS health_status, h.last_event_at, h.last_error
+         h.status AS health_status, h.last_event_at, h.last_error,
+         c.subscription_state, c.subscription_error, c.verified_at
     FROM channels c
     LEFT JOIN brands b ON b.id = c.brand_id
     LEFT JOIN integration_health h ON h.channel_id = c.id
@@ -45,7 +46,8 @@ const STATUS_SQL = `
          b.name AS brand_name,
          EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.channel_id = c.id) AS credential_present,
          (SELECT MAX(pc.expires_at) FROM provider_credentials pc WHERE pc.channel_id = c.id) AS credential_expires_at,
-         h.status AS health_status, h.last_event_at, h.last_error
+         h.status AS health_status, h.last_event_at, h.last_error,
+         c.subscription_state, c.subscription_error, c.verified_at
     FROM channels c
     LEFT JOIN brands b ON b.id = c.brand_id
     LEFT JOIN integration_health h ON h.channel_id = c.id
@@ -128,6 +130,83 @@ export function createIntegrationsRouter({ pool }) {
       return res.json({ data: { integration: toIntegration(rows[0]) } });
     } catch (err) {
       console.error('integration status failed:', err.message);
+      return apiError(res, 500, 'INTERNAL', 'unexpected error');
+    }
+  });
+
+
+  /* ------------- POST /integrations/:id/resubscribe (manual retry) ------------- */
+  router.post('/:id/resubscribe', requireAbility('brand.integration.reconnect'), async (req, res) => {
+    const id = String(req.params.id ?? '');
+    if (!UUID_RE.test(id)) return apiError(res, 400, 'VALIDATION_ERROR', 'channel id must be a uuid');
+    const scope = brandScopeFromSession(req.v1);
+    try {
+      const { rows } = await req.db.query(STATUS_SQL, [id, req.v1.tenantId]);
+      if (!rows[0] || !brandVisibleToScope(rows[0].brand_id, scope)) {
+        return apiError(res, 404, 'CHANNEL_NOT_FOUND', 'integration not found');
+      }
+      const channel = rows[0];
+      const { rows: creds } = await req.db.query(
+        `SELECT value_encrypted, iv FROM provider_credentials
+          WHERE channel_id = $1 AND tenant_id = $2 AND kind = 'page_access_token'
+          ORDER BY created_at DESC LIMIT 1`,
+        [id, req.v1.tenantId]
+      );
+      if (!creds[0]) return apiError(res, 404, 'NO_CREDENTIAL', 'no page credential stored for this integration');
+
+      // Decrypted only for this outbound call; never returned or logged.
+      const pageToken = decrypt(creds[0].value_encrypted, creds[0].iv);
+      const sub = await subscribePageWebhook({ pageId: channel.external_id, pageToken });
+      await req.db.query(
+        `UPDATE channels SET subscription_state = $2, subscription_error = $3, verified_at = now() WHERE id = $1`,
+        [id, sub.ok ? 'subscribed' : 'subscription_failed', sub.ok ? null : sub.errorCode]
+      );
+      audit({
+        tenantId: req.v1.tenantId, actorUserId: req.v1.user.id,
+        action: sub.ok ? 'integration.resubscribe' : 'integration.subscription_failed',
+        objectType: 'channel', objectId: id, ip: req.ip,
+        metadata: sub.ok ? { ok: true } : { code: sub.errorCode }
+      });
+      return res.json({ data: { subscriptionState: sub.ok ? 'subscribed' : 'subscription_failed', errorCode: sub.errorCode } });
+    } catch (err) {
+      console.error('integration resubscribe failed:', err.message);
+      return apiError(res, 500, 'INTERNAL', 'unexpected error');
+    }
+  });
+
+  /* --------------- POST /integrations/:id/reverify (legacy channels) --------------- */
+  router.post('/:id/reverify', requireAbility('brand.integration.reconnect'), async (req, res) => {
+    const id = String(req.params.id ?? '');
+    if (!UUID_RE.test(id)) return apiError(res, 400, 'VALIDATION_ERROR', 'channel id must be a uuid');
+    const scope = brandScopeFromSession(req.v1);
+    try {
+      const { rows } = await req.db.query(STATUS_SQL, [id, req.v1.tenantId]);
+      if (!rows[0] || !brandVisibleToScope(rows[0].brand_id, scope)) {
+        return apiError(res, 404, 'CHANNEL_NOT_FOUND', 'integration not found');
+      }
+      const channel = rows[0];
+      const { rows: creds } = await req.db.query(
+        `SELECT value_encrypted, iv FROM provider_credentials
+          WHERE channel_id = $1 AND tenant_id = $2 AND kind = 'page_access_token'
+          ORDER BY created_at DESC LIMIT 1`,
+        [id, req.v1.tenantId]
+      );
+      if (!creds[0]) return apiError(res, 404, 'NO_CREDENTIAL', 'no page credential stored for this integration');
+
+      const pageToken = decrypt(creds[0].value_encrypted, creds[0].iv);
+      const sub = await subscribePageWebhook({ pageId: channel.external_id, pageToken });
+      await req.db.query(
+        `UPDATE channels SET subscription_state = $2, subscription_error = $3, verified_at = now() WHERE id = $1`,
+        [id, sub.ok ? 'subscribed' : 'subscription_failed', sub.ok ? null : sub.errorCode]
+      );
+      audit({
+        tenantId: req.v1.tenantId, actorUserId: req.v1.user.id,
+        action: 'integration.reverify', objectType: 'channel', objectId: id, ip: req.ip,
+        metadata: { subscription: sub.ok ? 'subscribed' : 'subscription_failed' }
+      });
+      return res.json({ data: { subscriptionState: sub.ok ? 'subscribed' : 'subscription_failed', errorCode: sub.errorCode } });
+    } catch (err) {
+      console.error('integration reverify failed:', err.message);
       return apiError(res, 500, 'INTERNAL', 'unexpected error');
     }
   });

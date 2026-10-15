@@ -562,16 +562,10 @@
     "actions": "Actions",
     "emptyTitle": "No brands yet",
     "emptyDescription": "Create your first brand to get started",
-    "editBrand": "Edit Brand",
-    "editBrandDescription": "Edit brand details, status, and default language",
-    "save": "Save",
-    "saving": "Saving…",
     "disableBrand": "Disable Brand",
     "disabling": "Disabling…",
     "disableBrandDescription": "This will disable the brand and its associated channels. This action cannot be undone.",
-    "brands": "Brands",
-    "emptyTitle": "No brands yet",
-    "emptyDescription": "Create your first brand to get started"
+    "brands": "Brands"
   },
   "integrations": {
     "title": "Integrations",
@@ -583,7 +577,8 @@
       "total": "Channels",
       "active": "Active",
       "attention": "Needs attention",
-      "disabled": "Disabled"
+      "disabled": "Disabled",
+      "connected": "Connected"
     },
     "columns": {
       "brand": "Brand",
@@ -591,7 +586,9 @@
       "credentials": "Credentials",
       "lastEvent": "Last event",
       "lastError": "Last error",
-      "externalId": "External ID"
+      "externalId": "External ID",
+      "subscription": "Webhook subscription",
+      "lastVerified": "Last verified"
     },
     "statusLabels": {
       "active": "Active",
@@ -617,6 +614,44 @@
     "emptyDescription": "Channels connected to this company will appear here.",
     "loadFailedTitle": "Could not load integrations",
     "loadFailedDescription": "Something went wrong while loading integrations.",
-    "readOnlyNotice": "Connection management (connect, disconnect and token rotation) is not available yet — this view is read-only."
+    "readOnlyNotice": "Connection management (connect, disconnect and token rotation) is not available yet — this view is read-only.",
+    "subscriptionLabels": {
+      "unknown": "Unknown",
+      "pending_subscription": "Pending",
+      "subscribed": "Subscribed",
+      "subscription_failed": "Failed",
+      "unsubscribed": "Unsubscribed"
+    },
+    "connection": {
+      "connected": "Connected",
+      "pendingSubscription": "Subscription pending",
+      "subscriptionFailed": "Subscription failed",
+      "needsAttention": "Needs attention",
+      "notConnected": "Not connected",
+      "unknown": "Unknown — re-verify"
+    },
+    "actions": {
+      "retrySubscription": "Retry subscription",
+      "reverify": "Re-verify"
+    },
+    "wizard": {
+      "connect": "Connect Facebook Page",
+      "starting": "Starting…",
+      "pickPage": "Choose a page",
+      "loadingPages": "Loading your pages…",
+      "noPages": "No Facebook pages are available for this login.",
+      "flowInvalid": "This connection flow is invalid or has expired. Start again.",
+      "confirmConnect": "Connect page",
+      "connecting": "Connecting…",
+      "connected": "Page connected",
+      "reconnected": "Page reconnected",
+      "connectedButSubscriptionFailed": "Page saved, but the webhook subscription failed. Use retry from the list.",
+      "alreadyConnected": "This page is already connected to another workspace.",
+      "connectFailed": "Could not connect the page.",
+      "retryFailed": "Could not update the subscription.",
+      "startFailed": "Could not start the connection flow.",
+      "notConfigured": "Self-service connection is not configured yet.",
+      "notConfiguredHint": "Self-service connection is disabled until a stable public URL (PUBLIC_BASE_URL) is configured. Existing connections keep working."
+    }
   }
 }

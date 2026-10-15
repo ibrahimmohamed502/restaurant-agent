@@ -9,6 +9,32 @@ import { pool } from './src/db/pg.js';
 import { migrate } from './src/db/migrate.js';
 import { seedIfEmpty } from './src/db/seed.js';
 
+/**
+ * Batch 3 security: refuse to START in production without the Meta app secret.
+ *
+ * With fail-closed webhook signature verification, a missing secret would reject
+ * every legitimate webhook (outbound AI replies silently stop). Failing fast at
+ * boot is safer and far easier to diagnose than a silent outage. Outside
+ * production this only warns, so local development keeps working.
+ */
+function assertProductionConfig() {
+  const problems = [];
+  if (process.env.NODE_ENV === 'production' && !process.env.FB_APP_SECRET) {
+    problems.push('FB_APP_SECRET is required in production (webhook signature verification)');
+  }
+  if (!process.env.ENCRYPTION_KEY) {
+    problems.push('ENCRYPTION_KEY is required (credential encryption at rest)');
+  }
+  if (problems.length) {
+    if (process.env.NODE_ENV === 'production') {
+      console.error('refusing to start - invalid production configuration:');
+      for (const p of problems) console.error('   - ' + p);
+      process.exit(1);
+    }
+    console.warn('configuration warnings: ' + problems.join(' | '));
+  }
+  return problems;
+}
 const app = express();
 
 // Parse JSON and keep the RAW body — required for X-Hub-Signature-256 verification
@@ -76,6 +102,7 @@ app.get('/privacy', (_req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+assertProductionConfig();
 app.listen(PORT, async () => {
   console.log(`🍽️  Restaurant Page AI Agent listening on port ${PORT}`);
   console.log(`🔗 Webhook endpoint: http://localhost:${PORT}/webhook`);

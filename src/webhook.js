@@ -58,9 +58,18 @@ webhookRouter.post('/webhook', (req, res) => {
   handlePayload(req.body).catch((err) => console.error('❌ Handler error:', err));
 });
 
-function verifySignature(req) {
+/**
+ * Verify the Meta webhook signature.
+ *
+ * FAIL CLOSED: when FB_APP_SECRET is unset every POST is rejected instead of
+ * being accepted unverified. A misconfigured deployment must not be able to
+ * drive real outbound AI replies from forged events.
+ *
+ * Exported for the signature compatibility suite.
+ */
+export function verifySignature(req) {
   const secret = process.env.FB_APP_SECRET;
-  if (!secret) return true; // signature check disabled — set FB_APP_SECRET in production!
+  if (!secret) return false; // fail closed: an unset secret rejects every POST
   const signature = req.headers['x-hub-signature-256'];
   if (!signature || !req.rawBody) return false;
 

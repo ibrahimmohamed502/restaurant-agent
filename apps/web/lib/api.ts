@@ -43,13 +43,20 @@ export async function ensureCsrfToken(): Promise<string | null> {
   return csrfToken();
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** Extra headers (e.g. the short-lived OAuth flow token) are merged in. */
+export async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  extraHeaders?: Record<string, string>
+): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET' && method !== 'HEAD') {
     const token = csrfToken();
     if (token) headers['x-csrf-token'] = token;
   }
+  if (extraHeaders) Object.assign(headers, extraHeaders);
   let res: Response;
   try {
     // never let an unsettled request pin the UI forever
@@ -493,6 +500,9 @@ export type IntegrationInfo = {
   /** Presence + expiry only — the API never exposes a credential value. */
   credentials: { present: boolean; expiresAt: string | null };
   health: { status: 'ok' | 'degraded' | 'down' | 'unknown' | string; lastEventAt: string | null; lastError: string | null };
+  /** Server-derived: never inferred from token presence alone. */
+  connectionState: 'connected' | 'pending_subscription' | 'subscription_failed' | 'not_connected' | 'needs_attention' | 'unknown';
+  subscription: { state: string; verifiedAt: string | null };
 };
 
 export type IntegrationsResponse = {
@@ -506,4 +516,41 @@ export const integrationsApi = {
     api.get<IntegrationsResponse>(`/integrations${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ''}`),
   status: (channelId: string) =>
     api.get<{ integration: IntegrationInfo }>(`/integrations/${encodeURIComponent(channelId)}/status`)
+};
+
+/* --------------------------- Stage 8 Batch 3: Facebook self-service --------------------------- */
+
+export type MetaPageOption = {
+  id: string;
+  name: string | null;
+  tasks: string[];
+  category: string | null;
+};
+
+export type ConnectResult = {
+  connected: boolean;
+  reconnected: boolean;
+  channelId: string;
+  subscriptionState: 'subscribed' | 'subscription_failed';
+  errorCode: string | null;
+};
+
+export const metaOAuthApi = {
+  /** Starts the consent flow. Rejects with code OAUTH_NOT_CONFIGURED when disabled. */
+  authorize: (brandId?: string) =>
+    api.post<{ authorizeUrl: string; expiresAt: string }>('/integrations/meta/authorize', { brandId }),
+  /** Page picker. Requires the short-lived flow token (never a Meta token). */
+  pages: (flowId: string, flowToken: string) =>
+    request<{ flowId: string; brandId: string | null; pages: MetaPageOption[] }>(
+      'GET',
+      `/integrations/meta/pages?flow=${encodeURIComponent(flowId)}`,
+      undefined,
+      { 'X-Flow-Token': flowToken }
+    ),
+  connect: (flowId: string, flowToken: string, pageId: string, brandId?: string) =>
+    api.post<ConnectResult>('/integrations/meta/connect', { flowId, pageId, brandId }),
+  resubscribe: (channelId: string) =>
+    api.post<{ subscriptionState: string; errorCode: string | null }>(`/integrations/${encodeURIComponent(channelId)}/resubscribe`),
+  reverify: (channelId: string) =>
+    api.post<{ subscriptionState: string; errorCode: string | null }>(`/integrations/${encodeURIComponent(channelId)}/reverify`),
 };

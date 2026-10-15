@@ -562,16 +562,10 @@
     "actions": "الإجراءات",
     "emptyTitle": "لا توجد علامات تجارية بعد",
     "emptyDescription": "أنشئ أول علامة تجارية للبدء",
-    "editBrand": "تعديل العلامة التجارية",
-    "editBrandDescription": "تعديل تفاصيل العلامة التجارية وحالتها واللغة الافتراضية",
-    "save": "حفظ",
-    "saving": "جاري الحفظ…",
     "disableBrand": "تعطيل العلامة التجارية",
     "disabling": "جاري التعطيل…",
     "disableBrandDescription": "سيؤدي ذلك إلى تعطيل العلامة التجارية وقنواتها المرتبطة. لا يمكن التراجع عن هذا الإجراء.",
-    "brands": "العلامات التجارية",
-    "emptyTitle": "لا توجد علامات تجارية بعد",
-    "emptyDescription": "أنشئ أول علامة تجارية للبدء"
+    "brands": "العلامات التجارية"
   },
   "integrations": {
     "title": "التكاملات",
@@ -583,7 +577,8 @@
       "total": "القنوات",
       "active": "نشطة",
       "attention": "تحتاج انتباه",
-      "disabled": "معطّلة"
+      "disabled": "معطّلة",
+      "connected": "متصلة"
     },
     "columns": {
       "brand": "العلامة التجارية",
@@ -591,7 +586,9 @@
       "credentials": "بيانات الاعتماد",
       "lastEvent": "آخر حدث",
       "lastError": "آخر خطأ",
-      "externalId": "المعرّف الخارجي"
+      "externalId": "المعرّف الخارجي",
+      "subscription": "اشتراك الـ Webhook",
+      "lastVerified": "آخر تحقّق"
     },
     "statusLabels": {
       "active": "نشطة",
@@ -617,6 +614,44 @@
     "emptyDescription": "ستظهر هنا القنوات المتصلة بهذه الشركة.",
     "loadFailedTitle": "تعذّر تحميل التكاملات",
     "loadFailedDescription": "حدث خطأ أثناء تحميل التكاملات.",
-    "readOnlyNotice": "إدارة الاتصال (ربط وفصل وتدوير الرموز) غير متاحة بعد — هذه الصفحة للعرض فقط."
+    "readOnlyNotice": "إدارة الاتصال (ربط وفصل وتدوير الرموز) غير متاحة بعد — هذه الصفحة للعرض فقط.",
+    "subscriptionLabels": {
+      "unknown": "غير معروف",
+      "pending_subscription": "قيد التنفيذ",
+      "subscribed": "مشترك",
+      "subscription_failed": "فشل",
+      "unsubscribed": "ملغى"
+    },
+    "connection": {
+      "connected": "متصل",
+      "pendingSubscription": "الاشتراك قيد التنفيذ",
+      "subscriptionFailed": "فشل الاشتراك",
+      "needsAttention": "يحتاج انتباه",
+      "notConnected": "غير متصل",
+      "unknown": "غير معروف — أعد التحقق"
+    },
+    "actions": {
+      "retrySubscription": "إعادة محاولة الاشتراك",
+      "reverify": "إعادة التحقق"
+    },
+    "wizard": {
+      "connect": "ربط صفحة فيسبوك",
+      "starting": "جارٍ البدء…",
+      "pickPage": "اختر الصفحة",
+      "loadingPages": "جارٍ تحميل صفحاتك…",
+      "noPages": "لا توجد صفحات فيسبوك متاحة لهذا الدخول.",
+      "flowInvalid": "مسار الاتصال غير صالح أو منتهي. ابدأ من جديد.",
+      "confirmConnect": "ربط الصفحة",
+      "connecting": "جارٍ الربط…",
+      "connected": "تم ربط الصفحة",
+      "reconnected": "تمت إعادة ربط الصفحة",
+      "connectedButSubscriptionFailed": "تم حفظ الصفحة، لكن فشل اشتراك الـ Webhook. استخدم زر إعادة المحاولة من القائمة.",
+      "alreadyConnected": "هذه الصفحة مرتبطة بالفعل بمساحة عمل أخرى.",
+      "connectFailed": "تعذّر ربط الصفحة.",
+      "retryFailed": "تعذّر تحديث الاشتراك.",
+      "startFailed": "تعذّر بدء مسار الاتصال.",
+      "notConfigured": "الربط الذاتي غير مُهيأ بعد.",
+      "notConfiguredHint": "الربط الذاتي معطّل حتى يتم ضبط رابط عام ثابت (PUBLIC_BASE_URL). الاتصالات الحالية تعمل بشكل طبيعي."
+    }
   }
 }
