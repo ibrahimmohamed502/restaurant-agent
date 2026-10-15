@@ -69,6 +69,28 @@ function ItemDrawer({ open, title, item, onClose, onSave, onDelete }: {
   );
 }
 
+/**
+ * Which subcategory sections are visible for a category.
+ *
+ * Empty subcategories MUST stay visible when no search is active: the "Add item"
+ * control only exists inside a rendered subcategory header, so hiding an empty
+ * one leaves the user with no way to add its first item. While searching, empty
+ * subcategories are hidden to keep results free of noise.
+ */
+export function selectSubcategories(menus: MenuStructure, activeCat: string | null, query: string): Array<[string, MenuItem[]]> {
+  if (!activeCat) return [];
+  const q = query.trim().toLowerCase();
+  return Object.entries(menus[activeCat] ?? {})
+    .map(([sub, items]) => {
+      const list = (items ?? []) as MenuItem[];
+      const filtered = q
+        ? list.filter((it) => String(it.name ?? it.name_en ?? '').toLowerCase().includes(q) || String(it.name_ar ?? '').toLowerCase().includes(q) || String(it.desc ?? it.description ?? '').toLowerCase().includes(q))
+        : list;
+      return [sub, filtered] as [string, MenuItem[]];
+    })
+    .filter(([, items]) => items.length > 0 || !q);
+}
+
 /** Category rail + compact item rows; drawer editor for add/edit. */
 export function MenuEditor({ menus, readOnly, onChange }: { menus: MenuStructure; readOnly?: boolean; onChange: (menus: MenuStructure) => void }) {
   const tk = useTranslations('knowledge');
@@ -127,18 +149,7 @@ export function MenuEditor({ menus, readOnly, onChange }: { menus: MenuStructure
     setItemDraft(null);
   };
 
-  const subEntries = React.useMemo(() => {
-    if (!activeCat) return [] as Array<[string, MenuItem[]]>;
-    return Object.entries(menus[activeCat] ?? {})
-      .map(([sub, items]) => {
-        const list = (items ?? []) as MenuItem[];
-        const filtered = q
-          ? list.filter((it) => String(it.name ?? it.name_en ?? '').toLowerCase().includes(q) || String(it.name_ar ?? '').toLowerCase().includes(q) || String(it.desc ?? it.description ?? '').toLowerCase().includes(q))
-          : list;
-        return [sub, filtered] as [string, MenuItem[]];
-      })
-      .filter(([, items]) => items.length > 0);
-  }, [menus, activeCat, q]);
+  const subEntries = React.useMemo(() => selectSubcategories(menus, activeCat, q), [menus, activeCat, q]);
 
   return (
     <div className="space-y-4">
