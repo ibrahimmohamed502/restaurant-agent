@@ -214,8 +214,13 @@ console.log('\n--- 3. only a provably safe refusal may be re-sent ---');
   // Exercise the REAL SQL, not a fake pool.
   const { claimFailedOutboundForRetry } = await import('../src/services/conversations.js');
 
+  // These cases assert the CATEGORY gate, so they run as a fully authorised
+  // caller. A scope is now mandatory: omitting it means "no brands", which
+  // correctly refuses everything — that fail-closed default is asserted
+  // separately in section 3d.
+  const AUTHORISED = { mode: 'tenant', brandIds: null };
   const claim = (id, t = tenant.id) =>
-    claimFailedOutboundForRetry({ messageId: id, conversationId: conversation.id, tenantId: t });
+    claimFailedOutboundForRetry({ messageId: id, conversationId: conversation.id, tenantId: t, scope: AUTHORISED });
 
   const rateId = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
   check('meta_rate_limit (confirmed refusal, transient) IS claimable', (await claim(rateId))?.id === rateId);
@@ -301,6 +306,104 @@ console.log('\n--- 3. only a provably safe refusal may be re-sent ---');
   check('messages have NO brand_id, so brand cannot be scoped in the claim',
     msgCols.length === 0,
     'brand isolation is carried by channels.brand_id and enforced at routing time');
+}
+
+/* ============ 3d. BRAND SCOPE INSIDE THE ATOMIC CLAIM ==================== */
+console.log('\n--- 3d. the claim enforces brand scope atomically ---');
+{
+  const { rows: [brandA] } = await pool.query(
+    `INSERT INTO brands (tenant_id, name, slug) VALUES ($1,'Brand A','brand-a') RETURNING id`,
+    [tenant.id]);
+  const { rows: [brandB] } = await pool.query(
+    `INSERT INTO brands (tenant_id, name, slug) VALUES ($1,'Brand B','brand-b') RETURNING id`,
+    [tenant.id]);
+
+  // A conversation on brand A, and one on brand B.
+  const { rows: [chanA] } = await pool.query(
+    `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name)
+     VALUES ($1,$2,'meta_dm','page_a','A') RETURNING id`, [tenant.id, brandA.id]);
+  const { rows: [convA] } = await pool.query(
+    `INSERT INTO conversations (tenant_id, channel_id, external_key)
+     VALUES ($1,$2,'PSID_A') RETURNING id`, [tenant.id, chanA.id]);
+
+  // Company-wide channel: brand_id IS NULL.
+  const { rows: [chanTenant] } = await pool.query(
+    `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name)
+     VALUES ($1,NULL,'meta_dm','page_tenant','Tenant') RETURNING id`, [tenant.id]);
+  const { rows: [convTenant] } = await pool.query(
+    `INSERT INTO conversations (tenant_id, channel_id, external_key)
+     VALUES ($1,$2,'PSID_T') RETURNING id`, [tenant.id, chanTenant.id]);
+
+  const { claimFailedOutboundForRetry } = await import('../src/services/conversations.js');
+  const scopedClaim = (messageId, conversationId, scope) =>
+    claimFailedOutboundForRetry({ messageId, conversationId, tenantId: tenant.id, scope });
+
+  const TENANT_WIDE = { mode: 'tenant', brandIds: null };
+  const ONLY_A = { mode: 'restricted', brandIds: [brandA.id] };
+  const ONLY_B = { mode: 'restricted', brandIds: [brandB.id] };
+  const NO_BRANDS = { mode: 'restricted', brandIds: [] };
+
+  // --- in scope ---
+  const inA = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
+  check('tenant-wide scope claims a brand-A message', (await scopedClaim(inA, convA.id, TENANT_WIDE))?.id === inA);
+  const inA2 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
+  check('a grant naming brand A claims a brand-A message',
+    (await scopedClaim(inA2, convA.id, ONLY_A))?.id === inA2);
+
+  // --- out of scope, and the denial must leave NO trace ---
+  const inA3 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
+  check('a grant naming brand B cannot claim a brand-A message',
+    (await scopedClaim(inA3, convA.id, ONLY_B)) === null);
+  let row = (await pool.query(`SELECT delivery_status, retry_count FROM messages WHERE id = $1`, [inA3])).rows[0];
+  check('the denied row keeps its state', row.delivery_status === 'failed' && row.retry_count === 0,
+    JSON.stringify(row));
+
+  // --- company-wide channel is never reachable by a restricted caller ---
+  const inT = await addOutbound({ conversationId: convTenant.id, status: 'failed', error: 'meta_rate_limit' });
+  check('a restricted caller cannot claim a company-wide (NULL brand) message',
+    (await scopedClaim(inT, convTenant.id, ONLY_A)) === null);
+  const inT2 = await addOutbound({ conversationId: convTenant.id, status: 'failed', error: 'meta_rate_limit' });
+  check('a tenant-wide caller CAN claim a company-wide message',
+    (await scopedClaim(inT2, convTenant.id, TENANT_WIDE))?.id === inT2);
+
+  // --- a zero-brand scope is refused, never widened ---
+  const inA4 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
+  check('a zero-brand scope claims nothing',
+    (await scopedClaim(inA4, convA.id, NO_BRANDS)) === null);
+  const inA5 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
+  check('a MISSING scope is refused, not treated as tenant-wide',
+    (await scopedClaim(inA5, convA.id, undefined)) === null);
+  const inA6 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
+  check('a MALFORMED scope is refused, not treated as tenant-wide',
+    (await scopedClaim(inA6, convA.id, { mode: 'nonsense' })) === null);
+
+  // --- brand scope must not weaken tenant isolation ---
+  const inB = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
+  const crossTenant = await claimFailedOutboundForRetry({
+    messageId: inB, conversationId: convA.id, tenantId: OTHER_TENANT.id, scope: TENANT_WIDE
+  });
+  check('a brand grant never bypasses tenant isolation', crossTenant === null);
+
+  // --- concurrency across two brands, under a restricted scope ---
+  const cA = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
+  const [r1, r2] = await Promise.all([
+    scopedClaim(cA, convA.id, ONLY_A), scopedClaim(cA, convA.id, ONLY_A)
+  ]);
+  check('two restricted operators -> exactly one winner',
+    [r1, r2].filter(Boolean).length === 1);
+  const [x1, x2] = await Promise.all([
+    scopedClaim(cA, convA.id, ONLY_B), scopedClaim(cA, convA.id, ONLY_B)
+  ]);
+  check('two operators with the WRONG brand both lose', x1 === null && x2 === null);
+  const after = (await pool.query(`SELECT delivery_status, retry_count FROM messages WHERE id = $1`, [cA])).rows[0];
+  check('exactly one transition was applied overall',
+    after.retry_count === 1 && after.delivery_status === 'pending', JSON.stringify(after));
+
+  // --- the brand is exposed for audit/reporting ---
+  const { brandVisibleToScope, BRAND_SCOPE_TENANT } = await import('../src/api/v1/brandAccess.js');
+  check('the tenant-wide scope sees the NULL-brand channel', brandVisibleToScope(null, { mode: BRAND_SCOPE_TENANT }));
+  check('a restricted scope does not', !brandVisibleToScope(null, ONLY_A));
+  check('a restricted scope sees only its own brand', brandVisibleToScope(brandA.id, ONLY_A));
 }
 
 /* ================== 4. THE ATOMIC CLAIM ON REAL webhook_events ============= */

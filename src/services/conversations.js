@@ -5,6 +5,7 @@ import {
   DELIVERY_CATEGORY,
   RETRYABLE_DELIVERY_CATEGORIES
 } from './deliveryOutcome.js';
+import { BRAND_SCOPE_TENANT } from '../api/v1/brandAccess.js';
 import crypto from 'node:crypto';
 
 /**
@@ -223,14 +224,27 @@ export async function createEscalationRecord({ tenantId, conversationId, categor
  *
  * Returns null — i.e. refuses to re-send — when the row is sent, pending (which
  * is where every UNKNOWN delivery outcome lives), missing, owned by another
- * tenant, or failed with a category that is not provably safe to re-send.
+ * tenant, outside the caller's brand scope, or failed with a category that is not
+ * provably safe to re-send.
+ *
+ * AUTHORISATION is part of the same statement: tenant (`m.tenant_id` AND
+ * `c.tenant_id`) and brand (`channels.brand_id`) are both required to match the
+ * caller. There is no separate permission check to race against.
  */
-export async function claimFailedOutboundForRetry({ tenantId, conversationId, messageId }) {
+export async function claimFailedOutboundForRetry({ tenantId, conversationId, messageId, scope }) {
   if (!tenantId || !conversationId || !messageId) {
     const err = new Error('claimFailedOutboundForRetry: tenantId/conversationId/messageId required');
     err.code = 'MISSING_RETRY_CONTEXT';
     throw err;
   }
+  // Authorisation and the state change are ONE conditional UPDATE. A separate
+  // permission check beforehand would leave a time-of-check/time-of-use window
+  // in which the brand could change before the claim landed.
+  //
+  // A missing scope is treated as RESTRICTED to zero brands, never as
+  // tenant-wide: an absent grant must not widen access.
+  const tenantWide = scope?.mode === BRAND_SCOPE_TENANT;
+  const brandIds = tenantWide ? [] : (scope?.brandIds ?? []);
   const { rows } = await pool.query(
     `UPDATE messages m
         SET delivery_status = 'pending',
@@ -238,11 +252,16 @@ export async function claimFailedOutboundForRetry({ tenantId, conversationId, me
             retry_count = m.retry_count + 1,
             last_retry_at = now()
       FROM conversations c
+      LEFT JOIN channels ch ON ch.id = c.channel_id
       WHERE m.id = $1
         AND m.conversation_id = $2
         AND c.id = m.conversation_id
         AND m.tenant_id = $3
         AND c.tenant_id = $3
+        -- BRAND SCOPE, evaluated by the database in the same statement as the
+        -- mutation. ch.brand_id IS NOT NULL means a restricted caller never
+        -- reaches a company-wide (NULL brand) channel.
+        AND ($5::boolean OR (ch.brand_id IS NOT NULL AND ch.brand_id = ANY($6::uuid[])))
         AND m.direction = 'outbound'
         AND m.sender_type = 'ai'
         AND m.delivery_status = 'failed'
@@ -254,7 +273,7 @@ export async function claimFailedOutboundForRetry({ tenantId, conversationId, me
         -- delivery_error fails the comparison and is refused as well.
         AND m.delivery_error = ANY($4::text[])
       RETURNING m.id, m.conversation_id, m.tenant_id, m.text, m.retry_count, m.provider_message_id`,
-    [messageId, conversationId, tenantId, [...RETRYABLE_DELIVERY_CATEGORIES]]
+    [messageId, conversationId, tenantId, [...RETRYABLE_DELIVERY_CATEGORIES], tenantWide, brandIds]
   );
   return rows[0] ?? null;
 }
@@ -276,7 +295,8 @@ export async function finishMessageDelivery({ tenantId, messageId, deliveryStatu
 /** Stage 4.4.7 — sanitized lookup of a conversation + its channel (for retry context). */
 export async function getConversationChannelContext({ tenantId, conversationId }) {
   const { rows } = await pool.query(
-    `SELECT c.id AS conversation_id, c.tenant_id, c.external_key, ch.id AS channel_id, ch.provider, ch.external_id, ch.status
+    `SELECT c.id AS conversation_id, c.tenant_id, c.external_key, ch.id AS channel_id,
+            ch.provider, ch.external_id, ch.status, ch.brand_id
        FROM conversations c
        LEFT JOIN channels ch ON ch.id = c.channel_id
       WHERE c.id = $1 AND c.tenant_id = $2`,

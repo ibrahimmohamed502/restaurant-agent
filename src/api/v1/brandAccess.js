@@ -1,29 +1,42 @@
 /**
- * Stage 8 Batch 2 — server-side brand access policy (single source of truth).
+ * Server-side brand access policy (single source of truth).
  *
- * Tenant ownership alone is NOT sufficient: once a company restricts a user to
- * specific brands, every brand-scoped endpoint must honour that restriction.
- * Today no per-user brand grants exist (no table, no session field), so every
- * session resolves to the tenant-wide scope and behaviour is unchanged. The
- * extension point is `auth.brandIds` on the validated session: when brand
- * grants are introduced, only `sessions.js` needs to populate it — every
- * endpoint that calls this helper inherits the rule automatically.
+ * TENANT OWNERSHIP ALONE IS NOT SUFFICIENT. Once a company restricts a user to
+ * specific brands, every brand-scoped endpoint must honour that restriction —
+ * and, critically, a MISSING grant must never be read as "everything is
+ * allowed". That default is what let any authenticated user act on any brand.
  *
- * RULES (fail-closed):
- *  - `brandIds === undefined | null` -> tenant-wide scope (all brands). This is
- *    the ONLY tenant-wide case: it means "no explicit scope was provided",
- *    pending a future explicit grants model.
- *  - `brandIds === []` -> restricted to ZERO brands (never tenant-wide): an
- *    explicit empty scope means "no brands".
- *  - non-empty array -> only the validated uuids inside it.
- *  - any other shape (string, object, number, array-like) -> malformed ->
- *    fail closed with ZERO brands. Never tenant-wide.
- *  - array holding only invalid ids -> ZERO brands.
+ * HOW SCOPE IS RESOLVED (fail-closed, in this order):
+ *
+ *   1. `brandIds` is a non-empty array of valid uuids
+ *        -> RESTRICTED to exactly those brands.
+ *   2. `brandIds === []`
+ *        -> RESTRICTED to ZERO brands. An explicit empty scope means "none".
+ *   3. `brandIds` is present but malformed (string, object, number, array-like)
+ *        -> RESTRICTED to ZERO brands. A malformed grant is never treated as
+ *           "no grant given", and never falls back to tenant-wide.
+ *   4. `brandIds` is absent (undefined | null)
+ *        -> resolved from an EXPLICIT ROLE POLICY, not from the absence of a
+ *           grant: the caller gets tenant-wide scope only if their roles carry
+ *           `brand.read` (TENANT_WIDE_BRAND_ABILITY). Every other role —
+ *           including Platform Super Admin and any unrecognised/custom role —
+ *           resolves to ZERO brands.
+ *
+ * Case 4 is the change that closes the gap. Previously an absent `brandIds`
+ * meant tenant-wide, so every session was implicitly unrestricted. It now
+ * requires a positive authorisation.
+ *
+ * Platform Super Admin deliberately gets NO tenant-wide scope: platform
+ * privileges must not imply the right to see or act on a company's brands.
+ *
+ * FURTHER RULES:
  *  - A restricted caller NEVER sees company-wide (brand_id IS NULL) channels:
  *    those are not attributable to one of their brands.
- *  - A brand outside the scope is indistinguishable from a brand that does not
- *    exist (404), so the API cannot be used as an existence oracle.
+ *  - A brand outside the scope is indistinguishable from one that does not
+ *    exist, so an endpoint cannot be used as an existence oracle.
  */
+
+import { hasTenantWideBrandScope } from '../../auth/abilities.js';
 
 export const BRAND_SCOPE_TENANT = 'tenant';
 export const BRAND_SCOPE_RESTRICTED = 'restricted';
@@ -35,26 +48,29 @@ export const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
 /**
  * Resolve the caller's brand scope from the authenticated session.
  *
- * Fail-closed: only an absent scope (undefined/null) is tenant-wide. Anything
- * that is not a valid brand-id array yields zero-brand access.
+ * Accepts the dashboard's `req.auth` and the v1 API's `req.v1` — both expose
+ * `{ roles, brandIds }`. Fail-closed: only an explicit role policy or an
+ * explicit grant ever yields more than zero brands.
  */
-export function brandScopeFromSession(v1) {
-  const raw = v1?.brandIds;
+export function brandScopeFromSession(auth) {
+  const raw = auth?.brandIds;
+  const roles = auth?.roles ?? [];
 
-  // The only tenant-wide case: no explicit scope was provided.
-  if (raw === undefined || raw === null) {
-    return { mode: BRAND_SCOPE_TENANT, brandIds: null };
+  // An explicit, well-formed grant list is the strongest signal.
+  if (Array.isArray(raw)) {
+    return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [...new Set(raw.filter(isUuid))] };
   }
 
-  // Malformed scope (string, object, number, array-like) -> fail closed.
-  if (!Array.isArray(raw)) {
+  // Present but malformed -> fail closed. NEVER falls through to tenant-wide.
+  if (raw !== undefined && raw !== null) {
     return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [] };
   }
 
-  // An array is an explicit scope: keep only valid, unique uuids.
-  // [] and all-invalid arrays intentionally resolve to ZERO brands.
-  const brandIds = [...new Set(raw.filter(isUuid))];
-  return { mode: BRAND_SCOPE_RESTRICTED, brandIds };
+  // Absent: resolve from an explicit role policy, not from the missing grant.
+  if (hasTenantWideBrandScope(roles)) {
+    return { mode: BRAND_SCOPE_TENANT, brandIds: null };
+  }
+  return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [] };
 }
 
 /** Is a channel's brand visible under this scope? */
@@ -75,4 +91,28 @@ export async function brandIsAccessible({ db, tenantId, brandId, scope }) {
     [brandId, tenantId]
   );
   return Boolean(rows[0]);
+}
+
+/**
+ * SQL fragments that apply this scope inside an existing query.
+ *
+ * Used so authorisation is evaluated by the DATABASE in the same statement as
+ * the mutation it guards — closing the time-of-check/time-of-use window between
+ * a separate permission query and the retry claim.
+ *
+ * `alias` is the channels table alias (e.g. 'ch').
+ */
+export function brandScopeSql(alias = 'ch', { tenantWideParam = 1, brandIdsParam = 2 } = {}) {
+  return {
+    // NULL brand_id (company-wide channel) is visible ONLY to a tenant-wide caller.
+    //
+    // The parameter positions are bound placeholders ($1, $2, ...), NOT literal
+    // numbers: interpolating `5` instead of `$5` would emit `(5::boolean ...)`,
+    // which is a different expression entirely.
+    sql: `($${tenantWideParam}::boolean OR (${alias}.brand_id IS NOT NULL AND ${alias}.brand_id = ANY($${brandIdsParam}::uuid[])))`,
+    params: (scope) => [
+      scope?.mode === BRAND_SCOPE_TENANT,
+      scope?.mode === BRAND_SCOPE_TENANT ? [] : (scope?.brandIds ?? [])
+    ]
+  };
 }

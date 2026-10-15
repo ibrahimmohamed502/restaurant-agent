@@ -343,9 +343,19 @@ console.log('\n--- Brand scope shapes (fail-closed semantics) ---');
   const U = 'a0000000-0000-4000-8000-000000000001';
 
   // unit: scope resolution
-  check('undefined scope -> tenant-wide', brandScopeFromSession({ brandIds: undefined }).mode === BRAND_SCOPE_TENANT);
-  check('null scope -> tenant-wide', brandScopeFromSession({ brandIds: null }).mode === BRAND_SCOPE_TENANT);
-  check('missing v1 -> tenant-wide', brandScopeFromSession({}).mode === BRAND_SCOPE_TENANT);
+  // An ABSENT grant is no longer tenant-wide. Tenant-wide scope must be derived
+  // from an EXPLICIT ability (brand.read), never from the absence of a grant.
+  check('undefined grant -> denied unless the role carries brand.read',
+    brandScopeFromSession({ roles: ['Head of Growth'], brandIds: undefined }).mode === BRAND_SCOPE_RESTRICTED);
+  check('null grant -> denied unless the role carries brand.read',
+    brandScopeFromSession({ roles: ['Head of Growth'], brandIds: null }).mode === BRAND_SCOPE_RESTRICTED);
+  check('missing session -> fail closed to zero brands',
+    brandScopeFromSession({}).mode === BRAND_SCOPE_RESTRICTED &&
+    brandScopeFromSession({}).brandIds.length === 0);
+  check('an explicitly authorised role DOES get tenant-wide',
+    brandScopeFromSession({ roles: ['Company Admin'], brandIds: undefined }).mode === BRAND_SCOPE_TENANT);
+  check('Platform Super Admin is NOT tenant-wide',
+    brandScopeFromSession({ roles: ['Platform Super Admin'] }).mode === BRAND_SCOPE_RESTRICTED);
   check('[] -> restricted, zero brands', (() => { const s = brandScopeFromSession({ brandIds: [] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.length === 0; })());
   check('[valid] -> restricted to that brand', (() => { const s = brandScopeFromSession({ brandIds: [U] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.join() === U; })());
   check('all-invalid array -> restricted, zero brands', (() => { const s = brandScopeFromSession({ brandIds: ['x', 1, {}] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.length === 0; })());

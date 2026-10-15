@@ -16,6 +16,11 @@ import {
   deliveryErrorCategory
 } from './services/conversations.js';
 import { resolveMetaChannel } from './services/channelResolver.js';
+import { can } from './auth/abilities.js';
+import {
+  brandScopeFromSession,
+  brandScopeSql
+} from './api/v1/brandAccess.js';
 import { createMetaClient } from './facebook.js';
 import { enabled, pool } from './db/pg.js';
 import { requireAuth, makeLegacyToken } from './auth/middleware.js';
@@ -102,6 +107,41 @@ dashboardRouter.get('/dashboard/logout', async (req, res) => {
 
 /* ---------------------------------- API ---------------------------------- */
 
+/**
+ * Authorisation guard for conversation-scoped dashboard routes.
+ *
+ * Two independent checks, both mandatory:
+ *   1. an explicit ABILITY (server-authoritative; the UI is not a boundary);
+ *   2. a BRAND SCOPE derived from that ability or from explicit grants.
+ *
+ * Returns the resolved scope, or null after having already sent the denial.
+ * Never grants tenant-wide access implicitly: brandScopeFromSession() resolves
+ * an absent grant from the caller's abilities, and denies everything else.
+ */
+function authorizeConversationAccess(req, res, ability, { denyCode = 'INSUFFICIENT_PERMISSION' } = {}) {
+  const roles = req.auth?.roles ?? [];
+  if (!can(roles, ability)) {
+    audit({
+      tenantId: req.auth?.tenantId ?? null,
+      actorUserId: req.auth?.user?.id ?? null,
+      action: 'dashboard.access.denied',
+      objectType: 'conversation',
+      objectId: String(req.params?.id ?? req.params?.conversationId ?? ''),
+      ip: req.ip,
+      metadata: { ability, deniedBy: 'ability' }
+    });
+    res.status(403).json({ error: 'forbidden', code: denyCode });
+    return null;
+  }
+  return brandScopeFromSession(req.auth);
+}
+
+/** SQL fragment + params that restrict a channels-joined query to this scope. */
+function scopePredicate(scope, startParam) {
+  const f = brandScopeSql('ch', { tenantWideParam: startParam, brandIdsParam: startParam + 1 });
+  return { sql: f.sql, params: f.params(scope) };
+}
+
 dashboardRouter.get('/dashboard/api/me', requireAuth, (req, res) => {
   res.json({ user: req.auth.user, roles: req.auth.roles });
 });
@@ -121,6 +161,12 @@ dashboardRouter.post('/dashboard/api/escalations/:id/resolve', requireAuth, asyn
 
 dashboardRouter.get('/dashboard/api/conversations', requireAuth, async (req, res) => {
   if (!enabled) return res.json([]);
+  const scope = authorizeConversationAccess(req, res, 'conversation.read');
+  if (!scope) return;
+
+  // Brand visibility is enforced in the query itself, so a restricted operator
+  // never sees another brand's conversations in the inbox at all.
+  const sc = scopePredicate(scope, 2);
   const { rows } = await pool.query(
     `SELECT c.id, c.state, c.last_message_at, c.language, c.priority,
             cu.display_name AS customer_name, ch.provider,
@@ -130,23 +176,31 @@ dashboardRouter.get('/dashboard/api/conversations', requireAuth, async (req, res
      LEFT JOIN customers cu ON cu.id = c.customer_id
      LEFT JOIN channels ch ON ch.id = c.channel_id
      WHERE c.tenant_id = $1
+       AND ${sc.sql}
      ORDER BY c.last_message_at DESC NULLS LAST
      LIMIT 100`,
-    [req.auth.tenantId]
+    [req.auth.tenantId, ...sc.params]
   );
   res.json(rows);
 });
 
 dashboardRouter.get('/dashboard/api/conversations/:id', requireAuth, async (req, res) => {
   if (!enabled) return res.json(null);
+  const scope = authorizeConversationAccess(req, res, 'conversation.read');
+  if (!scope) return;
+
+  const sc = scopePredicate(scope, 3);
   const { rows: [conv] } = await pool.query(
     `SELECT c.*, cu.display_name AS customer_name, ch.provider, ch.display_name AS channel_name
      FROM conversations c
      LEFT JOIN customers cu ON cu.id = c.customer_id
      LEFT JOIN channels ch ON ch.id = c.channel_id
-     WHERE c.id = $1 AND c.tenant_id = $2`,
-    [req.params.id, req.auth.tenantId]
+     WHERE c.id = $1 AND c.tenant_id = $2
+       AND ${sc.sql}`,
+    [req.params.id, req.auth.tenantId, ...sc.params]
   );
+  // Out-of-scope is indistinguishable from non-existent: the API must not work
+  // as an existence oracle for brands the caller cannot see.
   if (!conv) return res.status(404).json({ error: 'not found' });
   const { rows: messages } = await pool.query(
     `SELECT id, direction, sender_type, text, created_at, delivery_status, delivery_error, retry_count, last_retry_at FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 200`,
@@ -176,18 +230,62 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
   if (!tenantId) return res.status(403).json({ error: 'forbidden', code: 'TENANT_REQUIRED' });
   if (!enabled) return res.status(503).json({ error: 'unavailable', code: 'DB_DISABLED' });
 
+  // (1) AUTHORISATION — an explicit server-side ability, before anything is
+  //     claimed. 'conversation.reply' is held by Company Admin and Supervisor
+  //     only. Agent has 'conversation.reply_own' and is therefore denied;
+  //     Platform Super Admin holds platform.* / company.* and is denied, so
+  //     platform privileges never imply sending on behalf of a company.
+  if (!can(req.auth?.roles ?? [], 'conversation.reply')) {
+    audit({
+      tenantId,
+      actorUserId: req.auth?.user?.id ?? null,
+      action: 'message.retry',
+      objectType: 'message',
+      objectId: messageId,
+      ip: req.ip,
+      metadata: { outcome: 'denied', deniedBy: 'ability', conversationId }
+    });
+    return res.status(403).json({ error: 'forbidden', code: 'INSUFFICIENT_PERMISSION' });
+  }
+
+  // (2) BRAND SCOPE — derived from an explicit ability or explicit grants.
+  //     An absent grant is NOT tenant-wide: brandScopeFromSession() denies
+  //     anything the caller's roles do not authorise.
+  const scope = brandScopeFromSession(req.auth);
+
   // process-local concurrency guard (defense in depth; the DB claim is authoritative)
   if (retryLocks.has(messageId)) return res.status(409).json({ error: 'retry in progress', code: 'RETRY_IN_PROGRESS' });
   const lock = (async () => {
-    // 1) atomic claim
-    const claimed = await claimFailedOutboundForRetry({ tenantId, conversationId, messageId });
+    // (3) ATOMIC CLAIM — tenant AND brand are evaluated inside the same
+    //     conditional UPDATE that performs the state change, so there is no
+    //     window between a permission check and the mutation.
+    const claimed = await claimFailedOutboundForRetry({ tenantId, conversationId, messageId, scope });
     if (!claimed) {
       // The database refused the claim. Explain why so the operator is not left
       // clicking a button that can never work — and, more importantly, so an
       // UNKNOWN delivery outcome is never mistaken for a safe retry.
       const why = await describeRetryRefusal({ tenantId, conversationId, messageId });
+      audit({
+        tenantId,
+        actorUserId: req.auth?.user?.id ?? null,
+        action: 'message.retry',
+        objectType: 'message',
+        objectId: messageId,
+        ip: req.ip,
+        metadata: { outcome: 'refused', reason: why, conversationId }
+      });
       return res.status(409).json({ error: 'not retryable', code: 'NOT_RETRYABLE', reason: why });
     }
+
+    audit({
+      tenantId,
+      actorUserId: req.auth?.user?.id ?? null,
+      action: 'message.retry',
+      objectType: 'message',
+      objectId: messageId,
+      ip: req.ip,
+      metadata: { outcome: 'claimed', conversationId, brandScope: scope.mode }
+    });
 
     try {
       // 2) re-resolve current routing + credential from the DB (no env fallback)
@@ -221,11 +319,30 @@ dashboardRouter.post('/dashboard/api/conversations/:conversationId/messages/:mes
       // 4) terminal state
       const updated = await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'sent', providerMessageId: providerId });
       logEvent({ channel: 'retry', customerName: null, customerId: null, message: `retry ${messageId} → sent`, reply: null, intent: null, inScope: true, lang: null, escalate: false });
+      audit({
+        tenantId,
+        actorUserId: req.auth?.user?.id ?? null,
+        action: 'message.retry',
+        objectType: 'message',
+        objectId: messageId,
+        ip: req.ip,
+        metadata: { outcome: 'sent', conversationId }
+      });
       return res.json({ ok: true, message: updated });
     } catch (err) {
       const category = deliveryErrorCategory(err);
       await finishMessageDelivery({ tenantId, messageId, deliveryStatus: 'failed', errorCategory: category }).catch(() => {});
       console.warn(`⚠️ retry ${messageId} failed [${category}]`);
+      // Audited with a sanitized category only — never a provider message.
+      audit({
+        tenantId,
+        actorUserId: req.auth?.user?.id ?? null,
+        action: 'message.retry',
+        objectType: 'message',
+        objectId: messageId,
+        ip: req.ip,
+        metadata: { outcome: 'failed', category, conversationId }
+      });
       return res.status(502).json({ ok: false, code: 'RETRY_FAILED', category });
     } finally {
       retryLocks.delete(messageId);
