@@ -9,9 +9,16 @@
  * grants are introduced, only `sessions.js` needs to populate it — every
  * endpoint that calls this helper inherits the rule automatically.
  *
- * RULES:
- *  - `brandIds === null/undefined`  → tenant-wide scope (all brands of the tenant)
- *  - `brandIds = [...]`             → restricted to exactly those brands
+ * RULES (fail-closed):
+ *  - `brandIds === undefined | null` -> tenant-wide scope (all brands). This is
+ *    the ONLY tenant-wide case: it means "no explicit scope was provided",
+ *    pending a future explicit grants model.
+ *  - `brandIds === []` -> restricted to ZERO brands (never tenant-wide): an
+ *    explicit empty scope means "no brands".
+ *  - non-empty array -> only the validated uuids inside it.
+ *  - any other shape (string, object, number, array-like) -> malformed ->
+ *    fail closed with ZERO brands. Never tenant-wide.
+ *  - array holding only invalid ids -> ZERO brands.
  *  - A restricted caller NEVER sees company-wide (brand_id IS NULL) channels:
  *    those are not attributable to one of their brands.
  *  - A brand outside the scope is indistinguishable from a brand that does not
@@ -25,12 +32,28 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
 
-/** Resolve the caller's brand scope from the authenticated session. */
+/**
+ * Resolve the caller's brand scope from the authenticated session.
+ *
+ * Fail-closed: only an absent scope (undefined/null) is tenant-wide. Anything
+ * that is not a valid brand-id array yields zero-brand access.
+ */
 export function brandScopeFromSession(v1) {
   const raw = v1?.brandIds;
-  if (!Array.isArray(raw)) return { mode: BRAND_SCOPE_TENANT, brandIds: null };
+
+  // The only tenant-wide case: no explicit scope was provided.
+  if (raw === undefined || raw === null) {
+    return { mode: BRAND_SCOPE_TENANT, brandIds: null };
+  }
+
+  // Malformed scope (string, object, number, array-like) -> fail closed.
+  if (!Array.isArray(raw)) {
+    return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [] };
+  }
+
+  // An array is an explicit scope: keep only valid, unique uuids.
+  // [] and all-invalid arrays intentionally resolve to ZERO brands.
   const brandIds = [...new Set(raw.filter(isUuid))];
-  if (brandIds.length === 0) return { mode: BRAND_SCOPE_TENANT, brandIds: null };
   return { mode: BRAND_SCOPE_RESTRICTED, brandIds };
 }
 

@@ -176,6 +176,11 @@ const noRole = makeUser({ id: 'norole-a', tenantId: 't-a' });
 const adminB = makeUser({ id: 'admin-b', tenantId: 't-b', roleName: 'Company Admin', roleId: 'r-ca-b' });
 // Restricted to Brand One only (b-a1) - drives brand-level authorization tests.
 const scopedA = makeUser({ id: 'scoped-a', tenantId: 't-a', roleName: 'Supervisor', roleId: 'r-sup-b', brandIds: [ID.bA1] });
+// Fail-closed scope shapes (empty, all-invalid, malformed non-array, mixed).
+const zeroScopeA = makeUser({ id: 'zero-a', tenantId: 't-a', roleName: 'Supervisor', roleId: 'r-sup-c', brandIds: [] });
+const invalidScopeA = makeUser({ id: 'invalid-a', tenantId: 't-a', roleName: 'Supervisor', roleId: 'r-sup-d', brandIds: ['not-a-uuid', 42, null] });
+const malformedScopeA = makeUser({ id: 'malformed-a', tenantId: 't-a', roleName: 'Supervisor', roleId: 'r-sup-e', brandIds: 'brand-one' });
+const mixedScopeA = makeUser({ id: 'mixed-a', tenantId: 't-a', roleName: 'Supervisor', roleId: 'r-sup-f', brandIds: [ID.bA1, 'garbage', ID.bA2] });
 
 console.log('\nStage 8 Batch 2 -- Integrations API (read-only)\n');
 
@@ -331,7 +336,61 @@ console.log('\n--- Brand-level authorization (caller restricted to one brand) --
   check('Restricted scope cannot be widened by query params', (spoof.body?.data?.integrations ?? []).map((i) => i.id).join() === ID.chAMeta);
 }
 
-/* ---------- 8. auth + CSRF + read-only surface ---------- */
+/* ---------- 8. brand scope shapes: fail closed ---------- */
+console.log('\n--- Brand scope shapes (fail-closed semantics) ---');
+{
+  const { brandScopeFromSession, BRAND_SCOPE_TENANT, BRAND_SCOPE_RESTRICTED } = await import('../src/api/v1/brandAccess.js');
+  const U = 'a0000000-0000-4000-8000-000000000001';
+
+  // unit: scope resolution
+  check('undefined scope -> tenant-wide', brandScopeFromSession({ brandIds: undefined }).mode === BRAND_SCOPE_TENANT);
+  check('null scope -> tenant-wide', brandScopeFromSession({ brandIds: null }).mode === BRAND_SCOPE_TENANT);
+  check('missing v1 -> tenant-wide', brandScopeFromSession({}).mode === BRAND_SCOPE_TENANT);
+  check('[] -> restricted, zero brands', (() => { const s = brandScopeFromSession({ brandIds: [] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.length === 0; })());
+  check('[valid] -> restricted to that brand', (() => { const s = brandScopeFromSession({ brandIds: [U] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.join() === U; })());
+  check('all-invalid array -> restricted, zero brands', (() => { const s = brandScopeFromSession({ brandIds: ['x', 1, {}] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.length === 0; })());
+  check('mixed array -> only validated ids', (() => { const s = brandScopeFromSession({ brandIds: [U, 'x', null, U] }); return s.brandIds.length === 1 && s.brandIds[0] === U; })());
+  check('string scope -> fail closed, never tenant-wide', (() => { const s = brandScopeFromSession({ brandIds: 'abc' }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.length === 0; })());
+  check('object scope -> fail closed', (() => { const s = brandScopeFromSession({ brandIds: { 0: U, length: 1 } }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.length === 0; })());
+  check('number scope -> fail closed', brandScopeFromSession({ brandIds: 7 }).mode === BRAND_SCOPE_RESTRICTED);
+
+  // endpoint: [] -> zero-brand access
+  const empty = await call('/integrations', { cookie: `lwc_session=${zeroScopeA}`, csrf: CSRF });
+  check('[] scope: listing returns nothing', empty.status === 200 && (empty.body?.data?.integrations ?? []).length === 0, `got ${empty.status} ${(empty.body?.data?.integrations ?? []).length}`);
+  check('[] scope: reported as restricted with brandCount 0', empty.body?.data?.scope?.mode === 'restricted' && empty.body?.data?.scope?.brandCount === 0);
+  const emptyFilter = await call(`/integrations?brandId=${ID.bA1}`, { cookie: `lwc_session=${zeroScopeA}`, csrf: CSRF });
+  check('[] scope: brandId filter -> 404 BRAND_NOT_FOUND', emptyFilter.status === 404 && emptyFilter.body?.error?.code === 'BRAND_NOT_FOUND', `got ${emptyFilter.status}`);
+  const emptyStatus = await call(`/integrations/${ID.chAMeta}/status`, { cookie: `lwc_session=${zeroScopeA}`, csrf: CSRF });
+  check('[] scope: channel status -> 404', emptyStatus.status === 404 && emptyStatus.body?.error?.code === 'CHANNEL_NOT_FOUND', `got ${emptyStatus.status}`);
+  const emptyCompany = await call(`/integrations/${ID.chADisabled}/status`, { cookie: `lwc_session=${zeroScopeA}`, csrf: CSRF });
+  check('[] scope: company-wide channel status -> 404', emptyCompany.status === 404, `got ${emptyCompany.status}`);
+
+  // endpoint: all-invalid array -> zero-brand access
+  const inv = await call('/integrations', { cookie: `lwc_session=${invalidScopeA}`, csrf: CSRF });
+  check('all-invalid scope: listing returns nothing', (inv.body?.data?.integrations ?? []).length === 0);
+  const invStatus = await call(`/integrations/${ID.chAMeta}/status`, { cookie: `lwc_session=${invalidScopeA}`, csrf: CSRF });
+  check('all-invalid scope: channel status -> 404', invStatus.status === 404, `got ${invStatus.status}`);
+
+  // endpoint: malformed non-array -> fail closed
+  const mal = await call('/integrations', { cookie: `lwc_session=${malformedScopeA}`, csrf: CSRF });
+  check('malformed scope: listing returns nothing (never tenant-wide)', (mal.body?.data?.integrations ?? []).length === 0);
+  const malStatus = await call(`/integrations/${ID.chAMeta}/status`, { cookie: `lwc_session=${malformedScopeA}`, csrf: CSRF });
+  check('malformed scope: channel status -> 404', malStatus.status === 404, `got ${malStatus.status}`);
+  const malCompany = await call(`/integrations/${ID.chADisabled}/status`, { cookie: `lwc_session=${malformedScopeA}`, csrf: CSRF });
+  check('malformed scope: company-wide channel status -> 404', malCompany.status === 404, `got ${malCompany.status}`);
+
+  // endpoint: mixed array -> only the valid brand(s)
+  const mixed = await call('/integrations', { cookie: `lwc_session=${mixedScopeA}`, csrf: CSRF });
+  check('mixed scope: only valid brands are listed', (mixed.body?.data?.integrations ?? []).map((i) => i.id).sort().join() === [ID.chADM, ID.chAMeta].sort().join(), JSON.stringify((mixed.body?.data?.integrations ?? []).map((i) => i.id)));
+  const mixedCompany = await call(`/integrations/${ID.chADisabled}/status`, { cookie: `lwc_session=${mixedScopeA}`, csrf: CSRF });
+  check('mixed scope: company-wide channel still hidden', mixedCompany.status === 404, `got ${mixedCompany.status}`);
+
+  // tenant-wide caller unaffected
+  const wide = await call('/integrations', { cookie: `lwc_session=${adminA}`, csrf: CSRF });
+  check('Tenant-wide caller unaffected by fail-closed shapes', (wide.body?.data?.integrations ?? []).length === 3 && wide.body?.data?.scope?.mode === 'tenant');
+}
+
+/* ---------- 9. auth + CSRF + read-only surface ---------- */
 console.log('\n--- Authentication, CSRF and read-only surface ---');
 {
   const anon = await call('/integrations');
