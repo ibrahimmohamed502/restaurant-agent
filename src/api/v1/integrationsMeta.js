@@ -15,9 +15,11 @@
  *   - A flow is authorized by (flowId + token hash + tenant + user + expiry +
  *     unused) verified in ONE UPDATE; a valid flowId without the matching token
  *     connects nothing and consumes nothing.
- *   - Credentials are stored with UPDATE-then-INSERT so a reconnect rotates the
- *     SAME row and collapses any historical duplicates (there is no unique
- *     constraint on provider_credentials — verified against production).
+ *   - Credentials are stored by rotating the EXACT row the channel resolver
+ *     selects (same ORDER BY), so a reconnect never adds a duplicate row and
+ *     never deletes a historical one. There is no unique constraint on
+ *     provider_credentials — verified against production — so this code is the
+ *     only thing preventing a second row.
  *   - Page tokens have no documented expiry -> expires_at stays NULL.
  *   - No access token, code or flow secret ever reaches a response, log or audit.
  *   - Provider failures are logged as sanitized codes only.
@@ -262,11 +264,24 @@ export function createIntegrationsMetaRouter({ pool }) {
           channelId = ins.rows[0].id;
         }
 
-        // Credential: UPDATE the newest existing row, then collapse any
-        // historical duplicates. provider_credentials has NO unique constraint
-        // on (channel_id, kind) — verified against production — so we cannot
-        // rely on ON CONFLICT. Page tokens have no documented expiry -> NULL.
+        // Credential: rotate the EXACT row the resolver will select.
+        //
+        //   * Historical rows are NEVER deleted. A reconnect rewrites one row in
+        //     place, so the row count for a channel can only stay the same or
+        //     grow by one (the very first connect), never shrink.
+        //   * provider_credentials has NO unique constraint on
+        //     (channel_id, kind) — verified against production — so there is no
+        //     conflict target and nothing but this code prevents a second row.
+        //     That is why we update rather than insert when a row exists.
+        //   * The ORDER BY below is identical to channelResolver.js and to the
+        //     resubscribe/reverify lookups, so the token written is provably the
+        //     token that will be used for inbound routing.
+        //   * The advisory lock serializes concurrent connects for the same page
+        //     inside this transaction, so two requests can never both observe
+        //     "no credential row" and each insert one.
+        //   * Page tokens have no documented expiry -> expires_at stays NULL.
         const enc = encrypt(pageToken);
+        await client.query(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [`meta:page:${pageId}`]);
         const updated = await client.query(
           `UPDATE provider_credentials
               SET value_encrypted = $3, iv = $4, expires_at = NULL, last_rotated_at = now()
@@ -278,13 +293,7 @@ export function createIntegrationsMetaRouter({ pool }) {
             RETURNING id`,
           [channelId, req.v1.tenantId, enc.value, enc.iv]
         );
-        if (updated.rowCount > 0) {
-          await client.query(
-            `DELETE FROM provider_credentials
-              WHERE channel_id = $1 AND tenant_id = $2 AND kind = 'page_access_token' AND id <> $3`,
-            [channelId, req.v1.tenantId, updated.rows[0].id]
-          );
-        } else {
+        if (updated.rowCount === 0) {
           await client.query(
             `INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, expires_at)
              VALUES ($1,$2,'page_access_token',$3,$4,NULL)`,

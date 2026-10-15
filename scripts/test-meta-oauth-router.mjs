@@ -41,13 +41,47 @@ const DB = {
   pages: [],
   channels: [],
   credentials: [],
+  rotateCount: 0,
+  rotateLog: [],
+  pending: [],
   seq: { flow: 0, page: 0, chan: 0, cred: 0, state: 0 }
 };
 const reset = () => {
   DB.flows = []; DB.pages = []; DB.channels = []; DB.credentials = [];
+  DB.rotateCount = 0; DB.rotateLog = []; DB.pending = [];
+};
+
+/** Adds a credential row the way production history looks: a frozen timestamp. */
+const addCred = ({ channelId, tenantId = 't-1', label, createdAt, id }) => {
+  const seq = DB.credentials.length;
+  const row = {
+    id: id ?? `cr-${++DB.seq.cred}`,
+    seq,
+    tenant_id: tenantId,
+    channel_id: channelId,
+    kind: 'page_access_token',
+    value_encrypted: Buffer.from(`HIST-${label}`),
+    iv: `iv-${label}`,
+    expires_at: null,
+    created_at: createdAt ?? new Date(1700000000000 + seq * 1000).toISOString()
+  };
+  DB.credentials.push(row);
+  return row;
 };
 
 const sha256 = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+
+// The resolver's ordering: created_at DESC, id DESC. Used by the mock so the
+// test verifies the SAME row is rotated that inbound routing would select.
+const resolverOrder = (a, b) => (a.created_at === b.created_at ? (a.id < b.id ? 1 : -1) : (a.created_at > b.created_at ? -1 : 1));
+
+/** What channelResolver would return for a channel (row id + ciphertext). */
+const resolverPick = (channelId, tenantId = 't-1') => {
+  const rows = DB.credentials
+    .filter((c) => c.channel_id === channelId && c.tenant_id === tenantId && c.kind === 'page_access_token')
+    .sort(resolverOrder);
+  return rows[0] ?? null;
+};
 
 const db = {
   query: async (sql, params = []) => {
@@ -86,9 +120,10 @@ const db = {
       return { rows: [] };
     }
     if (/select value_encrypted, iv from provider_credentials/.test(s)) {
+      // resubscribe/reverify must use the resolver's ORDER BY (created_at DESC, id DESC)
       const rows = DB.credentials
         .filter((c) => c.channel_id === params[0] && c.tenant_id === params[1] && c.kind === 'page_access_token')
-        .sort((a, b) => b.seq - a.seq)
+        .sort(resolverOrder)
         .slice(0, 1);
       return { rows };
     }
@@ -113,21 +148,37 @@ const db = {
     return { rows: [] };
   },
   connect: async () => {
-    const st = { mode: 'tx', rolledBack: false };
+    // Minimal transaction isolation so a concurrent INSERT is invisible to
+    // other transactions until COMMIT, exactly like Postgres READ COMMITTED.
+    const st = { mode: 'tx', rolledBack: false, ownInserts: [] };
     return {
       query: async (sql, params = []) => {
         const s = sql.replace(/\s+/g, ' ').trim().toLowerCase();
+        // Yield between statements so concurrent requests really interleave
+        // inside their transactions (otherwise each transaction would run to
+        // completion before the next one starts and no race could occur).
+        await new Promise((r) => setImmediate(r));
 
-        if (s === 'begin') { st.pending = []; return { rows: [], rowCount: 0 }; }
-        if (s === 'commit') return { rows: [], rowCount: 0 };
+        if (s === 'begin') { st.ownInserts = []; return { rows: [], rowCount: 0 }; }
+        if (s === 'commit') {
+          for (const p of DB.pending) { if (p.tx === st) DB.pending.splice(DB.pending.indexOf(p), 1); }
+          return { rows: [], rowCount: 0 };
+        }
         if (s === 'rollback') {
           st.rolledBack = true;
-          for (const op of st.pending ?? []) op();
+          // undo this transaction's own inserts
+          for (const ext of st.ownInserts) {
+            const idx = DB.channels.findIndex((c) => c.external_id === ext && c.provider === 'meta');
+            if (idx >= 0) DB.channels.splice(idx, 1);
+          }
+          for (let i = DB.pending.length - 1; i >= 0; i--) if (DB.pending[i].tx === st) DB.pending.splice(i, 1);
           return { rows: [], rowCount: 0 };
         }
 
         if (/select id, tenant_id, brand_id from channels where provider = 'meta'/.test(s)) {
-          return { rows: DB.channels.filter((c) => c.external_id === params[0]) };
+          // only committed rows + this transaction's own inserts
+          const mine = st.ownInserts.includes(params[0]);
+          return { rows: DB.channels.filter((c) => c.external_id === params[0] && (mine || !DB.pending.some((p) => p.external_id === params[0]))) };
         }
         if (/update channels set status = 'active', subscription_state = 'pending_subscription'/.test(s)) {
           const c = DB.channels.find((x) => x.id === params[0]);
@@ -136,29 +187,53 @@ const db = {
           return { rows: [], rowCount: c ? 1 : 0 };
         }
         if (/insert into channels/.test(s)) {
+          // Production has channels_meta_external_uidx: UNIQUE (external_id) for
+          // provider='meta'. Model it so the 23505 -> 409 path is exercised.
+          const taken = DB.channels.some((c) => c.external_id === params[2] && c.provider === 'meta')
+            || DB.pending.some((p) => p.external_id === params[2]);
+          if (taken) {
+            const e = new Error('duplicate key value violates unique constraint "channels_meta_external_uidx"');
+            e.code = '23505';
+            throw e;
+          }
           const row = { id: chanUuid(++DB.seq.chan), tenant_id: params[0], brand_id: params[1], provider: 'meta', external_id: params[2], display_name: params[3], status: 'active', subscription_state: 'pending_subscription' };
           DB.channels.push(row);
+          DB.pending.push({ external_id: params[2], tx: st });
+          st.ownInserts.push(params[2]);
           return { rows: [row], rowCount: 1 };
+        }
+        // Advisory lock — serialized per page inside the transaction.
+        if (/select pg_advisory_xact_lock/.test(s)) {
+          st.lockKey = params[0];
+          return { rows: [], rowCount: 0 };
         }
         if (/update provider_credentials\s+set value_encrypted = \$3, iv = \$4, expires_at = null, last_rotated_at = now\(\)/.test(s)) {
           const [channelId, tenantId, encVal] = params;
-          const cands = DB.credentials.filter((c) => c.channel_id === channelId && c.tenant_id === tenantId && c.kind === 'page_access_token')
-            .sort((a, b) => b.seq - a.seq);
-          const newest = cands[0];
-          if (!newest) return { rows: [], rowCount: 0 };
-          newest.value_encrypted = encVal;
-          newest.iv = params[3];
-          newest.expires_at = null;
-          return { rows: [{ id: newest.id }], rowCount: 1 };
+          const cands = DB.credentials
+            .filter((c) => c.channel_id === channelId && c.tenant_id === tenantId && c.kind === 'page_access_token')
+            .sort(resolverOrder);
+          const selected = cands[0];
+          if (!selected) return { rows: [], rowCount: 0 };
+          // Rotate the SELECTED row only. Nothing is ever deleted or added.
+          selected.value_encrypted = encVal;
+          selected.iv = params[3];
+          selected.expires_at = null;
+          selected.rotations = (selected.rotations ?? 0) + 1;
+          DB.rotateCount += 1;
+          DB.rotateLog.push(selected.id);
+          return { rows: [{ id: selected.id }], rowCount: 1 };
         }
         if (/delete from provider_credentials/.test(s)) {
-          const before = DB.credentials.length;
-          const keep = params[2];
-          DB.credentials = DB.credentials.filter((c) => !(c.channel_id === params[0] && c.tenant_id === params[1] && c.kind === 'page_access_token' && c.id !== keep));
-          return { rows: [], rowCount: before - DB.credentials.length };
+          // Guard: the connect path must never delete a credential again.
+          throw new Error('REGRESSION: connect attempted to DELETE a provider_credentials row');
         }
         if (/insert into provider_credentials/.test(s)) {
-          const row = { id: `cr-${++DB.seq.cred}`, seq: DB.seq.cred, tenant_id: params[0], channel_id: params[1], kind: 'page_access_token', value_encrypted: params[2], iv: params[3], expires_at: null };
+          const seq = DB.credentials.length;
+          const row = {
+            id: `cr-${++DB.seq.cred}`, seq, tenant_id: params[0], channel_id: params[1],
+            kind: 'page_access_token', value_encrypted: params[2], iv: params[3], expires_at: null,
+            created_at: new Date(1700000000000 + seq * 1000).toISOString()
+          };
           DB.credentials.push(row);
           return { rows: [], rowCount: 1 };
         }
@@ -359,8 +434,8 @@ console.log('\n--- Finding 3: brand binding ---');
   check('rejected reconnect wrote no credential', DB.credentials.length === 1, `creds=${DB.credentials.length}`);
 }
 
-/* ============ Finding 1: credential preservation on reconnect ============ */
-console.log('\n--- Finding 1: reconnect rotates ONE credential row ---');
+/* ============ Reconnect: rotate in place, preserve history ============ */
+console.log('\n--- Reconnect rotates the resolver row and PRESERVES history ---');
 {
   reset();
   // first connect creates channel + credential
@@ -369,25 +444,181 @@ console.log('\n--- Finding 1: reconnect rotates ONE credential row ---');
   check('first connect created one credential', DB.credentials.length === 1);
   const channelId = DB.channels[0].id;
 
-  // simulate the REAL production condition: historical duplicate credential rows
-  DB.credentials.push({ id: 'cr-dup-1', seq: 0, tenant_id: 't-1', channel_id: channelId, kind: 'page_access_token', value_encrypted: Buffer.from('OLD-1'), iv: 'i1', expires_at: null });
-  DB.credentials.push({ id: 'cr-dup-2', seq: 1, tenant_id: 't-1', channel_id: channelId, kind: 'page_access_token', value_encrypted: Buffer.from('OLD-2'), iv: 'i2', expires_at: null });
-  check('fixture reproduces duplicate credentials', DB.credentials.length === 3);
+  // Reproduce the REAL production shape: one channel, 5 historical rotations,
+  // distinct created_at values, no ties.
+  const history = ['T1', 'T2', 'T3', 'T4'].map((label, i) =>
+    addCred({ channelId, label, id: `cr-hist-${i + 1}`, createdAt: new Date(Date.UTC(2026, 9, 8, 11, 35, 42 + i * 3600)).toISOString() })
+  );
+  check('fixture reproduces duplicate credentials', DB.credentials.length === 5);
+  const snapshot = new Map(DB.credentials.map((c) => [c.id, c.value_encrypted.toString()]));
+  const resolverRowBefore = resolverPick(channelId);
 
   const again = await seedFlow({ brandId: B1 });
   const reconnect = await call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: again.flowToken, body: { flowId: again.flow.id, pageId: 'PAGE-1' } });
   check('reconnect succeeds', reconnect.status === 200, `${reconnect.status}`);
   check('reconnect reported as reconnected', reconnect.body?.data?.reconnected === true);
   check('reconnect did NOT create a second channel', DB.channels.length === 1);
-  check('reconnect left EXACTLY ONE credential row', DB.credentials.length === 1, `creds=${DB.credentials.length}`);
-  check('reconnect rotated the stored token', !DB.credentials[0].value_encrypted.toString().includes('OLD-'));
-  check('page-token expiry stays NULL', DB.credentials[0].expires_at === null);
+  check('reconnect PRESERVED every credential row', DB.credentials.length === 5, `creds=${DB.credentials.length}`);
+  check('reconnect deleted nothing (row ids unchanged)',
+    history.every((h) => DB.credentials.some((c) => c.id === h.id)));
+  check('reconnect rotated exactly ONE row', DB.rotateCount === 1, `rotations=${DB.rotateCount}`);
+  check('the rotated row is the one the resolver selects',
+    DB.rotateLog[0] === resolverRowBefore?.id && resolverPick(channelId)?.id === resolverRowBefore?.id,
+    `rotated=${DB.rotateLog[0]} resolver=${resolverPick(channelId)?.id} before=${resolverRowBefore?.id}`);
+  check('the resolver still selects that same row after rotation', resolverPick(channelId)?.id === resolverRowBefore?.id);
+  check('the resolver row now holds the NEW token',
+    !resolverPick(channelId).value_encrypted.toString().startsWith('HIST-'));
+  check('every NON-selected historical row kept its exact ciphertext',
+    history.filter((h) => h.id !== resolverRowBefore?.id)
+      .every((h) => {
+        const row = DB.credentials.find((c) => c.id === h.id);
+        return row && row.value_encrypted.toString() === snapshot.get(h.id);
+      }),
+    'only the resolver-selected row may be rewritten');
+  check('the selected row was rewritten in place, not replaced',
+    DB.credentials.some((c) => c.id === resolverRowBefore?.id));
+  check('page-token expiry stays NULL on the rotated row', resolverPick(channelId).expires_at === null);
 
-  // reconnect must not touch another channel's credentials
-  DB.credentials.push({ id: 'cr-other', seq: 99, tenant_id: 't-1', channel_id: 'aaaaaaaa-0000-4000-8000-00000000000a', kind: 'page_access_token', value_encrypted: Buffer.from('KEEP'), iv: 'i9', expires_at: null });
+  // a second reconnect rotates the same row again — still no new rows
   const third = await seedFlow({ brandId: B1 });
   await call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: third.flowToken, body: { flowId: third.flow.id, pageId: 'PAGE-1' } });
-  check('unrelated channel credential untouched', DB.credentials.some((c) => c.id === 'cr-other'));
+  check('a second reconnect still leaves 5 rows', DB.credentials.length === 5, `creds=${DB.credentials.length}`);
+  check('a second reconnect rotated the same row twice', DB.rotateCount === 2 && DB.rotateLog[1] === DB.rotateLog[0]);
+
+  // reconnect must not touch another channel's credentials
+  addCred({ channelId: 'aaaaaaaa-0000-4000-8000-00000000000a', label: 'KEEP', id: 'cr-other' });
+  const fourth = await seedFlow({ brandId: B1 });
+  await call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: fourth.flowToken, body: { flowId: fourth.flow.id, pageId: 'PAGE-1' } });
+  check('unrelated channel credential untouched',
+    DB.credentials.some((c) => c.id === 'cr-other' && c.value_encrypted.toString() === 'HIST-KEEP'));
+}
+
+/* ============ Duplicate preservation under a tie on created_at ============ */
+console.log('\n--- Duplicate rows sharing created_at select deterministically ---');
+{
+  reset();
+  const f = await seedFlow({ brandId: B1 });
+  await call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: f.flowToken, body: { flowId: f.flow.id, pageId: 'PAGE-1' } });
+  const channelId = DB.channels[0].id;
+  // Same max(created_at) on two rows: without an id tie-break the resolver
+  // could pick either one. The connect step must rotate the SAME one.
+  const tie = '2026-10-11T09:34:57.573Z';
+  addCred({ channelId, label: 'TIE-A', id: 'cr-tie-a', createdAt: tie });
+  addCred({ channelId, label: 'TIE-B', id: 'cr-tie-b', createdAt: tie });
+  check('fixture has two rows sharing the max created_at',
+    DB.credentials.filter((c) => c.created_at === tie).length === 2);
+  const expected = DB.credentials.filter((c) => c.created_at === tie).sort(resolverOrder)[0].id;
+
+  const g = await seedFlow({ brandId: B1 });
+  await call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: g.flowToken, body: { flowId: g.flow.id, pageId: 'PAGE-1' } });
+  check('tied rows are both preserved', DB.credentials.length === 3, `creds=${DB.credentials.length}`);
+  check('the rotated row is the deterministic winner (created_at DESC, id DESC)', DB.rotateLog[0] === expected, `rotated=${DB.rotateLog[0]} expected=${expected}`);
+  check('the resolver picks the rotated row', resolverPick(channelId)?.id === expected);
+  const loser = DB.credentials.find((c) => c.id !== expected && c.created_at === tie);
+  check('the non-selected tied row keeps its ciphertext', loser.value_encrypted.toString() === 'HIST-TIE-' + (expected === 'cr-tie-b' ? 'A' : 'B'));
+}
+
+/* ============ Tenant isolation of the credential write ============ */
+console.log('\n--- Tenant isolation: the credential write never crosses tenants ---');
+{
+  reset();
+  const f = await seedFlow({ brandId: B1 });
+  await call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: f.flowToken, body: { flowId: f.flow.id, pageId: 'PAGE-1' } });
+  const channelId = DB.channels[0].id;
+  // A row owned by another tenant sitting on the same channel must be ignored
+  // by the UPDATE (tenant_id is part of the WHERE clause) and never rotated.
+  addCred({ channelId, tenantId: 't-other', label: 'FOREIGN', id: 'cr-foreign' });
+  const foreignBefore = DB.credentials.find((c) => c.id === 'cr-foreign').value_encrypted.toString();
+
+  const g = await seedFlow({ brandId: B1 });
+  const res = await call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: g.flowToken, body: { flowId: g.flow.id, pageId: 'PAGE-1' } });
+  check('reconnect with a foreign-tenant row present still succeeds', res.status === 200, `${res.status}`);
+  check('the foreign-tenant credential was NOT rotated',
+    DB.credentials.find((c) => c.id === 'cr-foreign').value_encrypted.toString() === foreignBefore);
+  check('the foreign-tenant credential was NOT deleted', DB.credentials.some((c) => c.id === 'cr-foreign'));
+  check('the tenant-owned row is the one the resolver sees', resolverPick(channelId, 't-1')?.tenant_id === 't-1');
+  check('the resolver for the other tenant sees only its own row', resolverPick(channelId, 't-other')?.id === 'cr-foreign');
+
+  // claiming a page owned by another tenant must not touch anything
+  const foreignChannel = { id: 'bbbbbbbb-0000-4000-8000-00000000000b', tenant_id: 't-other', brand_id: BX, provider: 'meta', external_id: 'PAGE-9', display_name: 'Other', status: 'active', subscription_state: 'subscribed' };
+  DB.channels.push(foreignChannel);
+  addCred({ channelId: foreignChannel.id, tenantId: 't-other', label: 'OTHER-TENANT', id: 'cr-other-tenant' });
+  const h = await seedFlow({ brandId: B1 });
+  // The page IS in this flow's server-held set (the user really did authorize
+  // it), so the request reaches the ownership check instead of being refused as
+  // an unowned page.
+  const enc = encrypt('EAA-other-tenant-page-token');
+  DB.pages.push({ flow_id: h.flow.id, page_id: 'PAGE-9', token_encrypted: enc.value, iv: enc.iv });
+  const claim = await call('/integrations/meta/connect', {
+    method: 'POST', token: ADMIN, flowToken: h.flowToken, body: { flowId: h.flow.id, pageId: 'PAGE-9' }
+  });
+  check('claiming another tenant page -> 409', claim.status === 409 && claim.body?.error?.code === 'PAGE_ALREADY_CONNECTED', `${claim.status} ${claim.body?.error?.code}`);
+  check('the other tenant credential is untouched',
+    DB.credentials.find((c) => c.id === 'cr-other-tenant').value_encrypted.toString() === 'HIST-OTHER-TENANT');
+  check('the other tenant channel keeps its owner', DB.channels.find((c) => c.id === foreignChannel.id).tenant_id === 't-other');
+  check('the other tenant channel keeps its brand', DB.channels.find((c) => c.id === foreignChannel.id).brand_id === BX);
+}
+
+/* ============ Brand isolation of the credential write ============ */
+console.log('\n--- Brand isolation: a rejected reconnect writes no credential ---');
+{
+  reset();
+  const f = await seedFlow({ brandId: B1 });
+  await call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: f.flowToken, body: { flowId: f.flow.id, pageId: 'PAGE-1' } });
+  const channelId = DB.channels[0].id;
+  const before = DB.credentials.map((c) => [c.id, c.value_encrypted.toString()]);
+  const rotationsBefore = DB.rotateCount;
+
+  const g = await seedFlow({ brandId: B2 });
+  const res = await call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: g.flowToken, body: { flowId: g.flow.id, pageId: 'PAGE-1' } });
+  check('reconnect under a different brand -> 409 BRAND_CONFLICT', res.status === 409 && res.body?.error?.code === 'BRAND_CONFLICT', `${res.status} ${res.body?.error?.code}`);
+  check('no credential row was rotated', DB.rotateCount === rotationsBefore);
+  check('no credential ciphertext changed', DB.credentials.every((c, i) => c.value_encrypted.toString() === before[i][1]));
+  check('channel brand unchanged', DB.channels.find((c) => c.id === channelId).brand_id === B1);
+  check('channel owner unchanged', DB.channels.find((c) => c.id === channelId).tenant_id === 't-1');
+}
+
+/* ============ Concurrent reconnects on a channel that has duplicates ============ */
+console.log('\n--- Concurrent reconnects cannot add or remove credential rows ---');
+{
+  reset();
+  const f = await seedFlow({ brandId: B1 });
+  await call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: f.flowToken, body: { flowId: f.flow.id, pageId: 'PAGE-1' } });
+  const channelId = DB.channels[0].id;
+  for (let i = 0; i < 4; i++) addCred({ channelId, label: `H${i}`, id: `cr-hist-c${i}`, createdAt: new Date(Date.UTC(2026, 9, 10, 8, 0, i * 60)).toISOString() });
+  const rowsBefore = DB.credentials.length;
+  const idsBefore = new Set(DB.credentials.map((c) => c.id));
+
+  // 5 independent flows, all connecting the SAME page at the same time.
+  const flows = [];
+  for (let i = 0; i < 5; i++) flows.push(await seedFlow({ brandId: B1 }));
+  const results = await Promise.all(flows.map((fl) =>
+    call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: fl.flowToken, body: { flowId: fl.flow.id, pageId: 'PAGE-1' } })
+  ));
+  check('every concurrent reconnect succeeded', results.every((r) => r.status === 200), results.map((r) => r.status).join(','));
+  check('credential row count is unchanged', DB.credentials.length === rowsBefore, `${DB.credentials.length} vs ${rowsBefore}`);
+  check('no credential row id disappeared', DB.credentials.every((c) => idsBefore.has(c.id)));
+  check('every rotation hit the SAME resolver row',
+    new Set(DB.rotateLog).size === 1, `rotated rows: ${[...new Set(DB.rotateLog)].join(',')}`);
+  check('the rotated row is the one the resolver selects', DB.rotateLog.at(-1) === resolverPick(channelId)?.id);
+  check('exactly one channel exists', DB.channels.length === 1);
+}
+
+/* ============ Concurrent FIRST connects on a fresh page ============ */
+console.log('\n--- Concurrent first connects create exactly one credential row ---');
+{
+  reset();
+  const flows = [];
+  for (let i = 0; i < 5; i++) flows.push(await seedFlow({ brandId: B1 }));
+  const results = await Promise.all(flows.map((fl) =>
+    call('/integrations/meta/connect', { method: 'POST', token: ADMIN, flowToken: fl.flowToken, body: { flowId: fl.flow.id, pageId: 'PAGE-1' } })
+  ));
+  const created = results.filter((r) => r.status === 200).length;
+  const conflicts = results.filter((r) => r.status === 409).length;
+  check('exactly one concurrent first connect wins the channel', created === 1, `statuses=${results.map((r) => r.status).join(',')}`);
+  check('the losers are rejected by the unique index (409)', conflicts === 4, `conflicts=${conflicts}`);
+  check('exactly one channel row exists', DB.channels.length === 1, `channels=${DB.channels.length}`);
+  check('exactly one credential row exists', DB.credentials.length === 1, `creds=${DB.credentials.length}`);
 }
 
 /* ============ Finding 1/3 on resubscribe & reverify ============ */

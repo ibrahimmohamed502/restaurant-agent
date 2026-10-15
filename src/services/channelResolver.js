@@ -93,12 +93,18 @@ export async function resolveMetaChannel(pageId, { includeCredential = false, db
 
   // 4) Credential — loaded ONLY when requested, ownership-scoped to (channel_id, tenant_id).
   //    A credential for another channel/tenant cannot be selected by id-guessing.
+  //
+  //    Duplicate page_access_token rows exist in production (one channel has 5
+  //    historical rotations). The newest row wins; `id DESC` breaks ties so the
+  //    choice is deterministic instead of arbitrary. This ORDER BY is kept
+  //    IDENTICAL to the connect step in api/v1/integrationsMeta.js, so the row a
+  //    reconnect rotates is provably the row routing uses.
   if (includeCredential) {
     const { rows: creds } = await executor.query(
       `SELECT value_encrypted, iv
        FROM provider_credentials
        WHERE channel_id = $1 AND tenant_id = $2 AND kind = 'page_access_token'
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, id DESC
        LIMIT 1`,
       [channel.id, channel.tenant_id]
     );

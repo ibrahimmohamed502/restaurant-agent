@@ -159,9 +159,11 @@ export function createIntegrationsRouter({ pool }) {
       }
       const channel = rows[0];
       const { rows: creds } = await req.db.query(
+        // Same ORDER BY as channelResolver + the connect step, so a retry uses
+        // the credential that inbound routing would use.
         `SELECT value_encrypted, iv FROM provider_credentials
           WHERE channel_id = $1 AND tenant_id = $2 AND kind = 'page_access_token'
-          ORDER BY created_at DESC LIMIT 1`,
+          ORDER BY created_at DESC, id DESC LIMIT 1`,
         [id, req.v1.tenantId]
       );
       if (!creds[0]) return apiError(res, 404, 'NO_CREDENTIAL', 'no page credential stored for this integration');
@@ -204,9 +206,11 @@ export function createIntegrationsRouter({ pool }) {
       }
       const channel = rows[0];
       const { rows: creds } = await req.db.query(
+        // Same ORDER BY as channelResolver + the connect step, so a retry uses
+        // the credential that inbound routing would use.
         `SELECT value_encrypted, iv FROM provider_credentials
           WHERE channel_id = $1 AND tenant_id = $2 AND kind = 'page_access_token'
-          ORDER BY created_at DESC LIMIT 1`,
+          ORDER BY created_at DESC, id DESC LIMIT 1`,
         [id, req.v1.tenantId]
       );
       if (!creds[0]) return apiError(res, 404, 'NO_CREDENTIAL', 'no page credential stored for this integration');
