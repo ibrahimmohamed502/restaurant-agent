@@ -18,3 +18,15 @@ yarn-error.log*
 .git
 .gitignore
 data/
+
+# --- Group C: never bake operational artefacts or credentials into an image ---
+# rollback source snapshots (contain a full copy of an older tree)
+rollbacks/
+# PostgreSQL dumps and plain-SQL backups created on the host
+*.dump
+**/*.dump
+backup*.sql
+**/backup*.sql
+# any env-shaped file, wherever it lives (e.g. *_stack.env under rollbacks/)
+*.env
+**/*.env
