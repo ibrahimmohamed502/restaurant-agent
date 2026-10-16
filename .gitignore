@@ -1,0 +1,87 @@
+# =============================================================================
+# Git ignore rules.
+#
+# WHY THIS FILE EXISTS
+# The repository had NO .gitignore, while .dockerignore did. That meant the
+# Docker build context was protected but the Git working tree was not: a local
+# .env, a database dump, or data/dashboard.json (which holds raw customer names
+# and message text written by the legacy JSON store) could be swept into a
+# commit by accident.
+#
+# This file mirrors .dockerignore for Git, and adds the build/VCS artefacts that
+# .dockerignore cannot cover. It excludes files ONLY - nothing here deletes or
+# modifies anything already on a server.
+#
+# The verified state at the time this was added: no live secret is tracked in
+# Git. .env.example is intentionally tracked and contains placeholders only.
+# =============================================================================
+
+# ---- secrets: real values never belong in the repository ----
+.env
+.env.*
+!.env.example
+*.env
+**/*.env
+*.pem
+*.key
+*.p12
+*.pfx
+*credential*
+*secret*
+
+# ---- runtime data: the legacy JSON store and any local database artefacts ----
+# data/dashboard.json holds customer names, inbound message text and AI reply text.
+data/
+*.dump
+**/*.dump
+*.sql.gz
+backup*.sql
+**/backup*.sql
+*.sqlite
+*.sqlite3
+
+# ---- local operational snapshots kept on the VPS, not in Git ----
+rollbacks/
+pre-groupc-backup-*/
+pre-batch*-backup-*/
+
+# ---- dependencies ----
+node_modules/
+**/node_modules/
+.pnpm-store/
+.yarn/
+vendor/
+
+# ---- build output ----
+.next/
+**/.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# ---- logs and caches ----
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.cache/
+coverage/
+.nyc_output/
+tmp/
+temp/
+
+# ---- editors and OS ----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---- VCS ----
+.git/
+.gitattributes.bak
+*.orig
+*.rej
+*.patch

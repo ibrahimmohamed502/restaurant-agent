@@ -11,11 +11,23 @@
  * `db` defaults to the shared pool and is injectable for tests.
  */
 import { pool as defaultPool } from '../db/pg.js';
+import { brandVisibleToScope } from '../api/v1/brandAccess.js';
 
 /* ------------------------------------------------------------------ reads */
 
 /** Resolve the knowledge source for a tenant (+ optional brand). */
-export async function resolveKnowledgeSource({ tenantId, brandId = null, db = defaultPool }) {
+/**
+ * Resolve the tenant's knowledge source.
+ *
+ * brandScope is the caller's resolved brand scope. A source belonging to a brand
+ * the caller is not granted resolves to null - identical to "no such source" -
+ * so this cannot be used to probe which brands exist. A company-wide source
+ * (brand_id IS NULL) is likewise hidden from a restricted caller, because it is
+ * not attributable to any one of their brands.
+ *
+ * Every knowledge route funnels through here, so this one check scopes all of them.
+ */
+export async function resolveKnowledgeSource({ tenantId, brandId = null, brandScope = null, db = defaultPool }) {
   const params = [tenantId];
   let sql = `SELECT id, tenant_id, brand_id, kind, title FROM knowledge_sources WHERE tenant_id = $1`;
   if (brandId) {
@@ -24,7 +36,10 @@ export async function resolveKnowledgeSource({ tenantId, brandId = null, db = de
   }
   sql += ` ORDER BY created_at ASC LIMIT 1`;
   const { rows } = await db.query(sql, params);
-  return rows[0] ?? null;
+  const source = rows[0] ?? null;
+  if (!source) return null;
+  if (brandScope && !brandVisibleToScope(source.brand_id, brandScope)) return null;
+  return source;
 }
 
 /** Current PUBLISHED structured knowledge (never a draft). */

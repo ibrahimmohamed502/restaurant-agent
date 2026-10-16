@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { pool } from '../db/pg.js';
+import { effectiveCustomAbilities } from './abilities.js';
 
 const COOKIE = 'lwc_session';
 const TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 7);
@@ -20,7 +21,32 @@ export async function createSession({ tenantId, userId, ip, userAgent }) {
   return { token, expiresAt };
 }
 
-/** Validate a cookie token → { user, roles, tenantId } or null. */
+/**
+ * Load this user's live brand grants.
+ *
+ * Per USER, never per role. Returns the explicit brand list plus whether the
+ * user holds an audited "every brand inside my company" delegation. Absence of
+ * any row yields an empty list, which brandAccess.js treats as ZERO brands.
+ */
+async function loadBrandGrants(userId, tenantId) {
+  const [granted, scopeAll] = await Promise.all([
+    pool.query(
+      `SELECT brand_id FROM user_brand_grants
+        WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL`,
+      [userId, tenantId]
+    ),
+    pool.query(
+      `SELECT 1 FROM user_brand_scope_all
+        WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL`,
+      [userId, tenantId]
+    )
+  ]);
+  return {
+    brandIds: granted.rows.map((r) => r.brand_id),
+    allBrandsInCompany: scopeAll.rows.length > 0
+  };
+}
+
 export async function validateSession(token) {
   if (!token) return null;
   const { rows } = await pool.query(
@@ -33,7 +59,9 @@ export async function validateSession(token) {
   if (!row || row.status !== 'active') return null;
 
   const { rows: roles } = await pool.query(
-    `SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1`,
+    `SELECT r.name, r.permissions
+       FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+      WHERE ur.user_id = $1`,
     [row.user_id]
   );
 
@@ -47,14 +75,28 @@ export async function validateSession(token) {
     roleNames.push('Platform Super Admin');
   }
 
+  // Custom roles take their abilities from roles.permissions; built-in roles
+  // keep the reviewed hardcoded map. Neither path can confer brand scope.
+  const perRolePermissions = Object.fromEntries(
+    roles.map((r) => [r.name, r.permissions])
+  );
+  const customAbilities = effectiveCustomAbilities(roleNames, perRolePermissions);
+
+  const grants = await loadBrandGrants(row.user_id, row.tenant_id);
+
   return {
     tenantId: row.tenant_id,
     sessionId: row.session_id,
     user: { id: row.user_id, email: row.email, name: row.name },
-    roles: roleNames
-    // Brand restriction extension point: when per-user brand grants exist,
-    // return the allowed brand ids here. Absent = tenant-wide scope, which is
-    // what api/v1/brandAccess.js enforces for every brand-scoped endpoint.
+    roles: roleNames,
+    // Brand scope is resolved per request from the grant tables, so a grant or a
+    // revoke is effective on the next request without re-issuing the session.
+    // Platform Super Admin is deliberately NOT given brand scope here: platform
+    // privileges never imply access to a company's brands (see abilities.js).
+    brandIds: grants.allBrandsInCompany ? null : grants.brandIds,
+    allBrandsInCompany: grants.allBrandsInCompany,
+    isPlatformSuperAdmin: psa.length > 0,
+    customAbilities
   };
 }
 

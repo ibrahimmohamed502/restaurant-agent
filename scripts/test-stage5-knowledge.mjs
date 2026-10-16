@@ -2,8 +2,13 @@
 process.env.DATABASE_URL = 'postgres://stub:stub@127.0.0.1:1/stub';
 import express from 'express';
 
+// R1: brand ids must be real uuids - brandScopeFromSession() discards anything
+// that is not a well-formed uuid, so a placeholder like 'b1' would resolve to an
+// empty grant list and make this test pass or fail for the wrong reason.
+const BRAND_B1 = '11111111-1111-1111-1111-111111111111';
+
 const rows = {
-  sources: [{ id: 'src1', tenant_id: 't1', brand_id: 'b1', kind: 'menu', title: 'LWC KB' }],
+  sources: [{ id: 'src1', tenant_id: 't1', brand_id: BRAND_B1, kind: 'menu', title: 'LWC KB' }],
   documents: [{ id: 'doc1', source_id: 'src1', version: 3, status: 'published', structured: { restaurantName: 'LWC', menus: { A: { B: [{ name: 'X', price: '1.000' }] } } } }],
   drafts: [],
   history: []
@@ -59,7 +64,15 @@ const pool = {
 const { createApiV1Router } = await import('../src/api/v1/index.js');
 const app = express();
 app.use(express.json());
-app.use('/api/v1', createApiV1Router({ pool, validateSessionFn: async () => ({ tenantId: 't1', user: { id: 'u1', email: 'a@b.co', name: 'Admin' }, roles: ['Company Admin'] }) }));
+// R1: the injected session must state its brand authorization explicitly.
+// `brandIds: null` + `allBrandsInCompany: true` mirrors exactly what migration
+// 015's backfill gives a Company Admin; a bare session with no brand fields
+// now resolves to ZERO brands by design.
+const ADMIN_SCOPE = { brandIds: null, allBrandsInCompany: true };
+const AGENT_SCOPE = { brandIds: [BRAND_B1], allBrandsInCompany: false };
+const NO_SCOPE = { brandIds: [], allBrandsInCompany: false };
+
+app.use('/api/v1', createApiV1Router({ pool, validateSessionFn: async () => ({ tenantId: 't1', user: { id: 'u1', email: 'a@b.co', name: 'Admin' }, roles: ['Company Admin'], ...ADMIN_SCOPE }) }));
 const srv = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
 const base = `http://127.0.0.1:${srv.address().port}/api/v1`;
 const CSRF = 'test-csrf-token';
@@ -108,7 +121,7 @@ check('POST /knowledge/discard resets the draft', discarded.status === 200 && di
 // RBAC: a read-only role can read but not edit/publish
 const app2 = express();
 app2.use(express.json());
-app2.use('/api/v1', createApiV1Router({ pool, validateSessionFn: async () => ({ tenantId: 't1', user: { id: 'u2', email: 'a@b.co', name: 'Agent' }, roles: ['Agent'] }) }));
+app2.use('/api/v1', createApiV1Router({ pool, validateSessionFn: async () => ({ tenantId: 't1', user: { id: 'u2', email: 'a@b.co', name: 'Agent' }, roles: ['Agent'], ...AGENT_SCOPE }) }));
 const srv2 = await new Promise((r) => { const s = app2.listen(0, '127.0.0.1', () => r(s)); });
 const base2 = `http://127.0.0.1:${srv2.address().port}/api/v1`;
 const roRead = await fetch(base2 + '/knowledge', { headers: { Cookie: 'lwc_session=test; csrf_token=test-csrf-token', 'x-csrf-token': 'test-csrf-token' } }).then((r) => r.status);
@@ -119,11 +132,21 @@ const noSource = { query: async () => ({ rows: [] }) };
 const app3 = express();
 app3.use(express.json());
 app3.use((req, _res, next) => { next(); });
-app3.use('/api/v1', createApiV1Router({ pool: noSource, validateSessionFn: async () => ({ tenantId: 'tX', user: { id: 'u' }, roles: ['Company Admin'] }) }));
+app3.use('/api/v1', createApiV1Router({ pool: noSource, validateSessionFn: async () => ({ tenantId: 'tX', user: { id: 'u' }, roles: ['Company Admin'], ...ADMIN_SCOPE }) }));
 const srv3 = await new Promise((r) => { const s = app3.listen(0, '127.0.0.1', () => r(s)); });
 const nf = await fetch(`http://127.0.0.1:${srv3.address().port}/api/v1/knowledge`, { headers: { Cookie: 'lwc_session=test; csrf_token=test-csrf-token', 'x-csrf-token': 'test-csrf-token' } }).then(async (r) => ({ s: r.status, b: await r.json() }));
 check('tenant without a knowledge source → 404 (no cross-tenant fallback)', nf.s === 404 && nf.b.error.code === 'KNOWLEDGE_SOURCE_NOT_FOUND');
 
+// R1 regression: a session holding NO brand grant must not see a knowledge
+// source at all - not even the tenant-wide admin's. Absence of a grant is
+// never read as "everything is allowed".
+const app4 = express();
+app4.use(express.json());
+app4.use('/api/v1', createApiV1Router({ pool, validateSessionFn: async () => ({ tenantId: 't1', user: { id: 'u4', email: 'n@b.co', name: 'Ungranted' }, roles: ['Company Admin'], ...NO_SCOPE }) }));
+const srv4 = await new Promise((r) => { const s = app4.listen(0, '127.0.0.1', () => r(s)); });
+const ug = await fetch(`http://127.0.0.1:${srv4.address().port}/api/v1/knowledge`, { headers: { Cookie: 'lwc_session=test; csrf_token=test-csrf-token', 'x-csrf-token': 'test-csrf-token' } }).then(async (r) => ({ s: r.status, b: await r.json() }));
+check('R1: an ungranted caller gets 404 even as Company Admin (grant != role)', ug.s === 404 && ug.b.error.code === 'KNOWLEDGE_SOURCE_NOT_FOUND', `got ${ug.s}`);
+
 console.log(`\n${failed === 0 ? '🎉' : '💥'} ${passed} passed, ${failed} failed\n`);
-srv.close(); srv2.close(); srv3.close();
+srv.close(); srv2.close(); srv3.close(); srv4.close();
 process.exit(failed === 0 ? 0 : 1);

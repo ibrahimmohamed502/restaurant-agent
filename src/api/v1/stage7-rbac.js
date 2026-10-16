@@ -38,7 +38,7 @@ export {
 /** Express guard: requires one of the given abilities. */
 export function requireAbility(...abilities) {
   return (req, res, next) => {
-    if (!abilities.some((a) => can(req.v1?.roles, a))) {
+    if (!abilities.some((a) => can(req.v1?.roles, a, req.v1?.customAbilities))) {
       return apiError(res, 403, 'FORBIDDEN', 'insufficient permissions');
     }
     next();

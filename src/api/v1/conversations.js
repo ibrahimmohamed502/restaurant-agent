@@ -5,14 +5,21 @@
  */
 import express from 'express';
 import { requireV1Auth } from './index.js';
+import { requireAbility } from './stage7-rbac.js';
+import { brandScopeFromSession, brandScopeSql } from './brandAccess.js';
 
 export function createConversationsRouter({ pool }) {
   const router = express.Router();
   router.use(requireV1Auth);
 
-  router.get('/', async (req, res) => {
+  router.get('/', requireAbility('conversation.read'), async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 50, 100);
     try {
+      // R1: the list is filtered by the caller's brand scope inside the same
+      // statement that reads it, so a conversation outside the scope is never
+      // selected and cannot leak through ordering or pagination.
+      const scope = brandScopeFromSession(req.v1);
+      const bs = brandScopeSql('ch', { tenantWideParam: 1, brandIdsParam: 2 });
       const { rows } = await pool.query(
         `SELECT c.id, c.state, c.language, c.last_message_at,
                 cu.display_name AS customer_name,
@@ -23,10 +30,10 @@ export function createConversationsRouter({ pool }) {
            FROM conversations c
            LEFT JOIN customers cu ON cu.id = c.customer_id
            LEFT JOIN channels ch ON ch.id = c.channel_id
-          WHERE c.tenant_id = $1
+          WHERE c.tenant_id = $3 AND ${bs.sql}
           ORDER BY c.last_message_at DESC NULLS LAST
-          LIMIT $2`,
-        [req.v1.tenantId, limit]
+          LIMIT $4`,
+        [...bs.params(scope), req.v1.tenantId, limit]
       );
       return res.json({
         data: rows.map((r) => ({
@@ -45,8 +52,12 @@ export function createConversationsRouter({ pool }) {
     }
   });
 
-  router.get('/:id', async (req, res) => {
+  router.get('/:id', requireAbility('conversation.read'), async (req, res) => {
     try {
+      // R1: detail enforces the same scope. An out-of-scope conversation returns
+      // 404, identical to "does not exist", so this is not an existence oracle.
+      const scope = brandScopeFromSession(req.v1);
+      const bs = brandScopeSql('ch', { tenantWideParam: 1, brandIdsParam: 2 });
       const { rows: [conv] } = await pool.query(
         `SELECT c.id, c.state, c.language, c.created_at,
                 cu.display_name AS customer_name,
@@ -54,8 +65,8 @@ export function createConversationsRouter({ pool }) {
            FROM conversations c
            LEFT JOIN customers cu ON cu.id = c.customer_id
            LEFT JOIN channels ch ON ch.id = c.channel_id
-          WHERE c.id = $1 AND c.tenant_id = $2`,
-        [req.params.id, req.v1.tenantId]
+          WHERE c.id = $3 AND c.tenant_id = $4 AND ${bs.sql}`,
+        [...bs.params(scope), req.params.id, req.v1.tenantId]
       );
       if (!conv) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'conversation not found' } });
       const { rows: messages } = await pool.query(

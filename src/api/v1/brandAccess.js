@@ -54,22 +54,33 @@ export const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
  */
 export function brandScopeFromSession(auth) {
   const raw = auth?.brandIds;
-  const roles = auth?.roles ?? [];
+
+  // Platform Super Admin NEVER receives brand scope. Platform-level privileges
+  // are a separate boundary and must not imply access to a company's brands or
+  // conversations, even if a stray delegation row were to exist for that user.
+  //
+  // EITHER signal is sufficient to deny. Requiring the boolean alone would make
+  // this depend on one caller populating one field correctly; a session whose
+  // role list names PSA must be refused even if isPlatformSuperAdmin is absent.
+  if (auth?.isPlatformSuperAdmin === true
+    || (Array.isArray(auth?.roles) && auth.roles.includes('Platform Super Admin'))) {
+    return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [] };
+  }
+
+  // null is the ONE representation of company-wide access, and it is issued only
+  // when sessions.js confirmed a live all-brands-within-company delegation row.
+  // It is never produced from a role list.
+  if (raw === null && auth?.allBrandsInCompany === true) {
+    return { mode: BRAND_SCOPE_TENANT, brandIds: null };
+  }
 
   // An explicit, well-formed grant list is the strongest signal.
   if (Array.isArray(raw)) {
     return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [...new Set(raw.filter(isUuid))] };
   }
 
-  // Present but malformed -> fail closed. NEVER falls through to tenant-wide.
-  if (raw !== undefined && raw !== null) {
-    return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [] };
-  }
-
-  // Absent: resolve from an explicit role policy, not from the missing grant.
-  if (hasTenantWideBrandScope(roles)) {
-    return { mode: BRAND_SCOPE_TENANT, brandIds: null };
-  }
+  // Everything else - absent, malformed, unreadable, or a null list without a
+  // confirmed delegation - resolves to ZERO brands. Never tenant-wide.
   return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [] };
 }
 

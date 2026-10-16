@@ -87,7 +87,11 @@ const ch = await asAdmin('/channels');
 check('GET /channels → 200 with tenant channels', ch.status === 200 && ch.j.data?.length === 1 && ch.j.data[0].provider === 'meta');
 check('channels response never exposes credentials', !JSON.stringify(ch.j).includes('value_encrypted') && !JSON.stringify(ch.j).includes('token'));
 const chSql = sqlLog.filter((s) => /FROM channels c/.test(s)).pop() ?? '';
-check('channels SQL never touches provider_credentials', !chSql.includes('provider_credentials') && chSql.includes('c.tenant_id = $1'));
+// R1: the brand predicate binds as $1/$2, so the tenant predicate is now $3.
+// Assert its PRESENCE and the brand scoping, not a literal placeholder number.
+check('channels SQL never touches provider_credentials', !chSql.includes('provider_credentials'));
+check('R1: channels SQL is tenant-scoped AND brand-scoped',
+  /c\.tenant_id = \$3/.test(chSql) && /\$1::boolean/.test(chSql) && /c\.brand_id/.test(chSql), chSql.slice(0, 120));
 const chAnon = await call('/channels');
 check('GET /channels unauthenticated → 401', chAnon.status === 401 && chAnon.j.error.code === 'UNAUTHENTICATED');
 
