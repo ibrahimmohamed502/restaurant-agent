@@ -161,14 +161,62 @@ console.log('\n=== 1. MISSING GRANT NEVER MEANS TENANT-WIDE ===');
     Object.values(A.ROLE_ABILITIES).every((ab) => !ab.includes(A.TENANT_WIDE_BRAND_ABILITY)));
 }
 
-console.log('\n=== 2. PLATFORM SUPER ADMIN NEVER GETS BRAND SCOPE ===');
+console.log('\n=== 2. PLATFORM SUPER ADMIN: SCOPE ONLY FROM AN EXPLICIT GRANT ===');
 {
-  const s = B.brandScopeFromSession({ roles: ['Platform Super Admin'], brandIds: null, allBrandsInCompany: true, isPlatformSuperAdmin: true });
-  check('PSA with a stray delegation row still resolves to zero brands',
-    s.mode === 'restricted' && s.brandIds.length === 0, JSON.stringify(s));
-  check('PSA holds no brand abilities',
-    !A.can(['Platform Super Admin'], 'brand.read') || true);
-  check('PSA cannot grant or revoke', !A.can(['Platform Super Admin'], 'brand.grant') && !A.can(['Platform Super Admin'], 'brand.revoke'));
+  // Policy 1: the PSA role alone confers NO brand scope.
+  const none = B.brandScopeFromSession({
+    roles: ['Platform Super Admin'], brandIds: [], allBrandsInCompany: false, isPlatformSuperAdmin: true
+  });
+  check('PSA with NO grant resolves to ZERO brands',
+    none.mode === 'restricted' && none.brandIds.length === 0, JSON.stringify(none));
+
+  // Policy 1 again, via the role-name signal alone (boolean flag absent).
+  const nameOnly = B.brandScopeFromSession({
+    roles: ['Platform Super Admin'], brandIds: [], allBrandsInCompany: false
+  });
+  check('PSA denied by role name even when the boolean flag is absent',
+    nameOnly.mode === 'restricted' && nameOnly.brandIds.length === 0, JSON.stringify(nameOnly));
+
+  // Policy 2: an explicit company-wide delegation DOES grant that one company.
+  const wide = B.brandScopeFromSession({
+    roles: ['Platform Super Admin'], brandIds: null, allBrandsInCompany: true, isPlatformSuperAdmin: true
+  });
+  check('PSA WITH a company-wide delegation resolves to tenant scope',
+    wide.mode === 'tenant' && wide.brandIds === null, JSON.stringify(wide));
+
+  // Policy 2: explicit per-brand grants work for a PSA too, not only company-wide.
+  const B1 = '11111111-1111-4111-8111-111111111111';
+  const B2 = '22222222-2222-4222-8222-222222222222';
+  const some = B.brandScopeFromSession({
+    roles: ['Platform Super Admin'], brandIds: [B1, B2], allBrandsInCompany: false, isPlatformSuperAdmin: true
+  });
+  check('PSA WITH specific brand grants sees exactly those brands',
+    some.mode === 'restricted' && some.brandIds.length === 2
+      && some.brandIds.includes(B1) && some.brandIds.includes(B2),
+    JSON.stringify(some));
+
+  // A malformed entry is dropped, never trusted.
+  const dirty = B.brandScopeFromSession({
+    roles: ['Platform Super Admin'], brandIds: [B1, 'not-a-uuid', null, B2], allBrandsInCompany: false, isPlatformSuperAdmin: true
+  });
+  check('PSA grant list drops malformed entries and keeps only valid uuids',
+    dirty.brandIds.length === 2 && dirty.brandIds.every(B.isUuid), JSON.stringify(dirty.brandIds));
+
+  // Policy 6: a revoked delegation yields no access (allBrandsInCompany false).
+  const revoked = B.brandScopeFromSession({
+    roles: ['Platform Super Admin'], brandIds: null, allBrandsInCompany: false, isPlatformSuperAdmin: true
+  });
+  check('PSA with a REVOKED delegation (flag false) gets zero brands',
+    revoked.mode === 'restricted' && revoked.brandIds.length === 0, JSON.stringify(revoked));
+
+  // Policy 6: an absent/malformed brandIds never becomes tenant-wide.
+  const absent = B.brandScopeFromSession({ roles: ['Platform Super Admin'], isPlatformSuperAdmin: true });
+  check('PSA with brandIds absent fails closed',
+    absent.mode === 'restricted' && absent.brandIds.length === 0, JSON.stringify(absent));
+
+  // Policy 4: brand scope is DATA VISIBILITY, never an ability grant.
+  check('PSA cannot grant or revoke',
+    !A.can(['Platform Super Admin'], 'brand.grant') && !A.can(['Platform Super Admin'], 'brand.revoke'));
   check('PSA platform routes remain separate (no conversation.reply)',
     !A.can(['Platform Super Admin'], 'conversation.reply'));
 }

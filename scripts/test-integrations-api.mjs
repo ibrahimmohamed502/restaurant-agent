@@ -362,9 +362,13 @@ console.log('\n--- Brand scope shapes (fail-closed semantics) ---');
     brandScopeFromSession({ roles: ['Company Admin'], brandIds: null, allBrandsInCompany: true }).mode === BRAND_SCOPE_TENANT);
   check('Platform Super Admin is NOT tenant-wide',
     brandScopeFromSession({ roles: ['Platform Super Admin'] }).mode === BRAND_SCOPE_RESTRICTED);
-  check('R1: Platform Super Admin gets zero brands even holding a stray delegation',
-    brandScopeFromSession({ roles: ['Platform Super Admin'], brandIds: null, allBrandsInCompany: true }).mode === BRAND_SCOPE_RESTRICTED &&
-    brandScopeFromSession({ roles: ['Platform Super Admin'], brandIds: null, allBrandsInCompany: true }).brandIds.length === 0);
+check('R1: Platform Super Admin with NO grant gets zero brands',
+  brandScopeFromSession({ roles: ['Platform Super Admin'], isPlatformSuperAdmin: true }).mode === BRAND_SCOPE_RESTRICTED &&
+  brandScopeFromSession({ roles: ['Platform Super Admin'], isPlatformSuperAdmin: true }).brandIds.length === 0);
+check('R1: Platform Super Admin WITH an explicit delegation gets that company',
+  brandScopeFromSession({ roles: ['Platform Super Admin'], brandIds: null, allBrandsInCompany: true, isPlatformSuperAdmin: true }).mode === 'tenant');
+check('R1: a revoked delegation (flag false) still fails closed to zero brands',
+  brandScopeFromSession({ roles: ['Platform Super Admin'], brandIds: null, allBrandsInCompany: false, isPlatformSuperAdmin: true }).brandIds.length === 0);
   check('[] -> restricted, zero brands', (() => { const s = brandScopeFromSession({ brandIds: [] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.length === 0; })());
   check('[valid] -> restricted to that brand', (() => { const s = brandScopeFromSession({ brandIds: [U] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.join() === U; })());
   check('all-invalid array -> restricted, zero brands', (() => { const s = brandScopeFromSession({ brandIds: ['x', 1, {}] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.length === 0; })());

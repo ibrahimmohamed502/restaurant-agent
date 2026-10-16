@@ -233,9 +233,16 @@ console.log('--- 8. no code path widens scope implicitly ---');
   // The role list can no longer produce tenant mode at all.
   check('the resolver no longer consults a role list for scope',
     !/hasTenantWideBrandScope/.test(resolve));
-  check('Platform Super Admin is refused before any widening branch',
-    resolve.indexOf('Platform Super Admin') >= 0
-    && resolve.indexOf('Platform Super Admin') < resolve.indexOf('mode: BRAND_SCOPE_TENANT'));
+// Policy: the PSA denial is still present, but it now fires only AFTER the
+// explicit-grant branches, so a PSA with a real delegation is not discarded.
+check('the resolver still carries an explicit Platform Super Admin denial',
+  resolve.includes('Platform Super Admin'));
+  check('the PSA denial is not the first branch (explicit grants are evaluated first)',
+    resolve.indexOf('isPlatformSuperAdmin === true') > resolve.indexOf('Array.isArray(raw)'));
+check('a PSA with NO grant still resolves to zero brands (the security invariant)',
+  brandScopeFromSession({ roles: ['Platform Super Admin'], isPlatformSuperAdmin: true }).brandIds.length === 0);
+check('a PSA WITH an explicit company-wide delegation resolves to tenant scope',
+  brandScopeFromSession({ roles: ['Platform Super Admin'], brandIds: null, allBrandsInCompany: true, isPlatformSuperAdmin: true }).mode === 'tenant');
   check('every non-array, non-null grant is refused before tenant mode',
     brandScopeFromSession({ roles: ['Company Admin'], brandIds: 1 }).brandIds.length === 0);
   check('R1: sessions.js RESOLVES grants instead of documenting a placeholder',

@@ -51,21 +51,26 @@ export const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
  * Accepts the dashboard's `req.auth` and the v1 API's `req.v1` — both expose
  * `{ roles, brandIds }`. Fail-closed: only an explicit role policy or an
  * explicit grant ever yields more than zero brands.
+ *
+ * ORDERING IS THE SECURITY INVARIANT. An EXPLICIT, audited, per-user grant is
+ * evaluated BEFORE the Platform Super Admin denial, so:
+ *
+ *   - a PSA holding a company-wide delegation gets exactly that one company's
+ *     brands, and
+ *   - a PSA holding per-brand grants gets exactly those brands, and
+ *   - a PSA holding NO grant of any kind still gets ZERO brands.
+ *
+ * What this deliberately does NOT do is let the PSA ROLE confer scope. Platform
+ * privilege remains an inference that never authorises data access; only a row
+ * in user_brand_scope_all / user_brand_grants does, and those rows are per-user,
+ * tenant-bound by composite foreign key, revocable and audited.
+ *
+ * Brand scope is DATA VISIBILITY only. It never confers an ability: endpoints
+ * still gate actions through can()/requireAbilityInline, so a valid scope cannot
+ * let a user read or reply where their roles do not permit it.
  */
 export function brandScopeFromSession(auth) {
   const raw = auth?.brandIds;
-
-  // Platform Super Admin NEVER receives brand scope. Platform-level privileges
-  // are a separate boundary and must not imply access to a company's brands or
-  // conversations, even if a stray delegation row were to exist for that user.
-  //
-  // EITHER signal is sufficient to deny. Requiring the boolean alone would make
-  // this depend on one caller populating one field correctly; a session whose
-  // role list names PSA must be refused even if isPlatformSuperAdmin is absent.
-  if (auth?.isPlatformSuperAdmin === true
-    || (Array.isArray(auth?.roles) && auth.roles.includes('Platform Super Admin'))) {
-    return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [] };
-  }
 
   // null is the ONE representation of company-wide access, and it is issued only
   // when sessions.js confirmed a live all-brands-within-company delegation row.
@@ -74,9 +79,23 @@ export function brandScopeFromSession(auth) {
     return { mode: BRAND_SCOPE_TENANT, brandIds: null };
   }
 
-  // An explicit, well-formed grant list is the strongest signal.
+  // An explicit, well-formed grant list is honoured exactly as given - including
+  // for a PSA, who reaches here only because they were granted these brands.
+  // A malformed entry is filtered out rather than trusted.
   if (Array.isArray(raw)) {
     return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [...new Set(raw.filter(isUuid))] };
+  }
+
+  // No explicit grant of any kind. A Platform Super Admin is refused here:
+  // platform-level privileges are a separate boundary and must not imply access
+  // to a company's brands, conversations or messages.
+  //
+  // EITHER signal is sufficient to deny. Requiring the boolean alone would make
+  // this depend on one caller populating one field correctly; a session whose
+  // role list names PSA must be refused even if isPlatformSuperAdmin is absent.
+  if (auth?.isPlatformSuperAdmin === true
+    || (Array.isArray(auth?.roles) && auth.roles.includes('Platform Super Admin'))) {
+    return { mode: BRAND_SCOPE_RESTRICTED, brandIds: [] };
   }
 
   // Everything else - absent, malformed, unreadable, or a null list without a
