@@ -8,7 +8,9 @@
  *   GET  /dashboard/api/stats · /events · /escalations · POST .../escalations/:id/resolve
  */
 import express from 'express';
-import { getStats, listEvents, listEscalations, resolveEscalation, logEvent } from './db.js';
+// logEvent is still used by the webhook path; the read/resolve helpers are no
+// longer called because the endpoints they backed are retired above.
+import { logEvent } from './db.js';
 import {
   claimFailedOutboundForRetry,
   finishMessageDelivery,
@@ -153,16 +155,45 @@ dashboardRouter.get('/dashboard/api/me', requireAuth, (req, res) => {
   res.json({ user: req.auth.user, roles: req.auth.roles });
 });
 
-dashboardRouter.get('/dashboard/api/stats', requireAuth, (_req, res) => res.json(getStats()));
-dashboardRouter.get('/dashboard/api/events', requireAuth, (req, res) => {
-  res.json(listEvents(Math.min(Number(req.query.limit) || 50, 200)));
+/*
+ * LEGACY JSON-STORE ENDPOINTS - RETIRED, FAILING CLOSED.
+ *
+ * These four routes read and wrote src/db.js, a single process-wide JSON file
+ * (data/dashboard.json) that stores events and escalations with NO tenant_id and
+ * NO brand_id. Because the records carry no company or brand dimension, brand
+ * scoping cannot be applied to them at all: every row belongs to every tenant.
+ *
+ * As written they were therefore cross-tenant exposures of raw customer names,
+ * customer message text and AI reply text, and the resolve route let ANY
+ * authenticated user close ANY escalation id in the shared store with no
+ * ownership check whatsoever.
+ *
+ * The authoritative data lives in Postgres and IS brand-scoped:
+ *   GET  /api/v1/dashboard        - brand-scoped KPIs and preview rows
+ *   GET  /api/v1/conversations    - brand-scoped Unified Inbox
+ * The callers below are kept so the imports stay referenced and the removal is
+ * obvious in review; nothing else in this file uses them.
+ *
+ * Nothing is deleted: data/dashboard.json is left exactly as it was, and the
+ * Postgres rows these used to shadow are untouched.
+ */
+const LEGACY_STORE_RETIRED = (_req, res) => res.status(410).json({
+  error: 'retired',
+  code: 'LEGACY_UNPARTITIONED_STORE',
+  message: 'This endpoint read a shared store with no tenant or brand dimension, '
+    + 'so it could never be safely scoped. Use the brand-scoped /api/v1 endpoints instead.',
+  replacements: {
+    stats: '/api/v1/dashboard',
+    events: '/api/v1/dashboard',
+    escalations: '/api/v1/dashboard',
+    conversationInbox: '/api/v1/conversations'
+  }
 });
-dashboardRouter.get('/dashboard/api/escalations', requireAuth, (_req, res) => res.json(listEscalations()));
-dashboardRouter.post('/dashboard/api/escalations/:id/resolve', requireAuth, async (req, res) => {
-  const ok = resolveEscalation(req.params.id);
-  if (ok) audit({ tenantId: req.auth.tenantId, actorUserId: req.auth.user.id, action: 'escalations.resolve', objectType: 'escalation', objectId: req.params.id, ip: req.ip });
-  res.json({ ok });
-});
+
+dashboardRouter.get('/dashboard/api/stats', requireAuth, LEGACY_STORE_RETIRED);
+dashboardRouter.get('/dashboard/api/events', requireAuth, LEGACY_STORE_RETIRED);
+dashboardRouter.get('/dashboard/api/escalations', requireAuth, LEGACY_STORE_RETIRED);
+dashboardRouter.post('/dashboard/api/escalations/:id/resolve', requireAuth, LEGACY_STORE_RETIRED);
 
 /* --------------------------- Stage 3: Inbox API --------------------------- */
 

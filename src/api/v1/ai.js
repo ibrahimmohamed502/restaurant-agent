@@ -6,7 +6,9 @@
  * The retrieval threshold stays backend-managed and is exposed read-only.
  */
 import express from 'express';
-import { requireV1Auth, requireV1Role } from './index.js';
+import { requireV1Auth } from './index.js';
+import { requireAbility } from './stage7-rbac.js';
+import { brandScopeFromSession, brandScopeSql, brandVisibleToScope } from './brandAccess.js';
 
 export const AI_TONES = ['professional', 'friendly', 'kuwaiti', 'custom'];
 export const AI_LANGUAGES = ['ar', 'en'];
@@ -18,13 +20,21 @@ export const AI_FALLBACK_POLICY = {
 
 export function createAiRouter() {
   const router = express.Router();
-  const admin = requireV1Role('Company Admin');
 
-  /** Resolve (never create) the tenant's active agent + its config row. */
-  async function loadConfig(db, tenantId) {
+  /**
+   * Resolve (never create) the tenant's active agent + its config row.
+   *
+   * The agent is brand-scoped: without the predicate this returned whichever
+   * agent was created first, so a caller granted one brand could read - and PUT
+   * - the configuration of a DIFFERENT brand's agent.
+   */
+  async function loadConfig(db, tenantId, brandScope) {
+    const bs = brandScopeSql('a', { tenantWideParam: 1, brandIdsParam: 2 });
     const { rows: [agent] } = await db.query(
-      `SELECT id, name, brand_id FROM ai_agents WHERE tenant_id = $1 AND is_active ORDER BY created_at ASC LIMIT 1`,
-      [tenantId]
+      `SELECT a.id, a.name, a.brand_id FROM ai_agents a
+           WHERE a.tenant_id = $3 AND a.is_active AND ${bs.sql}
+           ORDER BY a.created_at ASC LIMIT 1`,
+      [...bs.params(brandScope ?? { mode: 'tenant', brandIds: null }), tenantId]
     );
     if (!agent) return null;
     const { rows: [cfg] } = await db.query(
@@ -49,23 +59,23 @@ export function createAiRouter() {
     };
   }
 
-  router.get('/config', requireV1Auth, async (req, res, next) => {
+  router.get('/config', requireV1Auth, requireAbility('ai.config.read'), async (req, res, next) => {
     try {
-      const loaded = await loadConfig(req.db ?? req.v1.db, req.v1.tenantId);
+      const loaded = await loadConfig(req.db ?? req.v1.db, req.v1.tenantId, brandScopeFromSession(req.v1));
       if (!loaded) return res.json({ data: null });
       return res.json({ data: shape(loaded, loaded.cfg) });
     } catch (err) { next(err); }
   });
 
-  router.put('/config', requireV1Auth, admin, async (req, res, next) => {
+  router.put('/config', requireV1Auth, requireAbility('ai.config.write'), async (req, res, next) => {
     try {
       const { tone, languages, rules, workingHours, customInstructions } = req.body ?? {};
       if (!AI_TONES.includes(tone)) return res.status(422).json({ error: { code: 'VALIDATION_ERROR', message: `tone must be one of ${AI_TONES.join(', ')}` } });
       if (!Array.isArray(languages) || !languages.every((l) => AI_LANGUAGES.includes(l)) || !languages.length) {
         return res.status(422).json({ error: { code: 'VALIDATION_ERROR', message: 'languages must be a non-empty subset of ar, en' } });
       }
-      const loaded = await loadConfig(req.db ?? req.v1.db, req.v1.tenantId);
-      if (!loaded) return res.status(404).json({ error: { code: 'NO_AGENT', message: 'no active AI agent for this tenant' } });
+      const loaded = await loadConfig(req.db ?? req.v1.db, req.v1.tenantId, brandScopeFromSession(req.v1));
+      if (!loaded) return res.status(404).json({ error: { code: 'NO_AGENT', message: 'no active AI agent for this brands scope' } });
 
       // auto-provision the config row on first save
       const updated = loaded.cfg
@@ -87,7 +97,7 @@ export function createAiRouter() {
    * Reply sources for admin debugging (Batch 3A): resolves the stored
    * references against the CURRENT published knowledge — never duplicates it.
    */
-  router.get('/reply-sources', requireV1Auth, async (req, res, next) => {
+  router.get('/reply-sources', requireV1Auth, requireAbility('ai.config.read'), async (req, res, next) => {
     try {
       const { messageId } = req.query;
       if (!messageId) return res.status(422).json({ error: { code: 'VALIDATION_ERROR', message: 'messageId is required' } });

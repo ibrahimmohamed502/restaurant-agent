@@ -25,9 +25,11 @@ const tenants = new Map([
   ['t-ufc', { id: 't-ufc', name: 'UFC', slug: 'ufc', status: 'active' }],
   ['t-new', { id: 't-new', name: 'New Co', slug: 'new-co', status: 'active' }],
 ]);
+const BRAND_UFC = '11111111-1111-1111-1111-111111111111';
+const BRAND_NEW = '22222222-2222-2222-2222-222222222222';
 const brands = new Map([
-  ['b-ufc', { id: 'b-ufc', tenant_id: 't-ufc', name: 'Life with Cacao', slug: 'lwc', status: 'active' }],
-  ['b-new', { id: 'b-new', tenant_id: 't-new', name: 'New Brand', slug: 'main', status: 'active' }],
+  ['b-ufc', { id: BRAND_UFC, tenant_id: 't-ufc', name: 'Life with Cacao', slug: 'lwc', status: 'active' }],
+  ['b-new', { id: BRAND_NEW, tenant_id: 't-new', name: 'New Brand', slug: 'main', status: 'active' }],
 ]);
 const users = new Map();
 const roles = new Map();
@@ -37,8 +39,8 @@ const sessions = new Map();
 // ks-ufc: published knowledge exists. ks-new: Fix D created the source for the
 // new company but NOTHING has been published yet (the onboarding scenario).
 const knowledgeSources = new Map([
-  ['ks-ufc', { id: 'ks-ufc', tenant_id: 't-ufc', brand_id: 'b-ufc', kind: 'menu', title: 'UFC Menu', created_at: new Date('2026-01-01') }],
-  ['ks-new', { id: 'ks-new', tenant_id: 't-new', brand_id: 'b-new', kind: 'menu', title: 'New Co — main menu & info', created_at: new Date('2026-01-02') }],
+  ['ks-ufc', { id: 'ks-ufc', tenant_id: 't-ufc', brand_id: BRAND_UFC, kind: 'menu', title: 'UFC Menu', created_at: new Date('2026-01-01') }],
+  ['ks-new', { id: 'ks-new', tenant_id: 't-new', brand_id: BRAND_NEW, kind: 'menu', title: 'New Co — main menu & info', created_at: new Date('2026-01-02') }],
 ]);
 const knowledgeDrafts = new Map();
 const knowledgeDocs = new Map();
@@ -131,7 +133,8 @@ const originalQuery = db.query.bind(db);
 db.query = async (sql, params = []) => {
   const s = sql.replace(/\s+/g, ' ').trim().toLowerCase();
   if (/select name from brands where id/.test(s)) {
-    const b = brands.get(params[0]);
+    const b = brands.get(params[0])
+      || [...brands.entries()].find(([, v]) => v.id === params[0])?.[1];
     return b ? { rows: [{ name: b.name }] } : { rows: [] };
   }
   if (/select name from tenants where id/.test(s)) {
@@ -166,7 +169,12 @@ const router = createApiV1Router({
       tenantId: s.tenantId,
       user: { id: u.id, email: u.email, name: u.name },
       roles: roleNames,
-      sessionId: 'sess-' + u.id
+      sessionId: 'sess-' + u.id,
+      // Absence of a stored grant resolves to ZERO brands (never tenant-wide).
+      // NOTE: `??` must NOT be used here - it would collapse an explicit null
+      // (the audited all-brands-in-company delegation) back into [].
+      brandIds: s.brandScope ? s.brandScope.brandIds : [],
+      allBrandsInCompany: s.brandScope?.allBrandsInCompany === true
     };
   },
   revokeSessionFn: async (token) => sessions.delete(token),
@@ -201,27 +209,42 @@ const call = async (path, { method = 'GET', body, cookie, csrf } = {}) => {
 
 /* ------------------------------------------------------------------ fixtures */
 
-function makeUser({ id, tenantId, email, name, roleName, roleId }) {
+function makeUser({ id, tenantId, email, name, roleName, roleId, brandScope }) {
   users.set(id, { id, tenant_id: tenantId, email, name, password_hash: 'x', status: 'active' });
   roles.set(roleId, { id: roleId, tenant_id: tenantId, name: roleName, permissions: [] });
   userRoles.set(id, [roleId]);
+  // R1: authorization is per USER. The session must carry the grant explicitly;
+  // a role name alone grants nothing.
   const token = crypto.randomBytes(16).toString('hex');
-  sessions.set(token, { tenantId, userId: id, revoked: false });
+  sessions.set(token, { tenantId, userId: id, revoked: false, brandScope });
   return token;
 }
 
+// R1: each user states which brands it may reach. The two Company Admins hold
+// the audited "all brands inside my company" delegation (what migration 015's
+// backfill grants); the Agent holds ONE explicit per-brand grant.
+const ALL_IN_COMPANY = { brandIds: null, allBrandsInCompany: true };
+
 const adminToken = makeUser({
   id: 'u-admin', tenantId: 't-new', email: 'admin@newco.test', name: 'Admin',
-  roleName: 'Company Admin', roleId: 'r-ca-new'
+  roleName: 'Company Admin', roleId: 'r-ca-new', brandScope: ALL_IN_COMPANY
 });
 const agentToken = makeUser({
   id: 'u-agent', tenantId: 't-new', email: 'agent@newco.test', name: 'Agent',
-  roleName: 'Agent', roleId: 'r-agent-new'
+  roleName: 'Agent', roleId: 'r-agent-new', brandScope: { brandIds: [BRAND_NEW], allBrandsInCompany: false }
 });
 const ufcToken = makeUser({
   id: 'u-ufc', tenantId: 't-ufc', email: 'admin@ufc.test', name: 'UFC Admin',
-  roleName: 'Company Admin', roleId: 'r-ca-ufc'
+  roleName: 'Company Admin', roleId: 'r-ca-ufc', brandScope: ALL_IN_COMPANY
 });
+
+// R1 regression: a user with the RIGHT role but NO grant must see nothing.
+// Adding this user proves the grant, not the role, decides visibility.
+const ungrantedToken = makeUser({
+  id: 'u-ungranted', tenantId: 't-new', email: 'ungranted@newco.test', name: 'Ungranted Admin',
+  roleName: 'Company Admin', roleId: 'r-ca-new2', brandScope: { brandIds: [], allBrandsInCompany: false }
+});
+const ungrantedCookie = withCsrf(`lwc_session=${ungrantedToken}`);
 
 const adminCookie = withCsrf(`lwc_session=${adminToken}`);
 const agentCookie = withCsrf(`lwc_session=${agentToken}`);
@@ -311,6 +334,23 @@ console.log('\n--- Test 5: Cross-tenant / cross-brand isolation ---');
   // The cross-tenant attempt must not have created anything.
   const draftsForUfcBrand = Array.from(knowledgeDrafts.values()).filter((d) => d.source_id === 'ks-ufc');
   check('No draft leaked/created for UFC source by New Co', draftsForUfcBrand.length === 1, `count=${draftsForUfcBrand.length}`);
+
+  // R1: the right role with NO grant must see nothing. This is the assertion
+  // that proves visibility follows the grant, not the role name.
+  const ungrantedRead = await call('/knowledge', { cookie: ungrantedCookie });
+  const ungrantedWrite = await call('/knowledge/draft', { method: 'POST', cookie: ungrantedCookie, csrf: CSRF });
+  check('R1: Company Admin WITHOUT a grant gets 404 (role alone grants nothing)',
+    ungrantedRead.status === 404 && ungrantedWrite.status === 404,
+    `read=${ungrantedRead.status} write=${ungrantedWrite.status}`);
+
+  // R1: an Agent granted exactly one brand sees that brand and no other.
+  const agentRead = await call('/knowledge', { cookie: agentCookie });
+  check('R1: Agent granted BRAND_NEW can read its knowledge',
+    agentRead.status === 200 && agentRead.body?.data?.source?.brandId === BRAND_NEW,
+    `${agentRead.status} ${JSON.stringify(agentRead.body?.data?.source)}`);
+  const agentCross = await call('/knowledge?brandId=' + BRAND_UFC, { cookie: agentCookie });
+  check('R1: Agent cannot read a brand it was not granted',
+    agentCross.status === 404, `got ${agentCross.status}`);
 }
 
 app._server.close();

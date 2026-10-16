@@ -7,7 +7,10 @@
  * Supervisor; agents get read-only access to the published knowledge.
  */
 import express from 'express';
-import { requireV1Auth, requireV1Role, apiError } from './index.js';
+import { requireV1Auth, apiError } from './index.js';
+import { requireAbility } from './stage7-rbac.js';
+import { can } from '../../auth/abilities.js';
+import { brandScopeFromSession } from './brandAccess.js';
 import {
   resolveKnowledgeSource,
   getAnyDraft,
@@ -21,17 +24,24 @@ import {
   diffKnowledge
 } from '../../services/knowledge.js';
 
-const COMPANY_ADMIN = 'Company Admin';
-
 export function createKnowledgeRouter({ pool }) {
   const router = express.Router();
-  router.use(requireV1Auth);
+  // R1: knowledge documents are brand-scoped, so read access requires the
+  // ability AND the grant. Editing/publishing are ability-checked too, which
+  // lets a custom role hold them without being named 'Company Admin'.
+  router.use(requireV1Auth, requireAbility('knowledge.read'));
 
   const tenantOf = (req) => req.v1.tenantId;
-  const rolesOf = (req) => req.v1.roles || [];
-  const canEdit = (req) => rolesOf(req).includes(COMPANY_ADMIN) || rolesOf(req).includes('Supervisor');
-  const canPublish = (req) => rolesOf(req).includes(COMPANY_ADMIN);
-  const scope = (req) => ({ tenantId: tenantOf(req), db: pool });
+  const allowed = (req, ability) => can(req.v1?.roles, ability, req.v1?.customAbilities);
+  const canEdit = (req) => allowed(req, 'knowledge.edit');
+  const canPublish = (req) => allowed(req, 'knowledge.publish');
+  // R1: brand scope travels with every resolution, so no route can reach a
+  // source outside the caller's grants.
+  const scope = (req) => ({
+    tenantId: tenantOf(req),
+    db: pool,
+    brandScope: brandScopeFromSession(req.v1)
+  });
 
   /** Resolve the source for the session tenant (+ optional brand), 404 when absent. */
   async function withSource(req, res, fn) {

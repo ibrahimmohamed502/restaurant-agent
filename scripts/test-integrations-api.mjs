@@ -125,14 +125,19 @@ const router = createApiV1Router({
     const u = users.get(s.userId);
     if (!u) return null;
     const names = (userRoles.get(s.userId) || []).map((rid) => roles.get(rid)?.name).filter(Boolean);
-    return {
-      tenantId: s.tenantId,
-      user: { id: u.id, email: u.email, name: u.name },
-      roles: names,
-      sessionId: 'sess-' + u.id,
-      // optional brand restriction carried by the session (null = tenant-wide)
-      brandIds: s.brandIds ?? null
-    };
+      // R1: tenant-wide access requires BOTH signals - brandIds:null AND the
+      // audited all-brands-within-company delegation. brandIds:null on its own
+      // resolves to ZERO brands, which is what closes the "missing grant means
+      // everything" hole.
+      const allBrands = s.brandIds === undefined || s.brandIds === null;
+      return {
+        tenantId: s.tenantId,
+        user: { id: u.id, email: u.email, name: u.name },
+        roles: names,
+        sessionId: 'sess-' + u.id,
+        brandIds: allBrands ? null : s.brandIds,
+        allBrandsInCompany: allBrands
+      };
   },
   revokeSessionFn: async () => {},
   revokeOtherSessionsFn: async () => {},
@@ -343,19 +348,23 @@ console.log('\n--- Brand scope shapes (fail-closed semantics) ---');
   const U = 'a0000000-0000-4000-8000-000000000001';
 
   // unit: scope resolution
-  // An ABSENT grant is no longer tenant-wide. Tenant-wide scope must be derived
-  // from an EXPLICIT ability (brand.read), never from the absence of a grant.
-  check('undefined grant -> denied unless the role carries brand.read',
+  // R1: NO role confers tenant-wide scope. Company-wide visibility comes only
+  // from an explicit, audited, per-user delegation row. A missing or null
+  // grant is always ZERO brands, for every role - that is the whole point.
+  check('undefined grant -> zero brands, for any role',
     brandScopeFromSession({ roles: ['Head of Growth'], brandIds: undefined }).mode === BRAND_SCOPE_RESTRICTED);
-  check('null grant -> denied unless the role carries brand.read',
-    brandScopeFromSession({ roles: ['Head of Growth'], brandIds: null }).mode === BRAND_SCOPE_RESTRICTED);
+  check('null grant WITHOUT a delegation -> zero brands, even for Company Admin',
+    brandScopeFromSession({ roles: ['Company Admin'], brandIds: null }).mode === BRAND_SCOPE_RESTRICTED);
   check('missing session -> fail closed to zero brands',
     brandScopeFromSession({}).mode === BRAND_SCOPE_RESTRICTED &&
     brandScopeFromSession({}).brandIds.length === 0);
-  check('an explicitly authorised role DOES get tenant-wide',
-    brandScopeFromSession({ roles: ['Company Admin'], brandIds: undefined }).mode === BRAND_SCOPE_TENANT);
+  check('R1: an authorised Company Admin WITH the delegation gets company-wide',
+    brandScopeFromSession({ roles: ['Company Admin'], brandIds: null, allBrandsInCompany: true }).mode === BRAND_SCOPE_TENANT);
   check('Platform Super Admin is NOT tenant-wide',
     brandScopeFromSession({ roles: ['Platform Super Admin'] }).mode === BRAND_SCOPE_RESTRICTED);
+  check('R1: Platform Super Admin gets zero brands even holding a stray delegation',
+    brandScopeFromSession({ roles: ['Platform Super Admin'], brandIds: null, allBrandsInCompany: true }).mode === BRAND_SCOPE_RESTRICTED &&
+    brandScopeFromSession({ roles: ['Platform Super Admin'], brandIds: null, allBrandsInCompany: true }).brandIds.length === 0);
   check('[] -> restricted, zero brands', (() => { const s = brandScopeFromSession({ brandIds: [] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.length === 0; })());
   check('[valid] -> restricted to that brand', (() => { const s = brandScopeFromSession({ brandIds: [U] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.join() === U; })());
   check('all-invalid array -> restricted, zero brands', (() => { const s = brandScopeFromSession({ brandIds: ['x', 1, {}] }); return s.mode === BRAND_SCOPE_RESTRICTED && s.brandIds.length === 0; })());

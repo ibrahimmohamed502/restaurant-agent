@@ -11,6 +11,7 @@
  */
 import express from 'express';
 import { requireV1Auth, requireV1Role } from './index.js';
+import { requireAbility } from './stage7-rbac.js';
 import { listUsers, createUser, setUserStatus, setUserRoles, deleteUser } from '../../routes/users.js';
 
 /** Adapts the v1 session context (req.v1) to the shared handler contract (req.auth). */
@@ -28,7 +29,17 @@ function adaptAuth(req, _res, next) {
 
 export function createUsersRouter() {
   const router = express.Router();
+  // R1: gated by ABILITY, not by the role NAME 'Company Admin'. This keeps the
+  // hardcoded name out of the authorization decision, so a custom role that was
+  // explicitly granted user.* permissions is honoured - and the built-in map
+  // remains the authority for the built-in roles.
+  // Retained as a second, independent check: a caller must hold the ability AND
+  // still be one of the roles the shared handlers already accept.
   const admin = requireV1Role('Company Admin');
+  const canRead = requireAbility('user.read');
+  const canCreate = requireAbility('user.create');
+  const canUpdate = requireAbility('user.update');
+  const canDisable = requireAbility('user.disable');
 
   // Mounted under /users by the API router. The shared handlers return RAW
   // bodies (legacy dashboard contract); wrap success in { data } / keep
@@ -39,11 +50,11 @@ export function createUsersRouter() {
     next();
   });
 
-  router.get('/', requireV1Auth, adaptAuth, admin, listUsers);
-  router.post('/', requireV1Auth, adaptAuth, admin, createUser);
-  router.post('/:id/status', requireV1Auth, adaptAuth, admin, setUserStatus);
-  router.post('/:id/roles', requireV1Auth, adaptAuth, admin, setUserRoles);
-  router.delete('/:id', requireV1Auth, adaptAuth, admin, deleteUser);
+  router.get('/', requireV1Auth, adaptAuth, canRead, admin, listUsers);
+  router.post('/', requireV1Auth, adaptAuth, canCreate, admin, createUser);
+  router.post('/:id/status', requireV1Auth, adaptAuth, canUpdate, admin, setUserStatus);
+  router.post('/:id/roles', requireV1Auth, adaptAuth, canUpdate, admin, setUserRoles);
+  router.delete('/:id', requireV1Auth, adaptAuth, canDisable, admin, deleteUser);
 
   return router;
 }

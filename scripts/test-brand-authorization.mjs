@@ -67,16 +67,20 @@ console.log('--- 1. retry requires an explicit conversation.reply ability ---');
     can(null, 'conversation.reply') === false && can('Company Admin', 'conversation.reply') === false);
 }
 
-/* ============ 2. TENANT-WIDE IS DERIVED, NEVER DEFAULTED ============= */
-console.log('--- 2. tenant-wide scope requires an explicit ability ---');
+/* ============ 2. TENANT-WIDE IS DELEGATED, NEVER DERIVED FROM A ROLE ==== */
+console.log('--- 2. tenant-wide scope requires an explicit per-user delegation ---');
 {
-  check('Company Admin is tenant-wide by policy', hasTenantWideBrandScope(['Company Admin']));
-  check('Supervisor is tenant-wide by policy', hasTenantWideBrandScope(['Supervisor']));
-  check('Agent is tenant-wide by policy (it holds brand.read)',
-    hasTenantWideBrandScope(['Agent']));
+  // R1: NO role confers tenant-wide brand scope. This was the defect: Company
+  // Admin, Supervisor AND Agent all held brand.read, so an absent grant silently
+  // became company-wide access. hasTenantWideBrandScope now answers false for
+  // every input, and company-wide comes only from an audited delegation row.
+  check('Company Admin is NOT tenant-wide by role alone', !hasTenantWideBrandScope(['Company Admin']));
+  check('Supervisor is NOT tenant-wide by role alone', !hasTenantWideBrandScope(['Supervisor']));
+  check('Agent is NOT tenant-wide by role alone', !hasTenantWideBrandScope(['Agent']));
   check('Platform Super Admin is NOT tenant-wide', !hasTenantWideBrandScope(['Platform Super Admin']));
   check('an unknown role is NOT tenant-wide', !hasTenantWideBrandScope(['Head of Growth']));
-  check('the policy ability is brand.read', TENANT_WIDE_BRAND_ABILITY === 'brand.read');
+  check('the tenant-wide policy ability matches NO role', TENANT_WIDE_BRAND_ABILITY === '__none__'
+    && Object.values(ROLE_ABILITIES).every((a) => !a.includes(TENANT_WIDE_BRAND_ABILITY)));
 
   // The critical default: an absent grant must NOT widen access.
   check('absent grant + unauthorised role -> zero brands',
@@ -84,8 +88,14 @@ console.log('--- 2. tenant-wide scope requires an explicit ability ---');
     brandScopeFromSession({ roles: ['Platform Super Admin'] }).brandIds.length === 0);
   check('absent grant + unknown role -> zero brands',
     brandScopeFromSession({ roles: ['Head of Growth'] }).brandIds.length === 0);
-  check('absent grant + authorised role -> tenant-wide',
-    brandScopeFromSession({ roles: ['Company Admin'] }).mode === BRAND_SCOPE_TENANT);
+  check('R1: absent grant + Company Admin -> ZERO brands, not tenant-wide',
+    brandScopeFromSession({ roles: ['Company Admin'] }).mode === BRAND_SCOPE_RESTRICTED &&
+    brandScopeFromSession({ roles: ['Company Admin'] }).brandIds.length === 0);
+  check('R1: null grant WITHOUT a delegation -> zero brands, for every role',
+    ['Company Admin', 'Supervisor', 'Agent'].every((r) =>
+      brandScopeFromSession({ roles: [r], brandIds: null }).brandIds.length === 0));
+  check('R1: tenant-wide REQUIRES the audited delegation flag',
+    brandScopeFromSession({ roles: ['Company Admin'], brandIds: null, allBrandsInCompany: true }).mode === BRAND_SCOPE_TENANT);
   check('no session at all -> zero brands (fail closed)',
     brandScopeFromSession({}).brandIds.length === 0 &&
     brandScopeFromSession(undefined).brandIds.length === 0);
@@ -106,16 +116,21 @@ console.log('--- 3. a malformed grant is never tenant-wide ---');
   check('invalid uuids inside an array are dropped, not honoured',
     brandScopeFromSession({ roles: ['Agent'], brandIds: [BRAND_A, 'nope', 7, BRAND_A] })
       .brandIds.join(',') === BRAND_A);
-  check('a grant list overrides tenant-wide policy',
-    brandScopeFromSession({ roles: ['Company Admin'], brandIds: [BRAND_A] }).mode === BRAND_SCOPE_RESTRICTED);
+  check('a grant list overrides the delegation flag',
+    brandScopeFromSession({ roles: ['Company Admin'], brandIds: [BRAND_A], allBrandsInCompany: false }).mode === BRAND_SCOPE_RESTRICTED);
 }
 
 /* ============ 4. VISIBILITY SEMANTICS =============================== */
 console.log('--- 4. visibility, including company-wide channels ---');
 {
-  const tenant = brandScopeFromSession({ roles: ['Company Admin'] });
-  check('tenant-wide sees every brand', brandVisibleToScope(BRAND_A, tenant) && brandVisibleToScope(BRAND_B, tenant));
-  check('tenant-wide also sees company-wide (NULL brand) channels', brandVisibleToScope(null, tenant));
+  // R1: tenant-wide is reached only through the audited delegation flag.
+  const tenant = brandScopeFromSession({ roles: ['Company Admin'], brandIds: null, allBrandsInCompany: true });
+  check('delegated caller sees every brand', brandVisibleToScope(BRAND_A, tenant) && brandVisibleToScope(BRAND_B, tenant));
+  check('delegated caller also sees company-wide (NULL brand) channels', brandVisibleToScope(null, tenant));
+  // R1 regression: the SAME role WITHOUT the delegation sees nothing at all.
+  const ungrantedAdmin = brandScopeFromSession({ roles: ['Company Admin'] });
+  check('R1: an ungranted Company Admin sees no brand, including its own tenant',
+    !brandVisibleToScope(BRAND_A, ungrantedAdmin) && !brandVisibleToScope(BRAND_B, ungrantedAdmin));
 
   const restricted = brandScopeFromSession({ roles: ['Agent'], brandIds: [BRAND_A] });
   check('restricted sees its own brand', brandVisibleToScope(BRAND_A, restricted));
@@ -143,10 +158,12 @@ console.log('--- 5. the SQL fragment matches the JS policy ---');
   check('the parameter positions are configurable',
     brandScopeSql('ch', { tenantWideParam: 2, brandIdsParam: 3 }).sql.includes('$2::boolean'));
 
-  const t = brandScopeFromSession({ roles: ['Company Admin'] });
+  const t = brandScopeFromSession({ roles: ['Company Admin'], brandIds: null, allBrandsInCompany: true });
   const r = brandScopeFromSession({ roles: ['Agent'], brandIds: [BRAND_A] });
-  check('tenant-wide sends true + empty array', JSON.stringify(f.params(t)) === JSON.stringify([true, []]));
+  check('delegated scope sends true + empty array', JSON.stringify(f.params(t)) === JSON.stringify([true, []]));
   check('restricted sends false + the grant list', JSON.stringify(f.params(r)) === JSON.stringify([false, [BRAND_A]]));
+  check('R1: an ungranted admin sends false + empty array (never true)',
+    JSON.stringify(f.params(brandScopeFromSession({ roles: ['Company Admin'] }))) === JSON.stringify([false, []]));
   check('an unknown scope degrades to restricted, never tenant-wide',
     JSON.stringify(f.params({ mode: 'nonsense' })) === JSON.stringify([false, []]));
 }
@@ -210,22 +227,25 @@ console.log('--- 8. no code path widens scope implicitly ---');
   const brandSrc = readFileSync(new URL('../src/api/v1/brandAccess.js', import.meta.url), 'utf8');
   const resolve = brandSrc.slice(brandSrc.indexOf('export function brandScopeFromSession'),
     brandSrc.indexOf('/** Is a channel'));
-  check('only hasTenantWideBrandScope can return tenant mode', (resolve.match(/BRAND_SCOPE_TENANT/g) || []).length === 1);
-  check('a malformed grant returns before the role check', resolve.indexOf('BRAND_SCOPE_RESTRICTED, brandIds: []') < resolve.indexOf('hasTenantWideBrandScope'));
-  // The role check must be the ONLY producer of tenant mode, and it must be the
-  // final branch — nothing after it can widen scope.
-  const afterRoleCheck = resolve.slice(resolve.indexOf('hasTenantWideBrandScope'));
-  check('the role check is the only place tenant mode is produced',
-    (resolve.match(/mode: BRAND_SCOPE_TENANT/g) || []).length === 1);
-  check('the role check is the final branch of the function',
-    !/hasTenantWideBrandScope[\s\S]*?\}\s*return[^}]*BRAND_SCOPE_TENANT/.test(
-      resolve.slice(resolve.indexOf('hasTenantWideBrandScope') + 1)));
-  check('every non-array, non-null grant is refused before the role check',
+  check('exactly one branch produces tenant mode', (resolve.match(/mode: BRAND_SCOPE_TENANT/g) || []).length === 1);
+  // R1: the single tenant-mode branch is guarded by the audited delegation flag.
+  check('tenant mode is gated on allBrandsInCompany', /raw === null && auth\?\.allBrandsInCompany === true/.test(resolve));
+  // The role list can no longer produce tenant mode at all.
+  check('the resolver no longer consults a role list for scope',
+    !/hasTenantWideBrandScope/.test(resolve));
+  check('Platform Super Admin is refused before any widening branch',
+    resolve.indexOf('Platform Super Admin') >= 0
+    && resolve.indexOf('Platform Super Admin') < resolve.indexOf('mode: BRAND_SCOPE_TENANT'));
+  check('every non-array, non-null grant is refused before tenant mode',
     brandScopeFromSession({ roles: ['Company Admin'], brandIds: 1 }).brandIds.length === 0);
-  check('sessions.js still documents brandIds as an unimplemented extension point',
-    /brand restriction extension point/i.test(readFileSync(new URL('../src/auth/sessions.js', import.meta.url), 'utf8')));
-  check('no per-user brand grant table was invented',
-    !/CREATE TABLE[\s\S]{0,80}user_brand/i.test(readFileSync(new URL('../migrations/001_init.sql', import.meta.url), 'utf8')));
+  check('R1: sessions.js RESOLVES grants instead of documenting a placeholder',
+    !/brand restriction extension point/i.test(readFileSync(new URL('../src/auth/sessions.js', import.meta.url), 'utf8'))
+    && /user_brand_grants/.test(readFileSync(new URL('../src/auth/sessions.js', import.meta.url), 'utf8')));
+  check('R1: the per-user grant table lives in migration 015, not 001_init',
+    /CREATE TABLE IF NOT EXISTS user_brand_grants/.test(
+      readFileSync(new URL('../migrations/015_brand_access_grants.sql', import.meta.url), 'utf8'))
+    && !/CREATE TABLE[\s\S]{0,80}user_brand/i.test(
+      readFileSync(new URL('../migrations/001_init.sql', import.meta.url), 'utf8')));
 }
 
 /* ============ 9. ROLE MAP INTEGRITY ================================ */

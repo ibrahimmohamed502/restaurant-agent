@@ -12,12 +12,15 @@
  */
 import express from 'express';
 import crypto from 'node:crypto';
+import { can } from '../../auth/abilities.js';
+import { brandScopeFromSession, brandScopeSql } from './brandAccess.js';
 import { validateSession, createSession, revokeSession, revokeOtherSessions, sessionCookie, parseCookie } from '../../auth/sessions.js';
 import { verifyPassword, hashPassword } from '../../auth/passwords.js';
 import { lockedSeconds, recordFailedLogin, resetLoginAttempts } from '../../auth/ratelimit.js';
 import { createKnowledgeRouter } from './knowledge.js';
 import { createUsersRouter } from './users.js';
 import { createAiRouter } from './ai.js';
+import { createBrandGrantsRouter } from './brandGrants.js';
 import { getMetaEventQueue } from '../../queues/metaEvents.js';
 import { createDashboardRouter } from './dashboard.js';
 import { createConversationsRouter } from './conversations.js';
@@ -30,6 +33,22 @@ const CSRF_HEADER = 'x-csrf-token';
 const MUTATIONS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /* ------------------------------- errors ------------------------------- */
+/**
+ * Inline ability guard for routes declared in this file.
+ *
+ * stage7-rbac.js imports apiError from here, so requiring it back would be a
+ * circular import. This evaluates exactly the same policy against the same
+ * session fields instead.
+ */
+export function requireAbilityInline(...abilities) {
+  return (req, res, next) => {
+    if (!abilities.some((a) => can(req.v1?.roles, a, req.v1?.customAbilities))) {
+      return apiError(res, 403, 'FORBIDDEN', 'insufficient permissions');
+    }
+    next();
+  };
+}
+
 export function apiError(res, status, code, message, details) {
   return res.status(status).json({ error: { code, message, ...(details ? { details } : {}) } });
 }
@@ -122,7 +141,16 @@ export async function requireV1Auth(req, res, next) {
     const auth = token ? await validate(token) : null;
     if (!auth) return apiError(res, 401, 'UNAUTHENTICATED', 'authentication required');
     if (!auth.tenantId) return apiError(res, 403, 'TENANT_REQUIRED', 'no tenant context on session');
-    req.v1 = { tenantId: auth.tenantId, user: auth.user, roles: auth.roles || [], sessionId: auth.sessionId ?? null, brandIds: auth.brandIds ?? null };
+    req.v1 = {
+      tenantId: auth.tenantId,
+      user: auth.user,
+      roles: auth.roles || [],
+      sessionId: auth.sessionId ?? null,
+      brandIds: auth.brandIds ?? null,
+      allBrandsInCompany: auth.allBrandsInCompany === true,
+      isPlatformSuperAdmin: auth.isPlatformSuperAdmin === true,
+      customAbilities: auth.customAbilities ?? []
+    };
     next();
   } catch {
     return apiError(res, 401, 'UNAUTHENTICATED', 'authentication required');
@@ -249,8 +277,13 @@ export function createApiV1Router(deps = {}) {
 
   /* ------------- channels (read-only tenant routing view) ------------- */
   // Metadata only — provider credentials are NEVER selected or exposed.
-  router.get('/channels', requireV1Auth, async (req, res) => {
+  router.get('/channels', requireV1Auth, requireAbilityInline('brand.read'), async (req, res) => {
     try {
+      // R1: channels are brand-scoped and carry the provider account id
+      // (external_id), so an unscoped list would expose every other brand's
+      // connected page to a caller who is only granted one brand.
+      const scope = brandScopeFromSession(req.v1);
+      const bs = brandScopeSql('c', { tenantWideParam: 1, brandIdsParam: 2 });
       const { rows } = await pool.query(
         `SELECT c.id, c.provider, c.external_id, c.display_name, c.status, c.created_at,
                 b.name AS brand_name,
@@ -258,9 +291,9 @@ export function createApiV1Router(deps = {}) {
            FROM channels c
            LEFT JOIN brands b ON b.id = c.brand_id
            LEFT JOIN integration_health h ON h.channel_id = c.id
-          WHERE c.tenant_id = $1
+          WHERE c.tenant_id = $3 AND ${bs.sql}
           ORDER BY c.created_at DESC`,
-        [req.v1.tenantId]
+        [...bs.params(scope), req.v1.tenantId]
       );
       return res.json({
         data: rows.map((r) => ({
@@ -315,6 +348,7 @@ export function createApiV1Router(deps = {}) {
 
   /* --------------------- Stage 6: AI config + reply sources --------------------- */
   router.use('/ai', createAiRouter());
+  router.use('/brand-grants', createBrandGrantsRouter());
 
   // error envelope for anything unexpected
   router.use((err, _req, res, _next) => {

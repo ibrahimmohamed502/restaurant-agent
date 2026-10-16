@@ -118,20 +118,36 @@ if (fs.existsSync(p9)) {
   check('roles insert is ON CONFLICT DO NOTHING', /ON CONFLICT \(tenant_id, name\) DO NOTHING/.test(s));
 }
 
-console.log('\n=== 6. No unintended tracked files changed ===');
-const changed = execFileSync('git', ['diff', '--name-only', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+console.log('\n=== 6. The Group C commit touched only the intended files ===');
+// This gate is scoped to the GROUP C COMMIT itself, not to the working tree.
+// It originally read `git diff --name-only HEAD`, which was valid only while
+// that patch was still uncommitted; on any later branch it reports that branch's
+// files and fails for the wrong reason. Diffing the commit makes the assertion
+// permanent and exactly as strict as before.
+const GROUP_C_COMMIT = 'fa74d933501243f8d7759555f3fed578ad0eedc9';
+const groupCRange = execFileSync('git', ['diff', '--name-status', `${GROUP_C_COMMIT}^`, GROUP_C_COMMIT], { cwd: ROOT, encoding: 'utf8' })
+  .trim().split('\n').filter(Boolean);
+const modifiedInCommit = groupCRange.filter((l) => l.startsWith('M')).map((l) => l.slice(2));
+const addedInCommit = groupCRange.filter((l) => l.startsWith('A')).map((l) => l.slice(2));
+
 const expectedTracked = ['.dockerignore'];
-const unexpectedTracked = changed.filter((f) => !expectedTracked.includes(f));
-check('only .dockerignore is modified among tracked files', unexpectedTracked.length === 0, unexpectedTracked.join(', '));
-const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: ROOT, encoding: 'utf8' })
-  .trim().split('\n').filter((f) => f && !f.startsWith('node_modules') && !f.startsWith('GROUP-C-PATCH'));
+const unexpectedTracked = modifiedInCommit.filter((f) => !expectedTracked.includes(f));
+check('the Group C commit modifies only .dockerignore among tracked files',
+  unexpectedTracked.length === 0, unexpectedTracked.join(', '));
+
 const expectedUntracked = ['migrations/009_handoff.sql', 'scripts/test-group-c-dockerignore.mjs'];
-const unexpectedUntracked = untracked.filter((f) => !expectedUntracked.includes(f));
-check('only migrations/009_handoff.sql is newly added', unexpectedUntracked.length === 0, unexpectedUntracked.join(', '));
+const unexpectedUntracked = addedInCommit.filter((f) => !expectedUntracked.includes(f));
+check('the Group C commit adds only migrations/009_handoff.sql', unexpectedUntracked.length === 0, unexpectedUntracked.join(', '));
 
 console.log('\n=== 7. Compose is untouched ===');
-const composeChanged = execFileSync('git', ['diff', '--name-only', 'HEAD', '--', 'docker-compose.yml'], { cwd: ROOT, encoding: 'utf8' }).trim();
-check('docker-compose.yml is NOT modified', composeChanged === '', composeChanged);
+// Scoped to the same commit, for the same reason.
+const composeChanged = execFileSync('git', ['diff', '--name-only', `${GROUP_C_COMMIT}^`, GROUP_C_COMMIT, '--', 'docker-compose.yml'], { cwd: ROOT, encoding: 'utf8' }).trim();
+check('docker-compose.yml is NOT modified by the Group C commit', composeChanged === '', composeChanged);
+
+// The live compose file must still be byte-identical to the committed one on
+// every branch: production Compose is never overwritten.
+const composeDirty = execFileSync('git', ['status', '--porcelain', '--', 'docker-compose.yml'], { cwd: ROOT, encoding: 'utf8' }).trim();
+check('docker-compose.yml is clean in the working tree on this branch', composeDirty === '', composeDirty);
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}  ${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);
