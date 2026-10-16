@@ -35,6 +35,16 @@ pool.query = async (sql, params = []) => {
   return { rows: [] };
 };
 
+// The handoff-safety fix makes createEscalationRecord run its transition and its
+// escalation INSERT inside ONE transaction, so it now takes a client from
+// pool.connect() instead of calling pool.query() directly. The stub must model
+// the same interface, otherwise the call escapes to a real socket (this file's
+// whole premise is that no connection is ever opened).
+pool.connect = async () => ({
+  query: (sql, params = []) => pool.query(sql, params),
+  release() {}
+});
+
 const { findOrCreateChannel, findOrCreateCustomer, findOrCreateConversation } = await import('../src/services/conversations.js');
 const { processComment, processMessage } = await import('../src/webhook.js');
 

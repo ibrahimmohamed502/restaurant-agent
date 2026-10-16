@@ -210,12 +210,99 @@ export function deliveryErrorCategory(err) {
   return result.category ?? DELIVERY_CATEGORY.API_ERROR;
 }
 
-export async function createEscalationRecord({ tenantId, conversationId, category, reason, summary }) {
-  await pool.query(
-    `INSERT INTO escalations (tenant_id, conversation_id, category, reason, summary, priority)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [tenantId, conversationId, category, reason, summary, 'normal']
-  );
+/**
+ * Record an AI-detected escalation AND stop the AI.
+ *
+ * DEFECT THIS FIXES
+ * -----------------
+ * This was a bare INSERT: it logged an escalation while leaving the
+ * conversation in AI_ACTIVE. The AI gate suppresses replies unless
+ * conversations.state === 'AI_ACTIVE', so the AI kept answering a conversation
+ * that was already flagged for human handling - and every subsequent inbound
+ * message produced another outbound reply. This was the second escalation
+ * writer; requestHandoff() in ./handoff.js already did the state transition
+ * correctly, which is why only the `draft.escalate` / contact-data path
+ * exhibited the defect.
+ *
+ * THE FIX
+ * -------
+ * One transaction: the conversation leaves AI_ACTIVE and the escalation row is
+ * written together, so there is no window in which an escalation exists while
+ * the AI still owns the conversation.
+ *
+ * AI_ACTIVE -> HUMAN_REQUIRED -> QUEUED mirrors requestHandoff() exactly, so
+ * both writers land in the same state and the existing UI/assignment logic
+ * needs no special case. QUEUED is the correct landing state here: a human
+ * intervention was detected but no eligible assignee exists yet.
+ *
+ * CONCURRENCY AND IDEMPOTENCY
+ * ---------------------------
+ * Each UPDATE carries `state = <expected>` in its WHERE clause, so it is the
+ * database that decides the winner: a concurrent or repeated call simply
+ * matches zero rows and becomes a no-op. Two callers cannot both transition,
+ * and calling this N times still ends in QUEUED - not in an error, and not in a
+ * second state change.
+ *
+ * A conversation already being handled by a human (HUMAN_ACTIVE, ASSIGNED,
+ * RESOLVED) is deliberately NOT pulled back to QUEUED: the second UPDATE only
+ * matches HUMAN_REQUIRED, the transient hop between the two states. Escalating
+ * must never undo a human's in-progress work.
+ *
+ * EXISTING ESCALATIONS
+ * --------------------
+ * This only INSERTs. It never UPDATEs, resolves, or deletes an escalation row,
+ * so open escalations are never silently closed or re-categorised. If an open
+ * escalation already exists this adds a second record rather than mutating the
+ * first, which preserves the audit trail.
+ */
+export async function createEscalationRecord(
+  { tenantId, conversationId, category, reason, summary, priority = 'normal' },
+  deps = {}
+) {
+  const db = deps.db ?? pool;
+  if (!tenantId || !conversationId) {
+    // Nothing to key on. Refuse rather than insert an unattributable row.
+    return { recorded: false, reason: 'MISSING_CONTEXT' };
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Step 1 - the AI must stop owning this conversation. `state = 'AI_ACTIVE'`
+    // is the lock: only a conversation still under AI control can enter the
+    // handoff path.
+    await client.query(
+      `UPDATE conversations SET state = 'HUMAN_REQUIRED'
+        WHERE id = $2 AND tenant_id = $1 AND state = 'AI_ACTIVE'`,
+      [tenantId, conversationId]
+    );
+
+    // Step 2 - into the human queue. Matches only the transient HUMAN_REQUIRED
+    // hop, so a conversation a human already owns is left exactly as it is.
+    await client.query(
+      `UPDATE conversations SET state = 'QUEUED'
+        WHERE id = $2 AND tenant_id = $1 AND state = 'HUMAN_REQUIRED'`,
+      [tenantId, conversationId]
+    );
+
+    const { rows } = await client.query(
+      `INSERT INTO escalations (tenant_id, conversation_id, category, reason, summary, priority)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING id, created_at`,
+      [tenantId, conversationId, category ?? null, reason ?? null, summary ?? null, priority]
+    );
+
+    await client.query('COMMIT');
+    return { recorded: true, id: rows[0]?.id ?? null, createdAt: rows[0]?.created_at ?? null };
+  } catch (err) {
+    // Roll back so a failed insert cannot leave the conversation parked in
+    // HUMAN_REQUIRED with no escalation explaining why.
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**
