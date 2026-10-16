@@ -127,6 +127,14 @@ export async function revokeBrand({ tenantId, actorUserId, targetUserId, brandId
     const scope = await callerBrandScope({ db: client, tenantId, userId: actorUserId });
     assertCanDelegate({ tenantId, userId: actorUserId, scope, targetTenantId: tenantId, brandId });
 
+    // Self-revoke is refused. Losing a brand is recoverable by re-granting it;
+    // but an admin who quietly removes their own access has usually made a
+    // mistake, and the failure mode is "nobody can undo it". Someone else must
+    // do it, deliberately.
+    if (actorUserId === targetUserId) {
+      throw new GrantError('SELF_REVOKE_FORBIDDEN', 'you cannot revoke your own brand grant', 409);
+    }
+
     const { rows } = await client.query(
       `UPDATE user_brand_grants
           SET revoked_at = now(), revoked_by = $3
@@ -206,6 +214,8 @@ export async function grantAllBrandsInCompany({ tenantId, actorUserId, targetUse
 }
 
 export async function revokeAllBrandsInCompany({ tenantId, actorUserId, targetUserId, db = pool }) {
+  if (!enabled) throw new GrantError('DB_DISABLED', 'database is not configured', 503);
+  if (!isUuid(targetUserId)) throw new GrantError('INVALID_ID', 'targetUserId must be a uuid', 400);
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -213,6 +223,27 @@ export async function revokeAllBrandsInCompany({ tenantId, actorUserId, targetUs
     if (!scope.allBrands) {
       throw new GrantError('DELEGATION_NOT_AUTHORIZED', 'you cannot revoke company-wide brand access', 403);
     }
+
+    // Self-revoke is refused for the same reason as a per-brand grant: it is
+    // almost always a mistake, and the recovery path requires another admin.
+    //
+    // NOTE ON COMPANY-WIDE LOCKOUT
+    // -----------------------------
+    // There is deliberately no "last holder" count check here, because it could
+    // never fire and would be false comfort. Company-wide lockout is already
+    // impossible, by construction:
+    //   1. reaching this code requires the ACTOR to hold a live company-wide
+    //      delegation (asserted just above), and
+    //   2. the actor may not be the target (self-revoke refused just above),
+    // so the actor necessarily still holds company-wide scope after any
+    // successful revoke. The actor is therefore always a surviving holder.
+    //
+    // The invariant is asserted directly in scripts/test-r1-brand-access.mjs
+    // rather than approximated by an unreachable branch.
+    if (actorUserId === targetUserId) {
+      throw new GrantError('SELF_REVOKE_FORBIDDEN', 'you cannot revoke your own company-wide delegation', 409);
+    }
+
     const { rows } = await client.query(
       `UPDATE user_brand_scope_all SET revoked_at = now(), revoked_by = $3
         WHERE tenant_id = $1 AND user_id = $2 AND revoked_at IS NULL RETURNING id`,

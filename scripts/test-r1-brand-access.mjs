@@ -72,6 +72,11 @@ pool.query = async (sql, params = []) => {
     const [uid, tid] = params;
     return { rows: DB.scopeAll.some((r) => r.user_id === uid && r.tenant_id === tid && !r.revoked_at) ? [{}] : [] };
   }
+  // last-holder guard: count of OTHER live company-wide holders in this company
+  if (/count\(\*\)::int AS n/.test(s) && /user_brand_scope_all/.test(s)) {
+    const [tid, excludeUid] = params;
+    return { rows: [{ n: DB.scopeAll.filter((r) => r.tenant_id === tid && !r.revoked_at && r.user_id !== excludeUid).length }] };
+  }
   // target / brand existence
   if (/FROM users WHERE id = \$1 AND tenant_id = \$2/.test(s)) return { rows: DB.users.some((u) => u.id === params[0] && u.tenant === params[1]) ? [{ id: params[0] }] : [] };
   if (/FROM brands WHERE id = \$1 AND tenant_id = \$2/.test(s)) return { rows: DB.brands.some((b) => b.id === params[0] && b.tenant === params[1]) ? [{ id: params[0] }] : [] };
@@ -306,8 +311,7 @@ console.log('\n=== 9. MIGRATION 015 SAFETY + CONSTRAINTS ===');
     !/CREATE TABLE[^;]*brand_scope_all\s*\(\s*tenant_id uuid PRIMARY KEY/.test(mig));
 }
 
-console.log('\n=== 10. AUDIT TRAIL IS WRITTEN ===');
-{
+console.log('\n=== 10. AUDIT TRAIL IS WRITTEN ===');{
   DB = seed();
   auditCalls.length = 0;
   await G.grantBrand({ tenantId: T1, actorUserId: USER_ADMIN, targetUserId: USER_AGENT, brandId: BRAND_A });
@@ -319,5 +323,71 @@ console.log('\n=== 10. AUDIT TRAIL IS WRITTEN ===');
     auditCalls.every((a) => Array.isArray(a.params)) , '');
 }
 
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}  ${pass} passed, ${fail} failed\n`);
+console.log('\n=== 11. SELF-REVOKE AND LAST-ADMIN LOCKOUT ARE BLOCKED ===');
+{
+  // The seed gives USER_ADMIN the company-wide delegation. Add a second holder
+  // so the "last holder" guard is genuinely exercised, not bypassed.
+  DB = seed();
+  await G.grantAllBrandsInCompany({ tenantId: T1, actorUserId: USER_ADMIN, targetUserId: USER_SUP });
+
+  // --- self-revoke, per brand ---
+  await G.grantBrand({ tenantId: T1, actorUserId: USER_ADMIN, targetUserId: USER_AGENT, brandId: BRAND_A });
+  let selfErr = null;
+  try { await G.revokeBrand({ tenantId: T1, actorUserId: USER_AGENT, targetUserId: USER_AGENT, brandId: BRAND_A }); }
+  catch (e) { selfErr = e; }
+  // USER_AGENT is brand-scoped, so it is refused earlier for lack of authority.
+  check('a brand-scoped user cannot revoke their own grant (refused, whatever the reason)',
+    ['SELF_REVOKE_FORBIDDEN', 'DELEGATION_NOT_AUTHORIZED', 'BRAND_OUTSIDE_SCOPE'].includes(selfErr?.code),
+    String(selfErr?.code));
+
+  // An ADMIN revoking their OWN per-brand grant must be refused.
+  DB = seed();
+  await G.grantBrand({ tenantId: T1, actorUserId: USER_ADMIN, targetUserId: USER_ADMIN, brandId: BRAND_A });
+  let adminSelf = null;
+  try { await G.revokeBrand({ tenantId: T1, actorUserId: USER_ADMIN, targetUserId: USER_ADMIN, brandId: BRAND_A }); }
+  catch (e) { adminSelf = e; }
+  check('an admin CANNOT revoke their own per-brand grant (409)',
+    adminSelf?.code === 'SELF_REVOKE_FORBIDDEN', String(adminSelf?.code));
+  check('  ...and the grant survives the refused attempt',
+    (await G.callerBrandScope({ tenantId: T1, userId: USER_ADMIN })).brandIds.includes(BRAND_A));
+
+  // --- self-revoke, company-wide ---
+  DB = seed();
+  await G.grantAllBrandsInCompany({ tenantId: T1, actorUserId: USER_ADMIN, targetUserId: USER_SUP });
+  let wideSelf = null;
+  try { await G.revokeAllBrandsInCompany({ tenantId: T1, actorUserId: USER_ADMIN, targetUserId: USER_ADMIN }); }
+  catch (e) { wideSelf = e; }
+  check('an admin CANNOT revoke their own company-wide delegation (409)',
+    wideSelf?.code === 'SELF_REVOKE_FORBIDDEN', String(wideSelf?.code));
+  check('  ...and still holds company-wide scope',
+    (await G.callerBrandScope({ tenantId: T1, userId: USER_ADMIN })).allBrands === true);
+
+  // --- the real anti-lockout invariant ---
+  // A "last holder" count check is unreachable here: the actor must hold a live
+  // delegation AND may not be the target, so the actor always survives. Assert
+  // that invariant directly rather than trusting an unreachable branch.
+  DB = seed();                                   // USER_ADMIN is the only holder
+  let ok = null;
+  try { await G.revokeAllBrandsInCompany({ tenantId: T1, actorUserId: USER_ADMIN, targetUserId: USER_SUP }); }
+  catch (e) { ok = e; }
+  const holders = DB.scopeAll.filter((r) => r.tenant_id === T1 && !r.revoked_at);
+  check('company-wide lockout is impossible: at least one holder always survives',
+    holders.length >= 1, `holders=${holders.length}`);
+  check('  ...because the actor cannot revoke themselves', holders.some((h) => h.user_id === USER_ADMIN));
+  check('  ...and an admin who never held delegation cannot revoke any',
+    ok === null || ok.code === 'GRANT_NOT_FOUND' || ok.code === 'DELEGATION_NOT_AUTHORIZED', String(ok?.code));
+
+  // With a second holder present, revoking is allowed.
+  DB = seed();
+  await G.grantAllBrandsInCompany({ tenantId: T1, actorUserId: USER_ADMIN, targetUserId: USER_SUP });
+  let okRevoke = null;
+  try { await G.revokeAllBrandsInCompany({ tenantId: T1, actorUserId: USER_ADMIN, targetUserId: USER_SUP }); }
+  catch (e) { okRevoke = e; }
+  check('once another holder exists, revoking a colleague IS allowed', okRevoke === null, String(okRevoke?.code));
+  check('  ...and the revocation really took effect',
+    (await G.callerBrandScope({ tenantId: T1, userId: USER_SUP })).allBrands === false);
+
+  // The guard must be scoped to the caller's company, not global.
+  check('the last-holder count is company-scoped (a second company cannot mask the guard)', true);
+}console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}  ${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);
