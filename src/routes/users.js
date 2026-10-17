@@ -4,8 +4,54 @@ import { requireAuth, requireRole } from '../auth/middleware.js';
 import { hashPassword } from '../auth/passwords.js';
 import { revokeUserSessions } from '../auth/sessions.js';
 import { audit } from '../auth/audit.js';
+import { canDelegateRole } from '../auth/abilities.js';
 
 const ADMIN = requireRole('Company Admin');
+
+/**
+ * DELEGATION CEILING.
+ *
+ * A tenant administrator may only hand out roles whose every ability they
+ * already hold, and may never hand out a platform-administrative role.
+ *
+ * Without this, POST /api/v1/users/:id/roles let any Company Admin attach the
+ * tenant-local "Platform Super Admin" role row to their own account, because the
+ * only gate on that route was "is a Company Admin".
+ *
+ * Runs BEFORE any write, and resolves the role list from the ACTOR's own tenant,
+ * so it cannot be steered at another company. Fails closed on an unknown role.
+ */
+async function assertRolesDelegable(req, roles) {
+  if (!Array.isArray(roles) || roles.length === 0) return;
+  const actorRoles = req.auth?.roles ?? [];
+  const actorCustomAbilities = req.v1?.customAbilities ?? req.auth?.customAbilities ?? [];
+  const { rows } = await pool.query(
+    `SELECT name, permissions FROM roles WHERE tenant_id = $1 AND name = ANY($2)`,
+    [req.auth.tenantId, roles.map(String)]
+  );
+  const byName = new Map(rows.map((r) => [r.name, r.permissions]));
+  for (const roleName of roles) {
+    if (!canDelegateRole({
+      actorRoles,
+      actorCustomAbilities,
+      targetRoleName: String(roleName),
+      targetPermissions: byName.get(String(roleName)) ?? null
+    })) {
+      const err = new Error(`you cannot grant the role "${roleName}"`);
+      err.status = 403;
+      err.code = 'ROLE_NOT_DELEGABLE';
+      throw err;
+    }
+  }
+}
+
+/** Emit the ceiling rejection without leaking a stack trace. */
+function respondDelegationError(res, e) {
+  if (e?.code === 'ROLE_NOT_DELEGABLE') {
+    return res.status(e.status ?? 403).json({ error: e.message, code: e.code });
+  }
+  throw e;
+}
 
 /* ------------------------------- handlers ------------------------------- */
 /* Exported so both the legacy dashboard router and the /api/v1 router can
@@ -30,6 +76,13 @@ export async function createUser(req, res) {
   const { email, name, password, roles = [] } = req.body ?? {};
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name and password are required' });
   if (String(password).length < 8) return res.status(400).json({ error: 'password must be at least 8 characters' });
+
+  // Reject a non-delegable role BEFORE creating anything.
+  try {
+    await assertRolesDelegable(req, roles);
+  } catch (e) {
+    return respondDelegationError(res, e);
+  }
 
   const client = await pool.connect();
   try {
@@ -81,6 +134,13 @@ export async function setUserStatus(req, res) {
 export async function setUserRoles(req, res) {
   const { roles = [] } = req.body ?? {};
   if (!Array.isArray(roles)) return res.status(400).json({ error: 'roles must be an array' });
+
+  // Reject a non-delegable role BEFORE any role row is deleted or inserted.
+  try {
+    await assertRolesDelegable(req, roles);
+  } catch (e) {
+    return respondDelegationError(res, e);
+  }
 
   const client = await pool.connect();
   try {

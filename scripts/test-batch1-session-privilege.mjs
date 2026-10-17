@@ -132,7 +132,11 @@ const mockValidateSession = async (token) => {
     return null;
   }).filter(Boolean);
   if (platformSuperAdmins.has(s.userId)) roleNames.push('Platform Super Admin');
-  return { tenantId: s.tenantId, user: { id: u.id, email: u.email, name: u.name }, roles: roleNames, sessionId: 'sess-' + s.userId };
+  // Mirrors the real validateSession() contract: authoritative platform membership
+  // comes from the platform_super_admins TABLE and is surfaced as
+  // isPlatformSuperAdmin. requirePlatformSuperAdmin() trusts that flag, never the
+  // role name alone.
+  return { tenantId: s.tenantId, user: { id: u.id, email: u.email, name: u.name }, roles: roleNames, sessionId: 'sess-' + s.userId, isPlatformSuperAdmin: platformSuperAdmins.has(s.userId) };
 };
 
 // Main router with mock validateSessionFn

@@ -45,8 +45,26 @@ export function requireAbility(...abilities) {
   };
 }
 
-/** Guard: only Platform Super Admin may access platform-level endpoints. */
+/**
+ * Guard: only Platform Super Admin may access platform-level endpoints.
+ *
+ * AUTHORITATIVE SOURCE = `req.v1.isPlatformSuperAdmin`, which
+ * src/auth/sessions.js derives from a live row in the `platform_super_admins`
+ * TABLE.
+ *
+ * The role list is deliberately NOT sufficient on its own. A role name in that
+ * list is assembled from the tenant-local `roles`/`user_roles` tables, which a
+ * Company Admin can write through POST /api/v1/users/:id/roles - so a name-only
+ * check would let a tenant administrator mint platform privileges for their own
+ * account. The role check is kept only as an ADDITIONAL requirement, so a
+ * hand-crafted session that carries the flag without the role is still refused.
+ *
+ * Fails closed: a missing or malformed session is denied.
+ */
 export function requirePlatformSuperAdmin(req, res, next) {
+  if (req.v1?.isPlatformSuperAdmin !== true) {
+    return apiError(res, 403, 'FORBIDDEN', 'platform super admin required');
+  }
   if (!isPlatformSuperAdmin(req.v1?.roles)) {
     return apiError(res, 403, 'FORBIDDEN', 'platform super admin required');
   }

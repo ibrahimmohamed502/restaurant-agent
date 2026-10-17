@@ -158,8 +158,68 @@ export function isSupervisorOrAdmin(roles = []) {
   return can(roles, 'conversation.assign');
 }
 
+/**
+ * DISPLAY / ROLE-CHECK ONLY - NOT AN AUTHORISATION SOURCE.
+ *
+ * This helper answers "does the session's role LIST name Platform Super Admin".
+ * It must never decide whether a caller may act at platform level, because the
+ * role list is assembled from the tenant-local `roles` + `user_roles` tables and
+ * can therefore be influenced by a tenant administrator.
+ *
+ * Authoritative platform membership lives in the `platform_super_admins` table and
+ * is surfaced on the session as `req.v1.isPlatformSuperAdmin` by
+ * src/auth/sessions.js. Use that, via requirePlatformSuperAdmin().
+ */
 export function isPlatformSuperAdmin(roles = []) {
   return roles.includes('Platform Super Admin');
+}
+
+/**
+ * Roles a tenant administrator may never hand out.
+ *
+ * Platform Super Admin is administered at platform level, not through a tenant's
+ * user management, so it is never delegable by Company Admin, Supervisor, Agent
+ * or a custom role. The role row itself is left in place: existing rows and
+ * existing sessions are untouched by this rule.
+ */
+export const NON_DELEGABLE_ROLE_NAMES = Object.freeze(['Platform Super Admin']);
+
+/** The abilities a built-in role confers (empty for an unknown/custom name). */
+export function abilitiesForRole(roleName) {
+  return ROLE_ABILITIES[roleName] ?? [];
+}
+
+/**
+ * Delegation ceiling: may `actorRoles` grant `targetRoleName` to a tenant user?
+ *
+ * Two independent conditions, both mandatory:
+ *
+ *   1. The role name is not platform-administrative (NON_DELEGABLE_ROLE_NAMES).
+ *   2. EVERY ability the target role confers is one the actor already holds.
+ *      This covers built-in roles (map) and custom roles (their stored
+ *      `permissions`), and it blocks a custom role that smuggles in `platform.*`.
+ *
+ * Fail-closed: an unknown role name with no stored permissions resolves to zero
+ * abilities, which is NOT a subset of anything, so it cannot be granted.
+ */
+export function canDelegateRole({
+  actorRoles = [],
+  actorCustomAbilities = [],
+  targetRoleName,
+  targetPermissions = null
+} = {}) {
+  if (!targetRoleName || typeof targetRoleName !== 'string') return false;
+  if (NON_DELEGABLE_ROLE_NAMES.includes(targetRoleName)) return false;
+
+  const stored = Array.isArray(targetPermissions) ? targetPermissions : null;
+  const targetAbilities = stored && stored.length > 0
+    ? stored
+    : abilitiesForRole(targetRoleName);
+
+  // Unknown role and no usable permissions -> fail closed.
+  if (!Array.isArray(targetAbilities) || targetAbilities.length === 0) return false;
+
+  return targetAbilities.every((a) => can(actorRoles, a, actorCustomAbilities));
 }
 
 export function isCompanyAdmin(roles = []) {
