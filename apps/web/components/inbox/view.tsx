@@ -143,10 +143,19 @@ export function InboxView() {
     return () => { alive = false; };
   }, [router]);
 
+  // Track whether this is an initial load or a background refresh. During a
+  // background refresh (10s polling) we must NOT flip detailLoading to true,
+  // because that swaps the thread for a skeleton and unmounts the HandoffPanel —
+  // destroying any in-progress dialog (Reassign, Resolve, etc.) and the unsaved
+  // reason text the operator was typing. The panel's own 10s poll keeps its data
+  // current without unmounting.
+  const prevSelectedRef = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!selected) { setDetail(null); setDetailError(null); return; }
+    if (!selected) { setDetail(null); setDetailError(null); prevSelectedRef.current = null; return; }
     let alive = true;
-    setDetailLoading(true);
+    const isInitialLoad = prevSelectedRef.current !== selected;
+    prevSelectedRef.current = selected;
+    if (isInitialLoad) setDetailLoading(true);
     setDetailError(null);
     (async () => {
       try {
@@ -158,14 +167,14 @@ export function InboxView() {
         // Record WHY. The old code collapsed every failure to null, which is the
         // same value that means "still loading", and that is what left the panel
         // spinning on a server error.
-        setDetail(null);
+        if (isInitialLoad) setDetail(null);
         setDetailError(
           body?.error?.message ||
           (r.status === 404 ? 'not_found' : r.status === 403 ? 'forbidden' : `http_${r.status}`)
         );
       } catch {
         if (!alive) return;
-        setDetail(null);
+        if (isInitialLoad) setDetail(null);
         setDetailError('network');
       } finally {
         if (alive) setDetailLoading(false);
