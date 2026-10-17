@@ -223,6 +223,57 @@ try {
   const raceCount = await q(`SELECT count(*)::int n FROM messages WHERE idempotency_key='idem-race-00001'`);
   eq('and exactly one row exists', raceCount.rows[0].n, 1);
 
+  section('5b TRUE concurrency: independent connections, not a queued one');
+  // The section-5 racers shared ONE pg client, which serialises its queries. That
+  // proves the index works but NOT that the database resolves simultaneous
+  // claims. This section opens N independent connections and releases them
+  // together, so PostgreSQL really does have to arbitrate.
+  {
+    const [concConv] = (await q(
+      `INSERT INTO conversations (tenant_id, channel_id, external_key, state)
+       VALUES ($1,$2,'psid-conc','QUEUED') RETURNING id`, [t1.id, ch1.id])).rows;
+    await q(`INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, text, provider_message_id, provider_ts)
+             VALUES ($1,$2,'inbound','customer','hi','in-conc',$3)`,
+      [t1.id, concConv.id, new Date(Date.now() - 60_000)]);
+
+    const N = 24;
+    const conns = [];
+    for (let i = 0; i < N; i++) {
+      const c = new pg.Client({ connectionString: url });
+      await c.connect();
+      conns.push(c);
+    }
+    check(`opened ${N} INDEPENDENT database connections`, conns.length === N);
+
+    // Every connection issues the SAME claim at the same moment.
+    const start = Promise.resolve();
+    const results = await Promise.all(conns.map((c) =>
+      start.then(() => c.query(claimSql,
+        [t1.id, concConv.id, admin.id, 'racing', 'idem-true-race-1', true, [], true, 86400, STATES, PROVIDERS]))
+    ));
+    const winners = results.filter((r) => r.rows[0].claimed_count === 1).length;
+    eq(`exactly ONE of ${N} simultaneous independent claims wins`, winners, 1);
+    const losers = results.filter((r) => r.rows[0].claimed_count === 0).length;
+    eq(`and the other ${N - 1} write nothing`, losers, N - 1);
+
+    const rows = await q(`SELECT count(*)::int n, count(DISTINCT id)::int d FROM messages
+                          WHERE idempotency_key='idem-true-race-1'`);
+    eq('exactly ONE row exists for the key', rows.rows[0].n, 1);
+    eq('with exactly one distinct id', rows.rows[0].d, 1);
+
+    // Distinct keys must ALL win: concurrency must not serialise unrelated replies
+    // into one winner. Ten employees, ten keys, ten messages.
+    const distinctResults = await Promise.all(conns.slice(0, 10).map((c, i) =>
+      c.query(claimSql,
+        [t1.id, concConv.id, admin.id, `reply ${i}`, `idem-distinct-${i}`, true, [], true, 86400, STATES, PROVIDERS])
+    ));
+    eq('ten DIFFERENT keys from ten connections all succeed',
+      distinctResults.filter((r) => r.rows[0].claimed_count === 1).length, 10);
+
+    await Promise.all(conns.map((c) => c.end().catch(() => {})));
+    check('all independent connections closed cleanly', true);
+  }
+
   section('6 AI_ACTIVE is refused by the database');
   await q(`UPDATE conversations SET state='AI_ACTIVE' WHERE id=$1`, [conv.id]);
   const r3 = await claim(base({ 4: 'idem-ai-000001' }));
