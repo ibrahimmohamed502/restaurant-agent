@@ -5,27 +5,8 @@
  *   TEST_DATABASE_URL=postgres://user:pass@localhost:5432/lwc_test \
  *     node scripts/test-pg-delivery-integration.mjs
  *
- * WHY THIS EXISTS
- * The retry gate, the atomic claim and the duplicate-suppression index are all
- * SQL behaviour. A fake pool can only assert that the right string was passed;
- * it cannot prove that PostgreSQL refuses a row the way production will. Every
- * assertion below runs against a real server.
- *
  * NO PRODUCTION DATA IS TOUCHED: the suite refuses to run unless the target
- * database name ends in `_test`, and it only ever inserts rows it created.
- *
- * Verifies, against real PostgreSQL:
- *   - UNIQUE (conversation_id, provider_message_id) suppresses a redelivered
- *     inbound message, and therefore a second AI reply.
- *   - CHECK (delivery_status IN ('pending','sent','failed')) rejects a fourth
- *     value — this is why an 'unknown' status needs no migration.
- *   - claimFailedOutboundForRetry's allow-list is enforced by the DATABASE:
- *     auth/permission/unknown/NULL categories are refused, rate limit is not.
- *   - webhook_events UNIQUE (provider, external_id) + the atomic claim: many
- *     concurrent claimers, exactly one winner.
- *   - A claimed 'failed' event can be re-claimed by a bounded retry; a claimed
- *     'unknown' event never can.
- *   - summarizeStrandedEvents reports the three silent failure modes.
+ * database name ends in `_test`, and it only ever inserts rows it creates.
  */
 process.env.ENCRYPTION_KEY ||= '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
@@ -34,25 +15,23 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import pg from 'pg';
 
-/** Resolve paths from the script location so cwd does not matter. */
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) {
-  console.log('⏭️  TEST_DATABASE_URL not set — skipping real-PostgreSQL integration tests');
+  console.log('TEST_DATABASE_URL not set - skipping');
   process.exit(0);
 }
 
 const dbName = new URL(url).pathname.replace(/^\//, '');
 if (!dbName.endsWith('_test')) {
-  console.error(`⛔ refusing to run: database "${dbName}" does not end in _test`);
+  console.error(`Refusing: "${dbName}" does not end in _test`);
   process.exit(1);
 }
-console.log(`\n🐘 real PostgreSQL integration — database ${dbName}\n`);
+
+console.log(`\nreal PostgreSQL integration - database ${dbName}\n`);
 
 let passed = 0, failed = 0;
-// ASCII markers on purpose: this suite's output is frequently piped through
-// Windows shells that mangle non-ASCII characters.
 const check = (n, ok, d = '') => {
   if (ok) { passed++; console.log(`  [PASS] ${n}`); }
   else { failed++; console.log(`  [FAIL] ${n}${d ? ' -- ' + d : ''}`); }
@@ -62,31 +41,16 @@ const pool = new pg.Pool({ connectionString: url, max: 10 });
 
 /* ------------------------------------------------------------------ schema */
 async function hasPgvector() {
-  const { rows } = await pool.query(
-    `SELECT 1 FROM pg_available_extensions WHERE name = 'vector'`
-  );
+  const { rows } = await pool.query(`SELECT 1 FROM pg_available_extensions WHERE name = 'vector'`);
   return rows.length > 0;
 }
 
-/**
- * A stock PostgreSQL build has no pgvector. Without it migration 001 aborts part
- * way (the file is one multi-statement query, so `tenants` is never created) and
- * 007 cannot run at all.
- *
- * When the extension is missing we apply the REAL migrations with only the
- * vector-typed statements removed, and report exactly what was filtered. The
- * knowledge/embedding tables are unrelated to the delivery and idempotency
- * behaviour under test — every table this suite actually asserts on
- * (messages, webhook_events, conversations, channels, tenants) is applied
- * verbatim from the repository's own SQL.
- */
 const PGVECTOR_AVAILABLE = await hasPgvector();
 const filteredStatements = [];
 
 function loadMigration(file) {
   const sql = readFileSync(join(REPO, 'migrations', file), 'utf8');
   if (PGVECTOR_AVAILABLE) return sql;
-
   const kept = [];
   for (const line of sql.split('\n')) {
     const isVector =
@@ -100,20 +64,10 @@ function loadMigration(file) {
 }
 
 async function applyMigrations() {
-  // Only the migrations that define what this suite asserts on:
-  //   001 tenants/channels/conversations/messages/webhook_events
-  //   003 meta channel uniqueness
-  //   004 delivery_status + its CHECK constraint  <-- load-bearing
-  //   005 retry metadata
-  // The Knowledge Base migrations (006, 007, 008, 013) build pgvector-typed
-  // tables and indexes. They are unrelated to delivery or idempotency, are not
-  // touched by this change, and are excluded so a stock PostgreSQL build without
-  // pgvector can still exercise the real constraints.
   const REQUIRED = ['001_init.sql', '003_meta_channel_unique.sql', '004_message_delivery_status.sql', '005_message_retry_metadata.sql'];
   const present = readdirSync(join(REPO, 'migrations')).filter((f) => f.endsWith('.sql')).sort();
   const missing = REQUIRED.filter((f) => !present.includes(f));
   if (missing.length) throw new Error(`missing migrations: ${missing.join(', ')}`);
-
   const skipped = present.filter((f) => !REQUIRED.includes(f));
   for (const f of REQUIRED) {
     await pool.query(loadMigration(f));
@@ -122,10 +76,9 @@ async function applyMigrations() {
 }
 
 const { applied: migrationCount, skipped: skippedMigrations } = await applyMigrations();
-check('the repository migrations apply against real PostgreSQL', migrationCount === 4,
-  `applied=${migrationCount}`);
+check('the repository migrations apply against real PostgreSQL', migrationCount === 4, `applied=${migrationCount}`);
 if (filteredStatements.length) {
-  console.log('  [note] pgvector not installed — vector-typed statements filtered out of 001:');
+  console.log('  [note] pgvector not installed - vector-typed statements filtered out of 001:');
   for (const f of filteredStatements) console.log(`         ${f}`);
 }
 console.log(`  [note] out of scope for this suite (knowledge base / pgvector): ${skippedMigrations.join(', ')}`);
@@ -152,13 +105,7 @@ const addOutbound = async (over = {}) => {
   const { rows } = await pool.query(
     `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, text, provider_message_id, delivery_status, delivery_error)
      VALUES ($1,$2,'outbound','ai','reply text', $3, $4, $5) RETURNING id`,
-    [
-      over.tenantId ?? tenant.id,
-      over.conversationId ?? conversation.id,
-      over.pmid ?? null,
-      over.status ?? 'pending',
-      over.error ?? null
-    ]
+    [over.tenantId ?? tenant.id, over.conversationId ?? conversation.id, over.pmid ?? null, over.status ?? 'pending', over.error ?? null]
   );
   return rows[0].id;
 };
@@ -182,8 +129,8 @@ console.log('--- 1. inbound dedupe really suppresses a second reply ---');
   check('redelivered inbound is suppressed by the UNIQUE index', second.rows.length === 0);
 }
 
-/* ================ 2. delivery_status CHECK — WHY NO MIGRATION ============== */
-console.log('\n--- 2. delivery_status is constrained; the outcome map fits inside it ---');
+/* ================ 2. delivery_status CHECK ============== */
+console.log('\n--- 2. delivery_status is constrained ---');
 {
   const legal = ['pending', 'sent', 'failed'];
   const accepted = [];
@@ -194,36 +141,31 @@ console.log('\n--- 2. delivery_status is constrained; the outcome map fits insid
       accepted.push(s);
     } catch (e) { /* constraint rejected it */ }
   }
-  check('the three outcomes we write are all schema-legal', accepted.length === 3, accepted.join(','));
+  check('the three outcomes are schema-legal', accepted.length === 3, accepted.join(','));
 
   let rejected = false;
   try { await addOutbound({ status: 'unknown', pmid: 'pmid_bad' }); }
   catch (e) { rejected = /delivery_status/.test(e.message); }
-  check('a fourth status value would be REJECTED (so unknown uses pending + category)', rejected);
+  check('a fourth status value would be REJECTED', rejected);
 
   const { rows } = await pool.query(
     `SELECT delivery_error FROM messages WHERE id = $1`, [await addOutbound({ status: 'pending', error: 'delivery_unknown' })]
   );
-  check('delivery_error accepts the unknown marker (free text, unconstrained)',
-    rows[0].delivery_error === 'delivery_unknown');
+  check('delivery_error accepts the unknown marker', rows[0]?.delivery_error === 'delivery_unknown');
 }
 
-/* ================== 3. THE RETRY GATE, ENFORCED BY THE DATABASE ============ */
+/* ================== 3. THE RETRY GATE ============ */
 console.log('\n--- 3. only a provably safe refusal may be re-sent ---');
 {
-  // Exercise the REAL SQL, not a fake pool.
   const { claimFailedOutboundForRetry } = await import('../src/services/conversations.js');
 
-  // These cases assert the CATEGORY gate, so they run as a fully authorised
-  // caller. A scope is now mandatory: omitting it means "no brands", which
-  // correctly refuses everything — that fail-closed default is asserted
-  // separately in section 3d.
   const AUTHORISED = { mode: 'tenant', brandIds: null };
   const claim = (id, t = tenant.id) =>
     claimFailedOutboundForRetry({ messageId: id, conversationId: conversation.id, tenantId: t, scope: AUTHORISED });
 
   const rateId = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
-  check('meta_rate_limit (confirmed refusal, transient) IS claimable', (await claim(rateId))?.id === rateId);
+  const rateResult = await claim(rateId);
+  check('meta_rate_limit IS claimable', rateResult?.id === rateId, JSON.stringify(rateResult));
 
   const authId = await addOutbound({ status: 'failed', error: 'meta_auth_expired' });
   check('meta_auth_expired is NOT claimable', (await claim(authId)) === null);
@@ -237,21 +179,14 @@ console.log('\n--- 3. only a provably safe refusal may be re-sent ---');
   const nullId = await addOutbound({ status: 'failed', error: null });
   check('a failed row with NO category is NOT claimable', (await claim(nullId)) === null);
 
-  // ---- THE HEADLINE CASE: outcome unknown, message possibly already sent ----
   const unknownId = await addOutbound({ status: 'pending', error: 'delivery_unknown' });
-  check('delivery_unknown is NOT claimable (the customer may already have it)',
-    (await claim(unknownId)) === null);
+  check('delivery_unknown is NOT claimable', (await claim(unknownId)) === null);
   const { rows: [still] } = await pool.query(`SELECT delivery_status FROM messages WHERE id = $1`, [unknownId]);
-  check('the unknown row is left untouched (no state churn from a refused claim)',
-    still.delivery_status === 'pending');
+  check('the unknown row is left untouched', still?.delivery_status === 'pending');
 
-  // ---- tenant isolation, against real rows ----
   const foreignId = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
   check('another tenant cannot claim the row', (await claim(foreignId, OTHER_TENANT.id)) === null);
 
-  // ---- TWO OPERATORS clicking Retry at the same moment ----
-  // This is the literal scenario from the review: two staff members, one
-  // message. Exactly one Meta POST may result.
   const twoOpsId = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
   const [opA, opB] = await Promise.all([claim(twoOpsId), claim(twoOpsId)]);
   check('two operators retrying the same message -> exactly one winner',
@@ -259,18 +194,15 @@ console.log('\n--- 3. only a provably safe refusal may be re-sent ---');
   const { rows: [twoOpsRow] } = await pool.query(
     `SELECT retry_count, delivery_status FROM messages WHERE id = $1`, [twoOpsId]);
   check('the loser is refused with no state change',
-    twoOpsRow.retry_count === 1 && twoOpsRow.delivery_status === 'pending',
-    JSON.stringify(twoOpsRow));
+    twoOpsRow?.retry_count === 1 && twoOpsRow?.delivery_status === 'pending', JSON.stringify(twoOpsRow));
 
-  // ---- concurrent claims: exactly one winner ----
   const raceId = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
   const results = await Promise.all([claim(raceId), claim(raceId), claim(raceId), claim(raceId)]);
   const winners = results.filter(Boolean).length;
   check('4 concurrent retry claims -> exactly 1 winner', winners === 1, `winners=${winners}`);
   const { rows: [raceRow] } = await pool.query(`SELECT retry_count FROM messages WHERE id = $1`, [raceId]);
-  check('the row was transitioned exactly once', raceRow.retry_count === 1);
+  check('the row was transitioned exactly once', raceRow?.retry_count === 1);
 
-  // ---- authorisation matrix, one row per (status, category) combination ----
   const matrix = [
     ['sent', null, false], ['pending', null, false], ['pending', 'delivery_unknown', false],
     ['failed', 'meta_auth_expired', false], ['failed', 'meta_permission', false],
@@ -286,39 +218,31 @@ console.log('\n--- 3. only a provably safe refusal may be re-sent ---');
       Boolean(won) === expected, `got=${Boolean(won)}`);
   }
 
-  // ---- the category allow-list is enforced by the database, not the app ----
   const { rows: [gateSql] } = await pool.query(
     `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
       WHERE conrelid = 'messages'::regclass AND conname = 'messages_delivery_status_check'`);
   check('the delivery_status CHECK still allows exactly the three values',
-    /'pending'/.test(gateSql.def) && /'sent'/.test(gateSql.def) && /'failed'/.test(gateSql.def) &&
-    !/'unknown'/.test(gateSql.def), gateSql.def);
+    gateSql?.def && /'pending'/.test(gateSql.def) && /'sent'/.test(gateSql.def) && /'failed'/.test(gateSql.def) &&
+    !/'unknown'/.test(gateSql.def), gateSql?.def);
 
-  // ---- brand scope: report what the schema and auth model actually enforce ----
   const { rows: [chanCols] } = await pool.query(
     `SELECT column_name FROM information_schema.columns
       WHERE table_name = 'channels' AND column_name = 'brand_id'`);
-  check('channels carry brand_id, but the retry gate scopes by tenant',
-    chanCols.column_name === 'brand_id');
+  check('channels carry brand_id', chanCols?.column_name === 'brand_id');
   const { rows: msgCols } = await pool.query(
     `SELECT column_name FROM information_schema.columns
       WHERE table_name = 'messages' AND column_name = 'brand_id'`);
-  check('messages have NO brand_id, so brand cannot be scoped in the claim',
-    msgCols.length === 0,
-    'brand isolation is carried by channels.brand_id and enforced at routing time');
+  check('messages have NO brand_id', msgCols.length === 0);
 }
 
 /* ============ 3d. BRAND SCOPE INSIDE THE ATOMIC CLAIM ==================== */
 console.log('\n--- 3d. the claim enforces brand scope atomically ---');
 {
   const { rows: [brandA] } = await pool.query(
-    `INSERT INTO brands (tenant_id, name, slug) VALUES ($1,'Brand A','brand-a') RETURNING id`,
-    [tenant.id]);
+    `INSERT INTO brands (tenant_id, name, slug) VALUES ($1,'Brand A','brand-a') RETURNING id`, [tenant.id]);
   const { rows: [brandB] } = await pool.query(
-    `INSERT INTO brands (tenant_id, name, slug) VALUES ($1,'Brand B','brand-b') RETURNING id`,
-    [tenant.id]);
+    `INSERT INTO brands (tenant_id, name, slug) VALUES ($1,'Brand B','brand-b') RETURNING id`, [tenant.id]);
 
-  // A conversation on brand A, and one on brand B.
   const { rows: [chanA] } = await pool.query(
     `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name)
      VALUES ($1,$2,'meta_dm','page_a','A') RETURNING id`, [tenant.id, brandA.id]);
@@ -326,7 +250,6 @@ console.log('\n--- 3d. the claim enforces brand scope atomically ---');
     `INSERT INTO conversations (tenant_id, channel_id, external_key)
      VALUES ($1,$2,'PSID_A') RETURNING id`, [tenant.id, chanA.id]);
 
-  // Company-wide channel: brand_id IS NULL.
   const { rows: [chanTenant] } = await pool.query(
     `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name)
      VALUES ($1,NULL,'meta_dm','page_tenant','Tenant') RETURNING id`, [tenant.id]);
@@ -343,63 +266,59 @@ console.log('\n--- 3d. the claim enforces brand scope atomically ---');
   const ONLY_B = { mode: 'restricted', brandIds: [brandB.id] };
   const NO_BRANDS = { mode: 'restricted', brandIds: [] };
 
-  // --- in scope ---
   const inA = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
-  check('tenant-wide scope claims a brand-A message', (await scopedClaim(inA, convA.id, TENANT_WIDE))?.id === inA);
-  const inA2 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
-  check('a grant naming brand A claims a brand-A message',
-    (await scopedClaim(inA2, convA.id, ONLY_A))?.id === inA2);
+  const inAResult = await scopedClaim(inA, convA.id, TENANT_WIDE);
+  check('tenant-wide scope claims a brand-A message', inAResult?.id === inA, JSON.stringify(inAResult));
 
-  // --- out of scope, and the denial must leave NO trace ---
+  const inA2 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
+  const inA2Result = await scopedClaim(inA2, convA.id, ONLY_A);
+  check('a grant naming brand A claims a brand-A message', inA2Result?.id === inA2, JSON.stringify(inA2Result));
+
   const inA3 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
   check('a grant naming brand B cannot claim a brand-A message',
     (await scopedClaim(inA3, convA.id, ONLY_B)) === null);
-  let row = (await pool.query(`SELECT delivery_status, retry_count FROM messages WHERE id = $1`, [inA3])).rows[0];
-  check('the denied row keeps its state', row.delivery_status === 'failed' && row.retry_count === 0,
-    JSON.stringify(row));
+  const row = (await pool.query(`SELECT delivery_status, retry_count FROM messages WHERE id = $1`, [inA3])).rows[0];
+  check('the denied row keeps its state', row?.delivery_status === 'failed' && row?.retry_count === 0, JSON.stringify(row));
 
-  // --- company-wide channel is never reachable by a restricted caller ---
   const inT = await addOutbound({ conversationId: convTenant.id, status: 'failed', error: 'meta_rate_limit' });
   check('a restricted caller cannot claim a company-wide (NULL brand) message',
     (await scopedClaim(inT, convTenant.id, ONLY_A)) === null);
-  const inT2 = await addOutbound({ conversationId: convTenant.id, status: 'failed', error: 'meta_rate_limit' });
-  check('a tenant-wide caller CAN claim a company-wide message',
-    (await scopedClaim(inT2, convTenant.id, TENANT_WIDE))?.id === inT2);
 
-  // --- a zero-brand scope is refused, never widened ---
+  const inT2 = await addOutbound({ conversationId: convTenant.id, status: 'failed', error: 'meta_rate_limit' });
+  const inT2Result = await scopedClaim(inT2, convTenant.id, TENANT_WIDE);
+  check('a tenant-wide caller CAN claim a company-wide message', inT2Result?.id === inT2, JSON.stringify(inT2Result));
+
   const inA4 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
   check('a zero-brand scope claims nothing',
     (await scopedClaim(inA4, convA.id, NO_BRANDS)) === null);
+
   const inA5 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
   check('a MISSING scope is refused, not treated as tenant-wide',
     (await scopedClaim(inA5, convA.id, undefined)) === null);
+
   const inA6 = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
-  check('a MALFORMED scope is refused, not treated as tenant-wide',
+  check('a MALFORMED scope is refused',
     (await scopedClaim(inA6, convA.id, { mode: 'nonsense' })) === null);
 
-  // --- brand scope must not weaken tenant isolation ---
   const inB = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
   const crossTenant = await claimFailedOutboundForRetry({
     messageId: inB, conversationId: convA.id, tenantId: OTHER_TENANT.id, scope: TENANT_WIDE
   });
   check('a brand grant never bypasses tenant isolation', crossTenant === null);
 
-  // --- concurrency across two brands, under a restricted scope ---
   const cA = await addOutbound({ conversationId: convA.id, status: 'failed', error: 'meta_rate_limit' });
   const [r1, r2] = await Promise.all([
     scopedClaim(cA, convA.id, ONLY_A), scopedClaim(cA, convA.id, ONLY_A)
   ]);
-  check('two restricted operators -> exactly one winner',
-    [r1, r2].filter(Boolean).length === 1);
+  check('two restricted operators -> exactly one winner', [r1, r2].filter(Boolean).length === 1);
   const [x1, x2] = await Promise.all([
     scopedClaim(cA, convA.id, ONLY_B), scopedClaim(cA, convA.id, ONLY_B)
   ]);
   check('two operators with the WRONG brand both lose', x1 === null && x2 === null);
   const after = (await pool.query(`SELECT delivery_status, retry_count FROM messages WHERE id = $1`, [cA])).rows[0];
   check('exactly one transition was applied overall',
-    after.retry_count === 1 && after.delivery_status === 'pending', JSON.stringify(after));
+    after?.retry_count === 1 && after?.delivery_status === 'pending', JSON.stringify(after));
 
-  // --- the brand is exposed for audit/reporting ---
   const { brandVisibleToScope, BRAND_SCOPE_TENANT } = await import('../src/api/v1/brandAccess.js');
   check('the tenant-wide scope sees the NULL-brand channel', brandVisibleToScope(null, { mode: BRAND_SCOPE_TENANT }));
   check('a restricted scope does not', !brandVisibleToScope(null, ONLY_A));
@@ -418,7 +337,6 @@ console.log('\n--- 3e. state transitions a Manual Retry can produce ---');
       `SELECT delivery_status, delivery_error, retry_count, provider_message_id FROM messages WHERE id = $1`,
       [id])).rows[0];
 
-  // --- Phase 2: a VERIFIED throttling refusal is stored as retryable ---
   {
     const id = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
     const outcome = classifyDeliveryError({ status: 429, graphCode: 4, isGraphError: true });
@@ -428,17 +346,16 @@ console.log('\n--- 3e. state transitions a Manual Retry can produce ---');
     });
     const row = await state(id);
     check('a verified throttle refusal is stored failed + meta_rate_limit',
-      row.delivery_status === 'failed' && row.delivery_error === 'meta_rate_limit', JSON.stringify(row));
+      row?.delivery_status === 'failed' && row?.delivery_error === 'meta_rate_limit', JSON.stringify(row));
     check('and it is claimable again',
       (await claimFailedOutboundForRetry({
         messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
       }))?.id === id);
     const after = await state(id);
     check('the claim reset it to pending with no category',
-      after.delivery_status === 'pending' && after.delivery_error === null, JSON.stringify(after));
+      after?.delivery_status === 'pending' && after?.delivery_error === null, JSON.stringify(after));
   }
 
-  // --- Phase 2: an UNKNOWN outcome is stored pending and is NOT claimable ---
   {
     const id = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
     await claimFailedOutboundForRetry({
@@ -451,18 +368,15 @@ console.log('\n--- 3e. state transitions a Manual Retry can produce ---');
     });
     const row = await state(id);
     check('a timeout is stored pending + delivery_unknown',
-      row.delivery_status === 'pending' && row.delivery_error === 'delivery_unknown', JSON.stringify(row));
+      row?.delivery_status === 'pending' && row?.delivery_error === 'delivery_unknown', JSON.stringify(row));
     check('and the claim refuses it forever',
       (await claimFailedOutboundForRetry({
         messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
       })) === null);
     check('the row was left exactly as the claim set it',
-      (await state(id)).retry_count === 1);
+      (await state(id))?.retry_count === 1);
   }
 
-  // --- Phase 3: DELIVERED BUT NOT RECORDED -> the row must stay un-sendable ---
-  // The handler deliberately performs NO write in this case; the row keeps the
-  // claim's state. Proving that state is refused is what prevents a duplicate.
   {
     const id = await addOutbound({ status: 'failed', error: 'meta_rate_limit' });
     await claimFailedOutboundForRetry({
@@ -470,16 +384,14 @@ console.log('\n--- 3e. state transitions a Manual Retry can produce ---');
     });
     const row = await state(id);
     check('after a confirmed delivery the row is pending with no category',
-      row.delivery_status === 'pending' && row.delivery_error === null, JSON.stringify(row));
+      row?.delivery_status === 'pending' && row?.delivery_error === null, JSON.stringify(row));
     check('a delivered-but-unrecorded row cannot be sent again',
       (await claimFailedOutboundForRetry({
         messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
       })) === null);
-    check('and no second transition was applied', (await state(id)).retry_count === 1);
+    check('and no second transition was applied', (await state(id))?.retry_count === 1);
   }
 
-  // --- A 'failed' write after a confirmed delivery would be UNSAFE: prove the
-  //     gate refuses every category the handler could wrongly write. ---
   {
     const writable = ['meta_rate_limit', 'delivery_unknown', 'meta_api_error', 'meta_auth_expired'];
     for (const category of writable) {
@@ -497,13 +409,12 @@ console.log('\n--- 3e. state transitions a Manual Retry can produce ---');
     }
   }
 
-  // --- The CHECK constraint still admits every state the handler writes ---
   {
     const id = await addOutbound({ status: 'pending', error: null });
     await finishMessageDelivery({ tenantId: tenant.id, messageId: id, deliveryStatus: 'sent', providerMessageId: 'mid_x' });
     const row = await state(id);
     check('the sent + provider id write is accepted by the schema',
-      row.delivery_status === 'sent' && row.provider_message_id === 'mid_x', JSON.stringify(row));
+      row?.delivery_status === 'sent' && row?.provider_message_id === 'mid_x', JSON.stringify(row));
     check('and a sent row is never claimable',
       (await claimFailedOutboundForRetry({
         messageId: id, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
@@ -524,7 +435,6 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
     `SELECT delivery_status, delivery_error FROM messages WHERE id = $1`, [id]
   ).then((r) => r.rows[0]);
 
-  // --- the marker is written only onto a pending row ---
   {
     const pending = await addOutbound({ status: 'pending', error: null });
     const ok = await recordReconciliationMarker({
@@ -533,39 +443,35 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
     const row = await state(pending);
     check('the marker is persisted on a pending row', ok === true, JSON.stringify(row));
     check('and it does not change delivery_status',
-      row.delivery_status === 'pending' && row.delivery_error === 'delivered_unrecorded',
-      JSON.stringify(row));
-    check('a marked row is NOT claimable (no duplicate possible)',
+      row?.delivery_status === 'pending' && row?.delivery_error === 'delivered_unrecorded', JSON.stringify(row));
+    check('a marked row is NOT claimable',
       (await claimFailedOutboundForRetry({
         messageId: pending, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
       })) === null);
   }
 
-  // --- refused marker ---
   {
     const refused = await addOutbound({ status: 'pending', error: null });
     await recordReconciliationMarker({
       tenantId: tenant.id, messageId: refused, category: DELIVERY_CATEGORY.REFUSED_UNRECORDED
     });
     check('the refused marker persists',
-      (await state(refused)).delivery_error === 'refused_unrecorded');
+      (await state(refused))?.delivery_error === 'refused_unrecorded');
     check('and is NOT claimable either',
       (await claimFailedOutboundForRetry({
         messageId: refused, conversationId: conversation.id, tenantId: tenant.id, scope: AUTHORISED
       })) === null);
   }
 
-  // --- a non-pending row can never be marked ---
   {
     const sent = await addOutbound({ status: 'sent', pmid: 'x1' });
     const ok = await recordReconciliationMarker({
       tenantId: tenant.id, messageId: sent, category: DELIVERY_CATEGORY.DELIVERED_UNRECORDED
     });
     check('a sent row is NOT marked', ok === false);
-    check('and is left untouched', (await state(sent)).delivery_error === null);
+    check('and is left untouched', (await state(sent))?.delivery_error === null);
   }
 
-  // --- a non-reconciliation category is refused by the writer itself ---
   {
     const row = await addOutbound({ status: 'pending', error: null });
     let rejected = false;
@@ -577,21 +483,17 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
     check('the writer refuses a retryable category', rejected);
   }
 
-  // --- tenant isolation ---
   {
     const mine = await addOutbound({ status: 'pending', error: null });
     const crossTenant = await recordReconciliationMarker({
       tenantId: OTHER_TENANT.id, messageId: mine, category: DELIVERY_CATEGORY.DELIVERED_UNRECORDED
     });
     check('another tenant cannot mark the row', crossTenant === false);
-    check('and the row keeps its own state', (await state(mine)).delivery_error === null);
+    check('and the row keeps its own state', (await state(mine))?.delivery_error === null);
   }
 
-  // --- the scoped report ---
   {
     const summary = await summarizeUnresolvedOutbound({ tenantId: tenant.id, scope: AUTHORISED });
-    // One row was marked delivered_unrecorded and one refused_unrecorded above;
-    // anything else carrying a marker would come from earlier sections.
     check('the report counts delivered_unrecorded',
       summary.delivered_unrecorded >= 1, JSON.stringify(summary));
     check('the report counts refused_unrecorded',
@@ -605,7 +507,6 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
     check('the report excludes the other tenant',
       summary.unresolved_total < 100);
 
-    // A zero-brand scope sees nothing, even though rows exist.
     const none = await summarizeUnresolvedOutbound({
       tenantId: tenant.id, scope: { mode: 'restricted', brandIds: [] }
     });
@@ -613,8 +514,6 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
       none.delivered_unrecorded === 0 && none.refused_unrecorded === 0 && none.pending_inflight === 0,
       JSON.stringify(none));
 
-    // Missing tenant must be DISTINGUISHABLE from a genuine zero, never reported
-    // as a clean state.
     const noTenant = await summarizeUnresolvedOutbound({ scope: AUTHORISED });
     check('a missing tenant is marked unavailable, not clean',
       noTenant.unavailable === true && noTenant.reason === 'TENANT_REQUIRED', JSON.stringify(noTenant));
@@ -623,7 +522,6 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
       typeof PENDING_INFLIGHT === 'string' && PENDING_INFLIGHT === 'pending_inflight');
   }
 
-  // ---- the worker's cross-tenant aggregate ----
   {
     const { summarizeUnresolvedOutboundAllTenants } =
       await import('../src/services/conversations.js');
@@ -639,7 +537,6 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
 
     const before = await summarizeUnresolvedOutboundAllTenants();
 
-    // One marked row in our tenant, two in the other.
     await addOutbound({ status: 'pending', error: null });
     await pool.query(
       `UPDATE messages SET delivery_error = 'delivered_unrecorded', created_at = now() - interval '1 hour'
@@ -664,7 +561,6 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
     check('more than one tenant is affected',
       all.tenants_affected >= 2, String(all.tenants_affected));
 
-    // It must not name any tenant.
     const serialised = JSON.stringify(all);
     check('no tenant id leaks through the aggregate',
       !serialised.includes(tenant.id) && !serialised.includes(otherId), serialised);
@@ -673,8 +569,6 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
     check('no customer content is returned',
       !/text|name|psid|message_id/i.test(serialised), serialised);
 
-    // Ageing: a message that went pending seconds ago is legitimately in flight,
-    // so it must appear in NO bucket until it has had time to settle.
     const fresh = await addOutbound({ status: 'pending', error: null });
     await pool.query(`UPDATE messages SET created_at = now() WHERE id = $1`, [fresh]);
     const afterFresh = await summarizeUnresolvedOutboundAllTenants();
@@ -685,7 +579,6 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
       afterFresh.pending_inflight === all.pending_inflight,
       `${JSON.stringify(afterFresh)} vs ${JSON.stringify(all)}`);
 
-    // Age the same row: it must now become visible, and only as in-flight.
     await pool.query(
       `UPDATE messages SET created_at = now() - interval '1 hour' WHERE id = $1`, [fresh]);
     const afterAged = await summarizeUnresolvedOutboundAllTenants();
@@ -697,6 +590,85 @@ console.log('\n--- 3f. markers persist, stay non-retryable, and stay scoped ---'
       `${JSON.stringify(afterAged)} vs ${JSON.stringify(all)}`);
     check('the aggregate still names no tenant after ageing',
       !JSON.stringify(afterAged).includes(otherId), JSON.stringify(afterAged));
+  }
+}
+
+/* ============ 3g. REPLY_IN_FLIGHT AND provider_ts ========================== */
+console.log('\n--- 3g. REPLY_IN_FLIGHT guard and provider_ts dispatch timestamp ---');
+{
+  const { humanReplyInFlight } = await import('../src/services/manualReplies.js');
+  const { finishMessageDelivery } = await import('../src/services/conversations.js');
+
+  // --- provider_ts is set on successful send ---
+  {
+    const id = await addOutbound({ status: 'pending', error: null });
+    const inbound = new Date(Date.now() - 60_000);
+    await pool.query(
+      `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, text, provider_message_id, provider_ts)
+       VALUES ($1,$2,'inbound','customer','hi','in_ts',$3)`,
+      [tenant.id, conversation.id, inbound]
+    );
+
+    const result = await finishMessageDelivery({
+      tenantId: tenant.id, messageId: id, deliveryStatus: 'sent', providerMessageId: 'mid_ts_1'
+    });
+    check('finishMessageDelivery returns the row on sent', result !== null);
+    const { rows: [row] } = await pool.query(`SELECT provider_ts, delivery_status FROM messages WHERE id = $1`, [id]);
+    check('provider_ts is set on sent', row?.provider_ts !== null, JSON.stringify(row));
+  }
+
+  // --- provider_ts is preserved on subsequent updates ---
+  {
+    const id = await addOutbound({ status: 'pending', error: null });
+    await finishMessageDelivery({
+      tenantId: tenant.id, messageId: id, deliveryStatus: 'sent', providerMessageId: 'mid_ts_2'
+    });
+    const { rows: [before] } = await pool.query(`SELECT provider_ts FROM messages WHERE id = $1`, [id]);
+    await finishMessageDelivery({
+      tenantId: tenant.id, messageId: id, deliveryStatus: 'failed', errorCategory: 'meta_rate_limit'
+    });
+    const { rows: [after] } = await pool.query(`SELECT provider_ts FROM messages WHERE id = $1`, [id]);
+    check('provider_ts is preserved on subsequent update', before?.provider_ts === after?.provider_ts,
+      `before=${before?.provider_ts} after=${after?.provider_ts}`);
+  }
+
+  // --- provider_ts is NOT set on failed ---
+  {
+    const id = await addOutbound({ status: 'pending', error: null });
+    await finishMessageDelivery({
+      tenantId: tenant.id, messageId: id, deliveryStatus: 'failed', errorCategory: 'meta_auth_expired'
+    });
+    const { rows: [row] } = await pool.query(`SELECT provider_ts FROM messages WHERE id = $1`, [id]);
+    check('provider_ts is NOT set on failed', row?.provider_ts === null, JSON.stringify(row));
+  }
+
+  // --- humanReplyInFlight detects pending outbound employee reply ---
+  {
+    const { rows: [empConv] } = await pool.query(
+      `INSERT INTO conversations (tenant_id, channel_id, external_key, state)
+       VALUES ($1,$2,'PSID_FLIGHT','QUEUED') RETURNING id`,
+      [tenant.id, channel.id]
+    );
+
+    const inFlightNone = await humanReplyInFlight({ tenantId: tenant.id, conversationId: empConv.id });
+    check('no in-flight reply returns false', inFlightNone === false);
+
+    const { rows: [empMsg] } = await pool.query(
+      `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, delivery_status)
+       VALUES ($1,$2,'outbound','employee','pending') RETURNING id`,
+      [tenant.id, empConv.id]
+    );
+
+    const inFlightYes = await humanReplyInFlight({ tenantId: tenant.id, conversationId: empConv.id });
+    check('pending employee reply is in flight', inFlightYes === true);
+
+    await pool.query(`UPDATE messages SET delivery_status='sent' WHERE id=$1`, [empMsg.id]);
+    const inFlightSent = await humanReplyInFlight({ tenantId: tenant.id, conversationId: empConv.id });
+    check('sent reply is no longer in flight', inFlightSent === false);
+
+    await pool.query(`UPDATE messages SET delivery_status='failed' WHERE id=$1`, [empMsg.id]);
+    const inFlightFailed = await humanReplyInFlight({ tenantId: tenant.id, conversationId: empConv.id });
+    check('failed reply is no longer in flight', inFlightFailed === false);
   }
 }
 
@@ -718,27 +690,25 @@ console.log('\n--- 4. exactly one worker may claim an event ---');
   check('8 concurrent claims -> exactly 1 winner', results.filter(Boolean).length === 1,
     `winners=${results.filter(Boolean).length}`);
 
-  // A row left 'processing' (worker died) must never be claimable again.
   check('a processing row is never re-claimed',
     (await claimWebhookEventForProcessing({ provider: 'meta', externalId: 'ev_race' })) === null);
 
-  // A bounded retry: 'failed' IS claimable, because nothing was sent.
   await updateWebhookEvent({ provider: 'meta', externalId: 'ev_race', status: 'failed', error: 'processing_error' });
   check('a failed row IS re-claimable (bounded retry, nothing sent)',
     (await claimWebhookEventForProcessing({ provider: 'meta', externalId: 'ev_race' })) != null);
 
-  // THE STRUCTURAL GUARANTEE: after a send was attempted the row is 'unknown',
-  // and the claim refuses it — this is what stops BullMQ from re-sending.
-  await updateWebhookEvent({
+  const updateResult = await updateWebhookEvent({
     provider: 'meta', externalId: 'ev_race',
     status: WEBHOOK_STATUS.UNKNOWN, error: 'OUTBOUND_ATTEMPTED'
   });
+  check('updateWebhookEvent returns the updated row', updateResult !== null, JSON.stringify(updateResult));
   const afterSend = await claimWebhookEventForProcessing({ provider: 'meta', externalId: 'ev_race' });
   check('an UNKNOWN row (send already attempted) is NEVER claimable', afterSend === null);
 
-  // webhook_events.status has no CHECK, so 'unknown' is storable without a migration.
   const { rows } = await pool.query(`SELECT status FROM webhook_events WHERE external_id = 'ev_race'`);
-  check('webhook_events accepts an unconstrained status value', rows[0].status === 'unknown');
+  check('webhook_events row exists after all updates', rows.length > 0, `rows=${rows.length}`);
+  check('webhook_events accepts an unconstrained status value', rows[0]?.status === 'unknown',
+    rows[0]?.status);
 }
 
 /* ================== 5. STRAY-EVENT REPORTING (REAL SQL) =================== */
@@ -750,7 +720,6 @@ console.log('\n--- 5. the silent failure modes are reportable ---');
      VALUES ('meta','ev_stuck','{}','processing', now() - interval '2 hours')`);
   await pool.query(`INSERT INTO webhook_events (provider, external_id, payload, status, received_at, processed_at)
      VALUES ('meta','ev_unknown','{}','unknown', now() - interval '2 hours', now() - interval '2 hours')`);
-  // A stranded row that has hit the re-dispatch cap.
   await pool.query(`INSERT INTO webhook_events (provider, external_id, payload, status, received_at, error)
      VALUES ('meta','ev_capped','{}','received', now() - interval '2 hours', 'REDISPATCHED:5')`);
 
@@ -758,8 +727,6 @@ console.log('\n--- 5. the silent failure modes are reportable ---');
   check('stuck processing events are counted', s.stuck_processing >= 1, JSON.stringify(s));
   check('unknown delivery outcomes are counted', s.unknown_delivery >= 1);
   check('rows that hit the re-dispatch cap are counted', s.redispatch_capped >= 1);
-  // A row stuck in 'processing' has no processed_at, so ageing must fall back to
-  // received_at — otherwise the most urgent rows read as fresh.
   check('aged rows are reported separately, including rows with no processed_at',
     s.aged_total >= 3, `aged=${s.aged_total}`);
   check('a single at-a-glance total is available', strandedEventTotal(s) >= 3);
