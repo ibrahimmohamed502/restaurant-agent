@@ -180,7 +180,8 @@ export async function updateMessageDelivery({ tenantId, messageId, deliveryStatu
     `UPDATE messages
         SET delivery_status = $1,
             delivery_error = $2,
-            provider_message_id = COALESCE($3, provider_message_id)
+            provider_message_id = COALESCE($3, provider_message_id),
+            provider_ts = CASE WHEN $1 = 'sent' THEN COALESCE(provider_ts, now()) ELSE provider_ts END
       WHERE id = $4 AND tenant_id = $5 AND direction = 'outbound'
       RETURNING id, delivery_status, provider_message_id`,
     [deliveryStatus, errorCategory, providerMessageId, messageId, tenantId]
@@ -373,7 +374,8 @@ export async function finishMessageDelivery({ tenantId, messageId, deliveryStatu
     `UPDATE messages
         SET delivery_status = $1,
             delivery_error = $2,
-            provider_message_id = COALESCE($3, provider_message_id)
+            provider_message_id = COALESCE($3, provider_message_id),
+            provider_ts = CASE WHEN $1 = 'sent' THEN COALESCE(provider_ts, now()) ELSE provider_ts END
       WHERE id = $4 AND tenant_id = $5 AND direction = 'outbound'
       RETURNING id, delivery_status, provider_message_id, delivery_error, retry_count, last_retry_at`,
     [deliveryStatus, errorCategory, providerMessageId, messageId, tenantId]

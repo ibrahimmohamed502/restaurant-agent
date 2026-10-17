@@ -734,6 +734,21 @@ export async function resolveConversationOperation({ session, conversationId, bo
       throw new OpsError(403, OPS_ERRORS.NOT_ASSIGNED, 'only the assigned agent may resolve this conversation');
     }
 
+    // Reconcile dispatch vs. resolve: a conversation with a reply still in
+    // flight (claimed but not yet delivered) must not be closed, because the
+    // dispatch would land on a resolved thread — contradictory timestamps.
+    const replyInFlight = await humanReplyInFlight({
+      tenantId: authority.tenantId, conversationId, db: client
+    });
+    if (replyInFlight) {
+      await writeDeniedRow(client, {
+        tenantId: authority.tenantId, actorUserId: authority.userId,
+        action: 'conversation.resolve.denied', objectId: conversationId, ip: deps.ip ?? null,
+        metadata: auditMeta(conv, { fromState: conv.state, toState: null, reason, extra: { code: 'REPLY_IN_FLIGHT' } })
+      });
+      throw new OpsError(409, OPS_ERRORS.REPLY_IN_FLIGHT, 'an employee reply has not been delivered yet');
+    }
+
     let result;
     try {
       result = await resolveConversation(
