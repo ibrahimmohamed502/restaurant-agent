@@ -226,6 +226,25 @@ export function HandoffPanel({
     return () => clearInterval(timer);
   }, [load, busy]);
 
+  // Resign the member selector whenever the server sends a new list, so a stale
+  // selection can never be submitted against a changed permission set.
+  //
+  // This MUST be at the top level, before any early return. A hook placed after
+  // an early return changes the hook order between renders (loading -> loaded),
+  // which React treats as a fatal error ("Rendered more hooks than during the
+  // previous render"). That was the cause of the Inbox crash: on the first render
+  // ctx was null (loading), so this hook was skipped; on the second render ctx
+  // was set, so the hook ran. React threw and the whole page crashed.
+  //
+  // We read eligibleMembers from ctx?.eligibleMembers so this is safe even when
+  // ctx is null (loading or error state).
+  React.useEffect(() => {
+    if (dialog?.kind !== 'assign') return;
+    const members = ctx?.eligibleMembers ?? [];
+    const ids = new Set(members.map((m) => m.id));
+    if (memberId && !ids.has(memberId)) setMemberId('');
+  }, [ctx?.eligibleMembers, dialog, memberId]);
+
   const closeDialog = () => { setDialog(null); setReason(''); setMemberId(''); };
 
   /**
@@ -315,13 +334,9 @@ export function HandoffPanel({
    */
   const isWriteUnsupported = conversation.channelProvider !== 'meta_dm';
 
-  // Resign the member selector whenever the server sends a new list, so a stale
-  // selection can never be submitted against a changed permission set.
-  React.useEffect(() => {
-    if (dialog?.kind !== 'assign') return;
-    const ids = new Set(eligibleMembers.map((m) => m.id));
-    if (memberId && !ids.has(memberId)) setMemberId('');
-  }, [eligibleMembers, dialog, memberId]);
+  // Moved to top-level (below) to satisfy React's rules of hooks. See the
+  // comment there for the full explanation of why this was here and why it
+  // crashed the Inbox.
 
   const reasonTooShort = reason.trim().length < 2;
   const canSubmitDialog =
