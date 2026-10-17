@@ -150,13 +150,33 @@ try {
   }
   const nullKeys = await q(`SELECT count(*)::int n FROM messages WHERE idempotency_key IS NULL`);
   check('40 NULL-key AI rows coexist with the new unique index', nullKeys.rows[0].n === 40, String(nullKeys.rows[0].n));
-  // And many rows with the SAME key in DIFFERENT conversations must all succeed.
-  for (let i = 0; i < 5; i++) {
+  // The SAME key in two DIFFERENT conversations must BOTH succeed. The guard is
+  // scoped per conversation, never global, so one key can never be replayed
+  // across conversations or across companies.
+  //
+  // (An earlier version of this loop inserted the same key three times into ONE
+  // conversation and called it a cross-conversation check. PostgreSQL correctly
+  // refused it with 23505. The fixture was wrong, not the index — and the next
+  // assertion below is the one that was actually missing: proving the database
+  // refuses a same-conversation replay by itself.)
+  for (const [label, cid] of [['conv', conv.id], ['convOther', convOther.id]]) {
     await q(`INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, text, provider_message_id, idempotency_key)
              VALUES ($1,$2,'outbound','employee',$3,$4,'shared-key-abc')`,
-      [t1.id, i % 2 ? conv.id : convOther.id, `e${i}`, `idem:shared-key-abc-${i}`]);
+      [t1.id, cid, 'scoped ' + label, 'idem:scoped-' + label]);
   }
-  check('the same key in DIFFERENT conversations does not collide', true);
+  const scoped = await q(`SELECT count(*)::int n FROM messages WHERE idempotency_key='shared-key-abc'`);
+  check('the same key in DIFFERENT conversations does not collide', scoped.rows[0].n === 2, String(scoped.rows[0].n));
+
+  // ...and the SAME key twice in the SAME conversation is refused BY POSTGRESQL.
+  let replayCode = null;
+  try {
+    await q(`INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, text, provider_message_id, idempotency_key)
+             VALUES ($1,$2,'outbound','employee','replay','idem:replay','shared-key-abc')`,
+      [t1.id, conv.id]);
+  } catch (e) { replayCode = e.code; }
+  eq('a replayed key in the SAME conversation is refused by the database', replayCode, '23505');
+  const afterReplay = await q(`SELECT count(*)::int n FROM messages WHERE idempotency_key='shared-key-abc'`);
+  eq('and nothing extra was written', afterReplay.rows[0].n, 2);
 
   /* ------------------------------------------------ the real atomic claim */
 
