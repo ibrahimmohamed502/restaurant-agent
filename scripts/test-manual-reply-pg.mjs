@@ -279,6 +279,9 @@ try {
   eq('a DISABLED channel writes nothing', (await claim(base({ 4: 'idem-disabled-01' }))).rows[0].claimed_count, 0);
   await q(`UPDATE channels SET status='active' WHERE id=$1`, [ch1.id]);
   const stale = base({ 8: 60, 4: 'idem-window-0001' });
+  // Age the PROVIDER timestamp, not created_at: the window is anchored on when
+  // the customer wrote. A row whose created_at is recent but whose provider_ts is
+  // old is exactly the late-webhook case the window exists to catch.
   await q(`UPDATE messages SET provider_ts = now() - interval '10 days' WHERE conversation_id=$1 AND direction='inbound'`, [conv.id]);
   eq('a conversation outside the messaging window writes NOTHING', (await claim(stale)).rows[0].claimed_count, 0);
   await q(`UPDATE messages SET provider_ts = now() - interval '1 minute' WHERE conversation_id=$1 AND direction='inbound'`, [conv.id]);
@@ -300,14 +303,51 @@ try {
   const probe = `SELECT 1 FROM messages m JOIN conversations c ON c.id = m.conversation_id
                   WHERE m.tenant_id = $1 AND m.conversation_id = $2 AND m.direction = 'outbound'
                     AND m.sender_type = 'employee' AND m.delivery_status = 'pending' LIMIT 1`;
-  const fresh1 = await claim(base({ 4: 'idem-probe-0001' }));
-  eq('a claimed, undelivered employee reply IS found by the probe',
-    (await q(probe, [t1.id, conv.id])).rowCount, 1);
-  await q(`UPDATE messages SET delivery_status='sent' WHERE id=$1`, [fresh1.rows[0].claimed_id]);
-  eq('once delivered it is no longer in flight', (await q(probe, [t1.id, conv.id])).rowCount, 0);
+
+  // A DEDICATED conversation. Every earlier section leaves its claimed rows
+  // 'pending' forever — this suite tests the claim in isolation and never
+  // dispatches — so probing 'conv.id' would legitimately match those older rows
+  // and prove nothing about this section.
+  const [probeConv] = (await q(
+    `INSERT INTO conversations (tenant_id, channel_id, external_key, state)
+     VALUES ($1,$2,'psid-probe','QUEUED') RETURNING id`, [t1.id, ch1.id])).rows;
+  await q(`INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, text, provider_message_id, provider_ts)
+           VALUES ($1,$2,'inbound','customer','hi','in-probe',$3)`,
+    [t1.id, probeConv.id, new Date(Date.now() - 60_000)]);
+  const probeClaim = (key) => q(claimSql,
+    [t1.id, probeConv.id, admin.id, 'x', key, true, [], true, 86400, STATES, PROVIDERS]);
+  const inFlight = () => q(probe, [t1.id, probeConv.id]).then((r) => r.rowCount);
+
+  eq('a clean conversation has nothing in flight', await inFlight(), 0);
+  const claimed1 = await probeClaim('idem-probe-0001');
+  eq('the claim was granted', claimed1.rows[0].claimed_count, 1);
+  eq('a claimed, undelivered employee reply IS found by the probe', await inFlight(), 1);
+
+  await q(`UPDATE messages SET delivery_status='sent' WHERE id=$1`, [claimed1.rows[0].claimed_id]);
+  eq('once delivered it is no longer in flight', await inFlight(), 0);
+
+  await q(`UPDATE messages SET delivery_status='failed' WHERE id=$1`, [claimed1.rows[0].claimed_id]);
+  eq('a FAILED employee reply is not in flight either', await inFlight(), 0);
+
+  // A pending AI reply must never be read as human ownership.
   await q(`INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, provider_message_id, delivery_status)
-           VALUES ($1,$2,'outbound','ai','ai-pending-1','pending')`, [t1.id, conv.id]);
-  eq('a pending AI reply is NOT mistaken for human ownership', (await q(probe, [t1.id, conv.id])).rowCount, 0);
+           VALUES ($1,$2,'outbound','ai','ai-pending-1','pending')`, [t1.id, probeConv.id]);
+  eq('a pending AI reply is NOT mistaken for human ownership', await inFlight(), 0);
+
+  // An INBOUND employee row must not count either — the predicate is directional.
+  await q(`INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, provider_message_id, delivery_status)
+           VALUES ($1,$2,'inbound','employee','emp-in-1','pending')`, [t1.id, probeConv.id]);
+  eq('an inbound row is NOT mistaken for an in-flight human reply', await inFlight(), 0);
+
+  // A row belonging to another company must never suppress this conversation.
+  await q(`INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, provider_message_id, delivery_status)
+           VALUES ($1,$2,'outbound','employee','emp-xt-1','pending')`, [t2.id, probeConv.id]);
+  eq('an employee row from ANOTHER company never blocks this conversation', await inFlight(), 0);
+
+  // And the real thing, end to end on this conversation.
+  const claimed2 = await probeClaim('idem-probe-0002');
+  eq('a second claim is also detected', await inFlight(), 1);
+  eq('and it produced a distinct row', claimed2.rows[0].claimed_id !== claimed1.rows[0].claimed_id, true);
 
   section('14 the retry gate cannot resurrect an ambiguous employee reply');
   // claimFailedOutboundForRetry is scoped to sender_type='ai' today. Assert that

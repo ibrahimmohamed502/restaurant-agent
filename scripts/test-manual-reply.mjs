@@ -843,6 +843,11 @@ section('Q', 'SQL contract');
     'channel capability allow-list': /t\.channel_provider = ANY\(\$11::text\[\]\)/,
     'channel must be active': /t\.channel_status = 'active'/,
     'messaging window': /t\.last_inbound_at > now\(\) - \(\$9::double precision \* interval '1 second'\)/,
+    // Anchored on when the CUSTOMER wrote, not on when we processed the row.
+    // found in production PostgreSQL: created_at alone made a late-delivered
+    // webhook look like an open window, so the provider refused a reply it was
+    // never going to accept.
+    'window anchored on the provider timestamp': /max\(COALESCE\(m\.provider_ts, m\.created_at\)\)/,
     'conflict handled in the database': /ON CONFLICT DO NOTHING/
   };
   for (const [name, re] of Object.entries(guards)) {

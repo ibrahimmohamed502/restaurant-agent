@@ -85,7 +85,7 @@ export function createConversationsRouter({ pool, auditFn, deps = {} }) {
                 ch.provider, ch.display_name AS channel_name,
                 ch.status AS channel_status, ch.brand_id,
                 (SELECT u.display_name FROM users u WHERE u.id = c.assigned_user_id) AS assigned_user_name,
-                (SELECT max(m.created_at) FROM messages m
+                (SELECT max(COALESCE(m.provider_ts, m.created_at)) FROM messages m
                   WHERE m.conversation_id = c.id AND m.direction = 'inbound') AS last_inbound_at
            FROM conversations c
            LEFT JOIN customers cu ON cu.id = c.customer_id

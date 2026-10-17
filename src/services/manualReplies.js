@@ -58,7 +58,21 @@
  *    rather than a silently delivered message with no record.
  *
  * ============================================================================
- * SCOPE — MESSENGER ONLY, AND WHY
+ * MESSAGING WINDOW ANCHOR
+ * ============================================================================
+ * The window is measured from COALESCE(provider_ts, created_at) — the moment the
+ * CUSTOMER wrote, which is what the provider's rule is actually anchored on.
+ *
+ * created_at alone is wrong whenever a webhook is delivered late: created_at is
+ * when WE processed the row and is always >= provider_ts, so it makes the window
+ * look more open than it really is. The consequence is not a duplicate message —
+ * the provider refuses it and the row is recorded as a permanent failure — but a
+ * confusing "permission" failure for a reply the provider was never going to
+ * accept, and an employee retry spent for nothing. created_at stays as the
+ * fallback for rows the provider never timestamped.
+ *
+ * ============================================================================
+ * SCOPE - MESSENGER ONLY, AND WHY
  * ============================================================================
  * Only `meta_dm` is sendable today. Facebook COMMENT replies are refused with a
  * specific error rather than silently attempted, because they are NOT the same
@@ -366,7 +380,7 @@ export async function claimReplySlot({ authority, conversationId, text, idempote
               ch.provider  AS channel_provider,
               ch.status    AS channel_status,
               ch.brand_id,
-              (SELECT max(m.created_at) FROM messages m
+              (SELECT max(COALESCE(m.provider_ts, m.created_at)) FROM messages m
                 WHERE m.conversation_id = c.id AND m.direction = 'inbound') AS last_inbound_at
          FROM conversations c
          LEFT JOIN channels ch ON ch.id = c.channel_id
