@@ -64,6 +64,29 @@ export const ACK_STATUS = Object.freeze({
 });
 
 /**
+ * `pending` HAS TWO MEANINGS, and only one of them is benign.
+ *
+ * Normally it means "claimed a few milliseconds ago, the provider has not answered
+ * yet". But if the process dies between the INSERT and the outcome UPDATE, the row
+ * stays `pending` for ever. Nobody ever writes to it again.
+ *
+ * WHY IT IS LEFT ALONE RATHER THAN REAPED
+ * ---------------------------------------
+ *   - Retrying is unsafe. The provider call may have already delivered the message,
+ *     so a retry risks the customer receiving two reassurances.
+ *   - Deleting the row is worse. The unique index on (tenant_id, conversation_id) is
+ *     the ONLY thing preventing a duplicate, so removing a stuck row would hand the
+ *     single slot back and permit exactly the duplicate this design exists to stop.
+ *   - Marking it `failed` would be a guess in the unsafe direction: it reads as
+ *     "definitely not delivered", which is not something anyone knows.
+ *
+ * So the record stays `pending` forever, and the presentation is what does the work:
+ * staff are shown it as an UNCERTAIN outcome — the same treatment as `unknown` —
+ * together with its age, because how long it has been stuck is what tells an
+ * operator this is a dead record rather than a send still landing.
+ */
+
+/**
  * Every way an acknowledgment can be declined WITHOUT attempting a send.
  *
  * All of these are silent and safe: the conversation is queued either way. They are
@@ -88,13 +111,34 @@ export const ACK_LANGUAGES = Object.freeze(['ar', 'en']);
  * Egyptian Arabic for Arabic conversations, English for English ones.
  *
  * WHAT IT DELIBERATELY DOES NOT SAY. It does not claim the customer has been
- * answered, name an employee, promise a specific time, or imply anything about a
- * resolution. It says a person was notified and will reply. That is true the
- * moment `requestHandoff` has run, which is guaranteed before this is reached.
+ * answered, name an employee, or promise a specific time. It says only that the
+ * request reached a queue a person works from.
+ *
+ * WHY THE EARLIER WORDING WAS REPLACED, AND WHAT WAS WRONG WITH IT
+ * --------------------------------------------------------------
+ * The previous text said the team had been NOTIFIED and would reply SHORTLY.
+ * Neither was true at the moment the message was sent:
+ *
+ *   - Nothing notifies anybody on this path. `notifyStaff` is wired to the
+ *     AUTOMATIC-escalation branch, not to customer-requested-human. A request for
+ *     a person produced a queue row that a human has to notice by themselves, so
+ *     telling the customer "we notified the team" described something the system
+ *     had not done.
+ *   - There is no SLA and no queue-age alarm anywhere in this codebase, so
+ *     "shortly" was a promise nothing was ever going to be measured against.
+ *
+ * The replacement claims only what is verifiable: the request was ADDED TO A
+ * QUEUE and a team member will FOLLOW UP. Both are already true when this text is
+ * sent, because `requestHandoff` has committed the transition to QUEUED and written
+ * the escalation row before this file is reached.
+ *
+ * It still gives the customer something worth receiving — their message reached a
+ * person-controlled queue instead of a bot — and that is the one reassurance the
+ * system can actually back up.
  */
 export const ACKNOWLEDGMENT_TEXT = Object.freeze({
-  ar: 'تمام، عملنا إشعار لفريق خدمة العملاء وهيتواصل معاك واحد من الفريق قريب. آسفين على التأخير 🙏',
-  en: "Got it — we've passed this to our customer service team and someone will get back to you shortly. Sorry for the wait."
+  ar: 'تم تحويل طلبك لفريق خدمة العملاء، وهيتم متابعة محادثتك من خلال أحد أفراد الفريق. شكرًا لانتظارك.',
+  en: 'Your request has been added to our customer support queue for a team member to follow up. Thank you for your patience.'
 });
 
 /**

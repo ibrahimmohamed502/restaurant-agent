@@ -372,15 +372,37 @@ export function HandoffPanel({
         `unknown` is deliberately worded as "we cannot tell" and never as either
         success or failure — the provider may have delivered it, and telling the
         customer otherwise would compound the problem.
+
+        `pending` gets the SAME treatment, and that is the important part. A record
+        left in `pending` is one whose process died between claiming the slot and
+        recording an outcome, so no result was ever written. Rendering that as
+        "sending" tells staff something is in flight when nothing is, and they will
+        wait on a message that will never arrive. It is shown as an uncertain
+        outcome, with its age, because how long it has been stuck is exactly what
+        tells an operator whether this is a dead record or a send still landing.
+
+        Neither state is retried and neither loses its idempotency guard: the unique
+        index stays exactly as it is. This block is read-only information.
       */}
-      {acknowledgment ? (
+      {acknowledgment ? (() => {
+        // `pending` and `unknown` are the same situation from staff's point of view:
+        // the outcome was never established.
+        const uncertain = acknowledgment.status === 'pending'
+          || acknowledgment.status === 'unknown';
+        return (
         <div
           data-testid="ack-status"
           data-status={acknowledgment.status}
+          data-uncertain={uncertain ? 'true' : 'false'}
           className="mx-4 mt-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs"
         >
           <span className="font-medium">{t('ack.label')}</span>{' '}
           <span>{t(`ack.status.${acknowledgment.status}`)}</span>
+          {uncertain ? (
+            <span className="text-muted-foreground">
+              {' '}{t('ack.createdAt', { at: relTime(acknowledgment.createdAt) })}
+            </span>
+          ) : null}
           {acknowledgment.status === 'skipped' && acknowledgment.skipReason ? (
             <>
               {' '}
@@ -389,11 +411,12 @@ export function HandoffPanel({
               </span>
             </>
           ) : null}
-          {acknowledgment.status === 'unknown' ? (
+          {uncertain ? (
             <span className="mt-1 block text-muted-foreground">{t('ack.unknownNote')}</span>
           ) : null}
         </div>
-      ) : null}
+        );
+      })() : null}
 
       {/* Outcome banner: only ever rendered from a server response. */}
       {outcome ? (

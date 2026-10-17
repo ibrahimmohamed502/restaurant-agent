@@ -273,7 +273,7 @@
         "label": "Customer acknowledgment:",
         "status": {
           "sent": "sent to the customer",
-          "pending": "being sent",
+          "pending": "not confirmed — we cannot tell whether it arrived",
           "failed": "could not be sent — the customer has not been told",
           "unknown": "we cannot tell whether it arrived",
           "skipped": "no acknowledgment was sent"
@@ -287,7 +287,8 @@
           "language_undetermined": "the customer's language is unknown",
           "duplicate": "the customer was already told"
         },
-        "unknownNote": "It will not be retried, because the customer may already have received it. Check with them before sending anything else."
+        "unknownNote": "The outcome was never confirmed, and it will not be retried — the customer may already have it. Contact them yourself before sending anything else.",
+        "createdAt": "recorded {at}"
       }
     }
   },

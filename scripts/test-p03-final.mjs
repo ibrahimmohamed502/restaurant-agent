@@ -369,7 +369,7 @@ section('7. Arabic for Arabic conversations, English for English ones');
   check('the Arabic text is Arabic', ARABIC.test(ACKNOWLEDGMENT_TEXT.ar));
   check('the English text is not Arabic', !ARABIC.test(ACKNOWLEDGMENT_TEXT.en));
   check('the Arabic text is Egyptian colloquial, not MSA-only register',
-    /(عملنا إشعار|هيتواصل|آسفين)/.test(ACKNOWLEDGMENT_TEXT.ar));
+    /(هيتم|الفريق|انتظارك|شكرًا)/.test(ACKNOWLEDGMENT_TEXT.ar));
   check('neither text claims the customer was answered',
     !/answered|replied|تم الرد|اتحل/.test(ACKNOWLEDGMENT_TEXT.ar + ACKNOWLEDGMENT_TEXT.en));
   check('neither text names an employee or promises a time',

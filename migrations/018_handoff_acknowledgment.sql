@@ -108,8 +108,8 @@ CREATE INDEX IF NOT EXISTS idx_handoff_acknowledgments_brand
   ON handoff_acknowledgments (tenant_id, brand_id);
 
 COMMENT ON TABLE handoff_acknowledgments IS
-  'One-time customer acknowledgment sent when a CUSTOMER requests a human. At most one row per conversation; the insert is the idempotency lock that runs BEFORE the provider call. ''unknown'' means the outcome is genuinely undetermined and is never retried. Written only at handoff time - never backfilled.';
+  'One-time customer acknowledgment sent when a CUSTOMER requests a human. At most one row per conversation; the insert is the idempotency lock that runs BEFORE the provider call. ''unknown'' means the outcome is genuinely undetermined and is never retried; ''pending'' means the process died before recording any outcome and is treated the same way. Written only at handoff time - never backfilled.';
 COMMENT ON COLUMN handoff_acknowledgments.status IS
-  'pending | sent | failed | unknown | skipped. ''unknown'' is not a synonym for ''failed'': it must never be retried, because the customer may already have the message.';
+  'pending | sent | failed | unknown | skipped. ''unknown'' is not a synonym for ''failed'': it must never be retried, because the customer may already have the message. ''pending'' is the INTERRUPTED case - the row was claimed but no outcome was ever recorded, so the process died mid-send. It is deliberately left as-is: retrying could double-message a customer, and deleting the row would hand the single slot back and allow a duplicate. Staff see it as an uncertain outcome, never as confirmed sent.';
 COMMENT ON COLUMN handoff_acknowledgments.skip_reason IS
   'Why no send was attempted: not_customer_requested | channel_unsupported | channel_inactive | window_closed | language_undetermined | conversation_missing.';
