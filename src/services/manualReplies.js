@@ -264,7 +264,11 @@ export function evaluateReplyEligibility({ authority, conversation }) {
   if (!authority.canReplyAny && conversation.assignedUserId !== authority.userId) {
     return { allowed: false, reason: 'not_assigned' };
   }
-  if (!SENDABLE_CHANNEL_PROVIDERS.includes(conversation.channelProvider)) {
+  // The detail endpoint historically returned `provider`, the handoff endpoint returns
+// `channelProvider`. Accept either so a reply is never blocked by a field-name
+// mismatch between the two code paths.
+const provider = conversation.channelProvider ?? conversation.provider;
+if (!SENDABLE_CHANNEL_PROVIDERS.includes(provider)) {
     return { allowed: false, reason: 'channel_unsupported' };
   }
   if (conversation.channelStatus && conversation.channelStatus !== 'active') {

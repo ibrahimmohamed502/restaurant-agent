@@ -141,7 +141,14 @@ export function createConversationsRouter({ pool, auditFn, deps = {} }) {
         id: conv.id,
         customerName: conv.customer_name,
         provider: conv.provider,
+        // Aliases so describeReply -> evaluateReplyEligibility sees the same field
+        // names it expects. The handoff endpoint maps these as `channelProvider` /
+        // `channelStatus` / `lastInboundAt`; the detail endpoint historically used
+        // `provider` / `channel_status` / `last_inbound_at`, so the two never agreed
+        // and every reply was reported as `channel_unsupported`.
+        channelProvider: conv.provider,
         channelName: conv.channel_name,
+        channelStatus: conv.channel_status,
         brandId: conv.brand_id,
         state: conv.state,
         priority: conv.priority,
@@ -149,7 +156,8 @@ export function createConversationsRouter({ pool, auditFn, deps = {} }) {
         assignedUserId: conv.assigned_user_id,
         assignedUserName: conv.assigned_user_name,
         language: conv.language,
-        createdAt: conv.created_at
+        createdAt: conv.created_at,
+        lastInboundAt: conv.last_inbound_at
       };
 
       return res.json({
