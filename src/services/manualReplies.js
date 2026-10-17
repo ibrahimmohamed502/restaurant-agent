@@ -271,7 +271,10 @@ const provider = conversation.channelProvider ?? conversation.provider;
 if (!SENDABLE_CHANNEL_PROVIDERS.includes(provider)) {
     return { allowed: false, reason: 'channel_unsupported' };
   }
-  if (conversation.channelStatus && conversation.channelStatus !== 'active') {
+  // Fail-closed: a missing channel status means we cannot confirm the channel is
+// active, so the reply must be refused. Treating absence as "active" would let a
+// conversation with no resolvable channel status bypass the check.
+if (conversation.channelStatus !== 'active') {
     return { allowed: false, reason: 'channel_inactive' };
   }
   if (!conversation.lastInboundAt) return { allowed: false, reason: 'window_closed' };
