@@ -34,6 +34,47 @@ export const TENANT_WIDE_BRAND_ABILITY = '__none__';
 
 
 
+/**
+ * P0.3 — `escalation.resolve`, deliberately held by NO built-in role.
+ *
+ * Closing a conversation and DISCHARGING A CUSTOMER COMPLAINT are different acts
+ * with different consequences, so they are separated into two abilities:
+ *
+ *   conversation.resolve -> may close a conversation
+ *   escalation.resolve   -> may close one escalation (a recorded complaint)
+ *
+ * `conversation.resolve` is NOT sufficient to close an escalation, and
+ * `escalation.resolve` is NOT sufficient to close a conversation. Splitting them
+ * means discharging a complaint can be restricted independently of resolving a
+ * thread, without changing who may resolve conversations.
+ *
+ * WHY IT IS IN NO BUILT-IN ROLE. Adding it to Supervisor or Company Admin here
+ * would hand it to every one of them retroactively and silently — exactly the
+ * automatic widening this split exists to prevent. Instead the ability is carried
+ * by a CUSTOM role named in ESCALATION_MANAGER_ROLE, seeded per tenant by
+ * migration 017 with ZERO holders, and assigned by the Platform Owner deliberately.
+ *
+ * THE TRAP THAT MAKES THE CUSTOM ROLE MANDATORY. `effectiveCustomAbilities()`
+ * SKIPS every name in BUILT_IN_ROLES, so a role row called 'Supervisor' has its
+ * `permissions` column ignored entirely — the hardcoded map above is the only
+ * source of truth. Writing `escalation.resolve` into the Supervisor role's JSONB
+ * would therefore do NOTHING at all while appearing to have worked. A role whose
+ * name is NOT in BUILT_IN_ROLES honours its stored permissions, which is why
+ * ESCALATION_MANAGER_ROLE must never collide with a built-in name.
+ *
+ * A holder still needs brand scope: the ability decides WHAT may be done, the R1
+ * grant tables decide WHICH CONVERSATIONS they may see. Neither confers the other.
+ */
+export const ESCALATION_RESOLVE_ABILITY = 'escalation.resolve';
+
+/**
+ * The custom role that carries ESCALATION_RESOLVE_ABILITY.
+ *
+ * Must NOT be added to BUILT_IN_ROLES: a built-in name has its stored permissions
+ * ignored and the ability would silently never apply.
+ */
+export const ESCALATION_MANAGER_ROLE = 'Escalation Manager';
+
 export const ROLE_ABILITIES = {
   'Platform Super Admin': [
     'platform.*',

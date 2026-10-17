@@ -51,6 +51,14 @@ import {
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
+/**
+ * How often the panel re-reads its context while a conversation is selected.
+ *
+ * Matches the thread's existing 10s cadence (view.tsx) so both views agree on when
+ * they last saw the server, rather than introducing a second, faster poll.
+ */
+const REFRESH_INTERVAL_MS = 10000;
+
 /** Every mutation the panel can perform. */
 type Op =
   | 'claim' | 'assign' | 'unassign' | 'resolve'
@@ -136,6 +144,24 @@ export function HandoffPanel({
   const [busy, setBusy] = React.useState<Op | null>(null);
   const [outcome, setOutcome] = React.useState<Outcome | null>(null);
 
+  /**
+   * Guards against the two failure modes a background refresh creates.
+   *
+   * `inFlight` — a poll that arrives while the previous one is still running is
+   * SKIPPED, never queued. Without this, a slow response would stack up requests
+   * every tick and make the load worse exactly when the server is struggling.
+   *
+   * `seq` — a monotonically increasing token. A response is only allowed to
+   * replace the context if it is the newest one issued. Without this, a slow
+   * response for conversation A could land after the operator already selected
+   * conversation B and overwrite B's controls with A's.
+   *
+   * Both are refs, not state: they must be readable inside the fetch without
+   * causing a re-render or re-creating the callback.
+   */
+  const inFlight = React.useRef(false);
+  const seq = React.useRef(0);
+
   // Confirmation dialog state. Every reason-taking action goes through it, so a
   // destructive or customer-visible change is never one stray click.
   const [dialog, setDialog] = React.useState<
@@ -151,22 +177,54 @@ export function HandoffPanel({
   const [memberId, setMemberId] = React.useState<string>('');
 
   const load = React.useCallback(async (silent = false) => {
-    // On a silent refresh the existing context stays on screen while the new one is
-    // fetched, so a background poll cannot blank the panel the operator is reading.
+    // A poll arriving while one is already running is dropped, not queued.
+    if (inFlight.current) return;
+    inFlight.current = true;
+    const ticket = ++seq.current;
+
     if (!silent) setLoading(true);
     try {
       const data = await conversationsApi.handoffContext(conversationId);
+      // Stale-response guard: if a newer request has been issued since this one
+      // started, this answer describes a state the operator has already moved on
+      // from. Dropping it is the only safe option.
+      if (ticket !== seq.current) return;
       setCtx(data);
       setLoadError(null);
     } catch (err) {
+      if (ticket !== seq.current) return;
       setCtx(null);
       setLoadError(err instanceof ApiError && err.status === 403 ? 'forbidden' : 'failed');
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }, [conversationId]);
 
   React.useEffect(() => { void load(); }, [load]);
+
+  /**
+   * Lightweight background refresh.
+   *
+   * A conversation can leave the AI's hands, be reassigned or be escalated by
+   * someone else, and the panel would otherwise keep showing controls that are no
+   * longer valid. The thread already re-reads on a 10s timer; this matches it so
+   * both views agree, rather than introducing a second cadence.
+   *
+   * SKIPPED while a mutation is in flight, so a poll can never land in the middle
+   * of a submit and re-enable a button mid-click.
+   *
+   * The interval is cleared on unmount AND on every conversationId change, so no
+   * timer outlives the component or the selection it was reading.
+   */
+  React.useEffect(() => {
+    const timer = setInterval(() => {
+      if (busy !== null) return;      // never refresh mid-mutation
+      if (document.hidden) return;    // no polling for a tab nobody is looking at
+      void load(true);
+    }, REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [load, busy]);
 
   const closeDialog = () => { setDialog(null); setReason(''); setMemberId(''); };
 
@@ -242,6 +300,21 @@ export function HandoffPanel({
   const disabled = busy !== null;
   const dialogBusy = busy !== null;
 
+  /**
+   * A channel we can take ownership of but not actually WRITE to.
+   *
+   * Claiming or assigning a Facebook comment conversation works and looks like
+   * progress, but no employee reply can be delivered on that channel — so the
+   * operator must be told plainly, BEFORE they spend time on it, that taking
+   * ownership does not mean the customer will be answered. Without this the panel
+   * implies a capability it does not have.
+   *
+   * Derived from the server's own provider value and the same list the backend
+   * refuses against (SENDABLE_CHANNEL_PROVIDERS = ['meta_dm']), so the UI cannot
+   * drift into telling the operator something the API disagrees with.
+   */
+  const isWriteUnsupported = conversation.channelProvider !== 'meta_dm';
+
   // Resign the member selector whenever the server sends a new list, so a stale
   // selection can never be submitted against a changed permission set.
   React.useEffect(() => {
@@ -265,6 +338,25 @@ export function HandoffPanel({
           <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} aria-hidden />
         </Button>
       </div>
+
+      {/*
+        Channel capability warning. Rendered ABOVE the controls so it is read
+        before anyone clicks Claim — the whole point is to prevent the operator
+        mistaking ownership for the ability to answer.
+      */}
+      {isWriteUnsupported ? (
+        <div
+          role="alert"
+          data-testid="channel-warning"
+          className="mx-4 mt-2 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            <span className="font-medium">{t('channelNoOutbound.title')}</span>{' '}
+            {t('channelNoOutbound.body')}
+          </span>
+        </div>
+      ) : null}
 
       {/* Outcome banner: only ever rendered from a server response. */}
       {outcome ? (
@@ -339,6 +431,14 @@ export function HandoffPanel({
             <LogOut className="h-3.5 w-3.5" aria-hidden />
             {t('handoff')}
           </Button>
+        ) : null}
+
+        {/* On a channel we cannot write to, taking ownership does not get the
+            customer an answer. Say so at the point of the decision, not after. */}
+        {isWriteUnsupported && (p.canClaim || p.canAssign || p.canHandoff) ? (
+          <span className="text-2xs text-muted-foreground" data-testid="channel-write-note">
+            {t('channelNoOutbound.claimNote')}
+          </span>
         ) : null}
 
         {p.canResumeAi ? (

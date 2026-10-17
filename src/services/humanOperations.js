@@ -59,7 +59,7 @@
  * or the AI pipeline, both of which re-check state for themselves.
  */
 import { pool } from '../db/pg.js';
-import { can } from '../auth/abilities.js';
+import { can, ESCALATION_RESOLVE_ABILITY } from '../auth/abilities.js';
 import { brandScopeSql } from '../api/v1/brandAccess.js';
 import { humanReplyInFlight } from './manualReplies.js';
 import {
@@ -152,6 +152,11 @@ export function resolveOpsAuthority(session) {
     canUnassign: can(roles, 'conversation.unassign', custom),
     canResolveAny: can(roles, 'conversation.resolve', custom),
     canResolveOwn: can(roles, 'conversation.resolve_own', custom),
+    // P0.3: SEPARATE from conversation.resolve. Discharging a recorded customer
+    // complaint is not the same act as closing a thread, and holding one must never
+    // imply the other. Carried only by the seeded custom role; see
+    // ESCALATION_MANAGER_ROLE in auth/abilities.js.
+    canResolveEscalations: can(roles, ESCALATION_RESOLVE_ABILITY, custom),
     canResumeAi: can(roles, 'conversation.resume_ai', custom)
   };
 }
@@ -918,6 +923,15 @@ async function findResumeBlocker(client, { tenantId, conversationId, conv, actor
 /**
  * CLOSE ONE ESCALATION — `POST /:id/escalations/:escalationId/resolve`.
  *
+ * Requires the DEDICATED `escalation.resolve` ability, which no built-in role
+ * holds. `conversation.resolve` authorises closing a CONVERSATION and is
+ * deliberately NOT sufficient here: discharging a recorded customer complaint is a
+ * separate act, and the two are granted independently.
+ *
+ * The holder still needs brand scope — the ability says WHAT may be done, the R1
+ * grant tables say WHICH CONVERSATIONS may be reached, and neither confers the
+ * other.
+ *
  * Deliberately narrow. It closes exactly the escalation named in the path and
  * NOTHING else:
  *
@@ -928,14 +942,9 @@ async function findResumeBlocker(client, { tenantId, conversationId, conv, actor
  *     QUEUED and still needs an explicit, separately-audited Resume AI — which in
  *     turn will be refused while any escalation remains open.
  *
- * Authority reuses `conversation.resolve` (Supervisor, Company Admin). No new
- * ability is introduced, so the P0.1 delegation ceiling and the custom-role rules
- * are untouched. An Agent holding only `conversation.resolve_own` cannot close an
- * escalation.
- *
- * The UPDATE is guarded on `resolved_at IS NULL`, so two supervisors closing the
- * same escalation produce one update and one `duplicate:true` — never a second
- * effect and never an error for work already done.
+ * The UPDATE is guarded on `resolved_at IS NULL`, so two actors closing the same
+ * escalation produce one update and one `duplicate:true` — never a second effect
+ * and never an error for work already done.
  */
 export async function resolveEscalationOperation({ session, conversationId, escalationId, body = {}, deps = {} }) {
   const db = deps.db ?? pool;
@@ -944,7 +953,9 @@ export async function resolveEscalationOperation({ session, conversationId, esca
   if (!isUuid(conversationId) || !isUuid(escalationId)) {
     throw new OpsError(404, OPS_ERRORS.NOT_FOUND, 'conversation not found');
   }
-  if (!authority.canResolveAny) {
+  if (!authority.canResolveEscalations) {
+    // 403 regardless of whether the conversation or the escalation exists, so a
+    // caller without the ability cannot use this endpoint to probe for either.
     throw new OpsError(403, OPS_ERRORS.FORBIDDEN, 'your role cannot resolve escalations');
   }
   const rawReason = normalizeReason(body.reason, null);
@@ -1296,7 +1307,8 @@ export async function getHandoffContext({ session, conversationId, deps = {} }) 
       canHandoff: authority.canHandoff && view.state === CONVERSATION_STATES.AI_ACTIVE,
       // Closing an escalation needs `conversation.resolve` (supervisory), which is
       // stricter than resolve_own, so it is reported separately.
-      canResolveEscalations: authority.canResolveAny && openEscalations.length > 0
+      // Requires the dedicated `escalation.resolve`, NOT conversation.resolve.
+      canResolveEscalations: authority.canResolveEscalations && openEscalations.length > 0
     }
   };
 }

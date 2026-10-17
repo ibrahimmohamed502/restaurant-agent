@@ -133,10 +133,13 @@
     `INSERT INTO users (tenant_id, email, name, password_hash, status)
      VALUES ($1,$2,$3,'x','active') RETURNING id`, [tenant, `${name}@t.test`, name]))[0];
   // `roles` is TENANT-scoped: UNIQUE (tenant_id, name), not a global name.
-  const mkRole = async (tenantId, name) => (await q(
-    `INSERT INTO roles (tenant_id, name) VALUES ($1,$2)
+  // `permissions` is written for CUSTOM roles; for a built-in name the application
+  // ignores the column entirely, which is precisely why migration 017 seeds a
+  // custom name rather than extending an existing built-in role.
+  const mkRole = async (tenantId, name, permissions = []) => (await q(
+    `INSERT INTO roles (tenant_id, name, permissions) VALUES ($1,$2,$3::jsonb)
        ON CONFLICT (tenant_id, name) DO UPDATE SET name = EXCLUDED.name
-     RETURNING id`, [tenantId, name]))[0];
+     RETURNING id`, [tenantId, name, JSON.stringify(permissions)]))[0];
   const grant = async (user, role) => {
     await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [user.id, role.id]);
   };
@@ -144,6 +147,9 @@
   const R_AGENT = await mkRole(T1.id, 'Agent');
   const R_SUP = await mkRole(T1.id, 'Supervisor');
   const R_ADM = await mkRole(T1.id, 'Company Admin');
+  // P0.3: the seeded CUSTOM role. Its name is deliberately NOT a built-in one, so
+  // its stored permissions are honoured by effectiveCustomAbilities().
+  const R_ESCALATION = await mkRole(T1.id, 'Escalation Manager', ['escalation.resolve']);
 
   const AGENT = await mkUser(T1.id, 'agent');
   const AGENT2 = await mkUser(T1.id, 'agent2');
@@ -173,15 +179,36 @@
 
   const mkQueued = async (channel, tenant = T1.id) => mkConv(tenant, channel, 'QUEUED');
 
-  const sess = (user, tenant, brandIds, allBrands = false, roles = ['Agent']) => ({
+  const sess = (user, tenant, brandIds, allBrands = false, roles = ['Agent'], customAbilities = []) => ({
     tenantId: tenant,
     user: { id: user.id },
     roles,
-    customAbilities: [],
+    customAbilities,
     brandIds: allBrands ? null : brandIds,
     allBrandsInCompany: allBrands,
     isPlatformSuperAdmin: false
   });
+
+  /**
+   * Build a session the way src/auth/sessions.js actually does.
+   *
+   * A hand-rolled session with `customAbilities: []` would bypass the entire custom
+   * role path and make a role that genuinely carries an ability look like it does
+   * not. This reads the holder's real role rows and runs the SAME derivation the
+   * server runs, so the test exercises the production code path rather than a
+   * convenient fiction.
+   */
+  const sessForRoles = async (user, tenant, brandIds, allBrands = false) => {
+    // `q()` already resolves to `.rows`.
+    const rs = await q(
+      `SELECT r.name, r.permissions
+         FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = $1`, [user.id]);
+    const roleNames = rs.map((r) => r.name);
+    const perRolePermissions = Object.fromEntries(rs.map((r) => [r.name, r.permissions]));
+    const customAbilities = effectiveCustomAbilities(roleNames, perRolePermissions);
+    return sess(user, tenant, brandIds, allBrands, roleNames, customAbilities);
+  };
 
   // Supervisor holds assign/reassign/unassign/resolve/resume_ai but NOT
   // conversation.assign_self, so a Supervisor can never CLAIM. Company Admin holds
@@ -195,6 +222,7 @@
   const { pool } = await import('../src/db/pg.js');
   const OPS = await import('../src/services/humanOperations.js');
   const { brandScopeFromSession } = await import('../src/api/v1/brandAccess.js');
+  const { effectiveCustomAbilities } = await import('../src/auth/abilities.js');
 
   // Point the service's own pool at the throwaway schema.
   const ops = (s) => ({ scope: brandScopeFromSession(s) });
@@ -451,7 +479,7 @@
 
     // A missing reason is refused.
     const c2 = await mkQueued(CH_A_DM);
-    await q(`UPDATE escalations SET resolved_at=now() WHERE conversation_id=$1`, [c2.id]);
+    await q('UPDATE escalations SET resolved_at=now() WHERE conversation_id=$1', [c2.id]);
     let e2 = null;
     try { await OPS.resumeAiOperation({ session: sSup, conversationId: c2.id, body: {}, deps: ops(sSup) }); }
     catch (x) { e2 = x; }
@@ -640,8 +668,22 @@
        VALUES ($1,$2,'complaint','first complaint','normal','new','ai'),
               ($1,$2,'handoff','customer_requested_human','high','new','customer')
        RETURNING id`, [T1.id, c.id]);
-    const sSup = sSupFor();
     const sAgent = sess(AGENT, T1.id, [BR_A.id], false, ['Agent']);
+
+    // P0.3: closure now requires the DEDICATED escalation.resolve ability, so this
+    // section runs as the seeded Escalation Manager, not as a Supervisor. The
+    // session is derived from the real role rows so the custom-role path — the whole
+    // point of the split — is actually exercised.
+    const escMgr = await mkUser(T1.id, 'esc_mgr');
+    await grant(escMgr, R_AGENT);
+    await grant(escMgr, R_ESCALATION);
+    await q('INSERT INTO user_brand_grants (user_id, tenant_id, brand_id) VALUES ($1,$2,$3)',
+      [escMgr.id, T1.id, BR_A.id]);
+    const sSup = await sessForRoles(escMgr, T1.id, [BR_A.id], false);
+
+    // Resume AI is a SEPARATE ability (conversation.resume_ai) that an Escalation
+    // Manager does not hold, so those assertions below run as a real Supervisor.
+    const sResume = sSupFor();
 
     // An Agent may not close an escalation.
     let ea = null;
@@ -691,7 +733,7 @@
 
     // Resume AI is still refused while the sibling is open.
     let eb = null;
-    try { await OPS.resumeAiOperation({ session: sSup, conversationId: c.id, body: { reason: 'try' }, deps: ops(sSup) }); }
+    try { await OPS.resumeAiOperation({ session: sResume, conversationId: c.id, body: { reason: 'try' }, deps: ops(sResume) }); }
     catch (x) { eb = x; }
     check('Resume AI is STILL refused while a sibling escalation is open', eb?.code === 'OPS_OPEN_ESCALATIONS', eb?.code);
     eq('  and it names the remaining escalation', eb?.details?.openEscalations?.length, 1);
@@ -702,7 +744,7 @@
       body: { reason: 'customer request withdrawn' }, deps: ops(sSup)
     });
     const resumed = await OPS.resumeAiOperation({
-      session: sSup, conversationId: c.id, body: { reason: 'all escalations closed' }, deps: ops(sSup)
+      session: sResume, conversationId: c.id, body: { reason: 'all escalations closed' }, deps: ops(sResume)
     });
     eq('once every escalation is closed, Resume AI succeeds', resumed.state, 'AI_ACTIVE');
 
@@ -722,7 +764,7 @@
     // Audit trail.
     const aud = await q(`SELECT actor_user_id, action, metadata FROM audit_logs WHERE object_id=$1 AND action='escalation.resolve' ORDER BY created_at`, [c.id]);
     check('every close is audited', aud.length >= 3, String(aud.length));
-    eq('  actor is the supervisor', aud[0].actor_user_id, SUP.id);
+    eq('  actor is the escalation manager who performed it', aud[0].actor_user_id, escMgr.id);
     eq('  metadata names the escalation', typeof aud[0].metadata.escalationId, 'string');
     eq('  metadata records aiResumed:false', aud[0].metadata.aiResumed, false);
 
@@ -738,11 +780,13 @@
       `INSERT INTO escalations (tenant_id, conversation_id, category, reason, priority, status, requested_by)
        VALUES ($1,$2,'complaint','hidden','normal','new','ai') RETURNING id`, [T1.id, hidden.id]))[0];
     const auditBefore = (await q(`SELECT count(*)::int n FROM audit_logs WHERE object_id=$1`, [hidden.id]))[0].n;
-    const sSupBrandA = sess(supA, T1.id, [BR_A.id], false, ['Supervisor']);
+    // The caller must HOLD escalation.resolve for this to reach the brand check at
+    // all — otherwise it is refused 403 first, which proves nothing about scope.
+    const sSupBrandA = await sessForRoles(escMgr, T1.id, [BR_A.id], false);
     let eh = null;
     try { await OPS.resolveEscalationOperation({ session: sSupBrandA, conversationId: hidden.id, escalationId: hiddenEsc.id, body: { reason: 'probe' }, deps: ops(sSupBrandA) }); }
     catch (x) { eh = x; }
-    check('a brand-A SUPERVISOR gets 404 for a brand-B conversation', eh?.status === 404, String(eh?.status));
+    check('an escalation manager scoped to brand A gets 404 for a brand-B conversation', eh?.status === 404, String(eh?.status));
     eq('  and NO audit row was written for it (no existence leak)',
       (await q(`SELECT count(*)::int n FROM audit_logs WHERE object_id=$1`, [hidden.id]))[0].n, auditBefore);
     eq('  and the escalation is untouched', (await one(`SELECT resolved_at FROM escalations WHERE id=$1`, [hiddenEsc.id])).resolved_at, null);
@@ -908,6 +952,141 @@
     });
     eq('  and a reply on a RESOLVED conversation is refused', elig.allowed, false);
     eq('  with reason closed', elig.reason, 'closed');
+  }
+
+  /* ==================== 14. escalation.resolve is a separate authority ==== */
+
+  section('14. escalation.resolve is separate from conversation.resolve');
+  {
+    const c = await mkQueued(CH_A_DM);
+    const [esc] = await q(
+      `INSERT INTO escalations (tenant_id, conversation_id, category, reason, priority, status, requested_by)
+       VALUES ($1,$2,'complaint','split test','normal','new','ai') RETURNING id`, [T1.id, c.id]);
+
+    const escUser = await mkUser(T1.id, 'escmanager');
+    await grant(escUser, R_AGENT);
+    await grant(escUser, R_ESCALATION);
+    await q('INSERT INTO user_brand_grants (user_id, tenant_id, brand_id) VALUES ($1,$2,$3)',
+      [escUser.id, T1.id, BR_A.id]);
+    const sEsc = await sessForRoles(escUser, T1.id, [BR_A.id], false);
+
+    // 1. conversation.resolve alone is NOT enough any more.
+    const sSup = sSupFor();
+    let e1 = null;
+    try { await OPS.resolveEscalationOperation({ session: sSup, conversationId: c.id, escalationId: esc.id, body: { reason: 'admin try' }, deps: ops(sSup) }); }
+    catch (e) { e1 = e; }
+    check('a Supervisor/Company Admin WITHOUT escalation.resolve is REFUSED', e1?.status === 403, `${e1?.status} ${e1?.code}`);
+    eq('  and the escalation is untouched', (await one(`SELECT resolved_at FROM escalations WHERE id=$1`, [esc.id])).resolved_at, null);
+
+    // 2. The dedicated holder succeeds.
+    const ok = await OPS.resolveEscalationOperation({
+      session: sEsc, conversationId: c.id, escalationId: esc.id,
+      body: { reason: 'phone call handled it' }, deps: ops(sEsc)
+    });
+    eq('the escalation.resolve holder CAN close it', ok.duplicate, false);
+    eq('  and the AI is not resumed', ok.aiResumed, false);
+
+    // 3. The converse: escalation.resolve does NOT let you resolve a conversation.
+    const c2 = await mkQueued(CH_A_DM);
+    const sAgentA = sess(AGENT, T1.id, [BR_A.id], false, ['Agent']);
+    await OPS.claimConversationOperation({ session: sAgentA, conversationId: c2.id, deps: ops(sAgentA) });
+    let e2 = null;
+    try { await OPS.resolveConversationOperation({ session: sEsc, conversationId: c2.id, deps: ops(sEsc) }); }
+    catch (e) { e2 = e; }
+    check('escalation.resolve does NOT grant conversation resolution', e2?.status === 403, `${e2?.status} ${e2?.code}`);
+    eq('  the conversation is still ASSIGNED', (await one(`SELECT state FROM conversations WHERE id=$1`, [c2.id])).state, 'ASSIGNED');
+
+    // 4. It confers no reply authority either. Deliberately a user holding ONLY the
+    // Escalation Manager role: sEsc also holds Agent, and Agent legitimately carries
+    // reply_own for conversations assigned to it — which is unrelated to this ability
+    // and would mask what is being asserted here.
+    const escOnly = await mkUser(T1.id, 'esc_only');
+    await grant(escOnly, R_ESCALATION);
+    await q('INSERT INTO user_brand_grants (user_id, tenant_id, brand_id) VALUES ($1,$2,$3)',
+      [escOnly.id, T1.id, BR_A.id]);
+    const sEscOnly = await sessForRoles(escOnly, T1.id, [BR_A.id], false);
+    const MR = await import('../src/services/manualReplies.js');
+    const auth = MR.resolveReplyAuthority(sEscOnly);
+    check('escalation.resolve alone confers NO reply ability',
+      auth.canReplyAny === false && auth.canReplyOwn === false,
+      `any=${auth.canReplyAny} own=${auth.canReplyOwn}`);
+    check('...and no conversation resolution either', auth.canReplyAny === false);
+
+    // 5. Cross-brand refusal.
+    const cB = await mkQueued(CH_B_DM);
+    const [escB] = await q(
+      `INSERT INTO escalations (tenant_id, conversation_id, category, reason, priority, status, requested_by)
+       VALUES ($1,$2,'complaint','other brand','normal','new','ai') RETURNING id`, [T1.id, cB.id]);
+    let e4 = null;
+    try { await OPS.resolveEscalationOperation({ session: sEsc, conversationId: cB.id, escalationId: escB.id, body: { reason: 'cross brand' }, deps: ops(sEsc) }); }
+    catch (e) { e4 = e; }
+    eq('cross-BRAND closure is refused 404', e4?.status, 404);
+    eq('  and that escalation is untouched', (await one(`SELECT resolved_at FROM escalations WHERE id=$1`, [escB.id])).resolved_at, null);
+
+    // 6. Revocation takes effect on the next request.
+    // The session MUST be rebuilt after revoking, because that is what production
+    // does: requireV1Auth -> validateSession() re-reads roles on EVERY request, so a
+    // revoked role disappears immediately. Reusing a pre-built session object would
+    // test a fiction.
+    await q('DELETE FROM user_roles WHERE user_id=$1 AND role_id=$2', [escUser.id, R_ESCALATION.id]);
+    const sAfterRevoke = await sessForRoles(escUser, T1.id, [BR_A.id], false);
+    check('the rebuilt session no longer carries the ability',
+      sAfterRevoke.customAbilities.length === 0, JSON.stringify(sAfterRevoke.customAbilities));
+    const c3 = await mkQueued(CH_A_DM);
+    const [esc3] = await q(
+      `INSERT INTO escalations (tenant_id, conversation_id, category, reason, priority, status, requested_by)
+       VALUES ($1,$2,'complaint','after revoke','normal','new','ai') RETURNING id`, [T1.id, c3.id]);
+    let e5 = null;
+    try { await OPS.resolveEscalationOperation({ session: sAfterRevoke, conversationId: c3.id, escalationId: esc3.id, body: { reason: 'still allowed?' }, deps: ops(sAfterRevoke) }); }
+    catch (e) { e5 = e; }
+    check('after the role is REVOKED, closure is refused', e5?.status === 403, `${e5?.status} ${e5?.code}`);
+    await grant(escUser, R_ESCALATION);
+    const sEscRestored = await sessForRoles(escUser, T1.id, [BR_A.id], false);
+
+    // 7. Concurrent closure on separate connections.
+    const c4 = await mkQueued(CH_A_DM);
+    const [esc4] = await q(
+      `INSERT INTO escalations (tenant_id, conversation_id, category, reason, priority, status, requested_by)
+       VALUES ($1,$2,'complaint','race','normal','new','ai') RETURNING id`, [T1.id, c4.id]);
+    const cl1 = new pg.Client({ connectionString: url });
+    const cl2 = new pg.Client({ connectionString: url });
+    await cl1.connect(); await cl2.connect();
+    const shim = (cl) => ({ connect: async () => ({ query: (sql, pr) => cl.query(sql, pr), release: () => {} }) });
+    const [r1, r2] = await Promise.all([
+      OPS.resolveEscalationOperation({ session: sEscRestored, conversationId: c4.id, escalationId: esc4.id, body: { reason: 'first attempt' }, deps: { ...ops(sEscRestored), db: shim(cl1) } }),
+      OPS.resolveEscalationOperation({ session: sEscRestored, conversationId: c4.id, escalationId: esc4.id, body: { reason: 'second attempt' }, deps: { ...ops(sEscRestored), db: shim(cl2) } })
+    ]);
+    await cl1.end().catch(() => {}); await cl2.end().catch(() => {});
+    const dups = [r1, r2].filter((r) => r.duplicate).length;
+    eq('two concurrent closures produce exactly ONE update', 2 - dups, 1);
+    eq('  and exactly one duplicate report', dups, 1);
+    eq('  the escalation is resolved exactly once',
+      (await one('SELECT resolved_at FROM escalations WHERE id=$1', [esc4.id])).resolved_at !== null, true);
+
+    // 8. The handoff context reports the NEW authority.
+    const sSupReal = sSupFor();
+    const ctxSup = await OPS.getHandoffContext({ session: sSupReal, conversationId: c2.id, deps: { db: pool, scope: brandScopeFromSession(sSupReal) } });
+    check('a Supervisor is told canResolveEscalations = false', ctxSup.permissions.canResolveEscalations === false);
+    // A conversation with NO open escalations. Note that claiming one creates an
+    // escalation via syncEscalation, so c2 (claimed) does have one — which is
+    // exactly why the flag is true there and false here.
+    const cClean = await mkQueued(CH_A_DM);
+    const ctxEsc = await OPS.getHandoffContext({ session: sEscRestored, conversationId: cClean.id, deps: { db: pool, scope: brandScopeFromSession(sEscRestored) } });
+    check('an escalation manager is told canResolveEscalations = false when none are open',
+      ctxEsc.permissions.canResolveEscalations === false,
+      `open=${ctxEsc.openEscalations.length}`);
+    check('  ...and the escalation manager IS allowed to resolve a conversation they own? no - not assigned',
+      ctxEsc.permissions.canResolve === false);
+    // ...and TRUE when one is open, proving the flag is real and not just always off.
+    const c5 = await mkQueued(CH_A_DM);
+    await q(`INSERT INTO escalations (tenant_id, conversation_id, category, reason, priority, status, requested_by)
+             VALUES ($1,$2,'complaint','flag check','normal','new','ai')`, [T1.id, c5.id]);
+    const ctxEsc2 = await OPS.getHandoffContext({ session: sEscRestored, conversationId: c5.id, deps: { db: pool, scope: brandScopeFromSession(sEscRestored) } });
+    check('an escalation manager IS told canResolveEscalations = true when one is open',
+      ctxEsc2.permissions.canResolveEscalations === true);
+    const ctxSup2 = await OPS.getHandoffContext({ session: sSupReal, conversationId: c5.id, deps: { db: pool, scope: brandScopeFromSession(sSupReal) } });
+    check('a Supervisor is still told false even with an open escalation',
+      ctxSup2.permissions.canResolveEscalations === false);
   }
 
   /* ----------------------------------------------------------------- cleanup */

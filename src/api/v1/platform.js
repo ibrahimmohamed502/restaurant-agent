@@ -9,6 +9,9 @@ import { requireV1Auth, apiError } from './index.js';
 import { requirePlatformSuperAdmin } from './stage7-rbac.js';
 import { hashPassword } from '../../auth/passwords.js';
 import { audit } from '../../auth/audit.js';
+import {
+  ESCALATION_MANAGER_ROLE, ESCALATION_RESOLVE_ABILITY
+} from '../../auth/abilities.js';
 
 /**
  * Creates the platform router with an optional audit function override for testing.
@@ -135,6 +138,28 @@ const COMPANY_ADMIN_PERMISSIONS = [
         }
         adminRole = existingRole;
       }
+
+      // P0.3 — create the 'Escalation Manager' role for this new tenant, with ZERO
+      // holders.
+      //
+      // Migration 017 can only seed roles for tenants that EXIST when it runs, so a
+      // company created afterwards would never receive this role and could never be
+      // given complaint-discharge authority at all. Seeding it here closes that gap.
+      //
+      // Deliberately NOT granted to the admin created below: the whole point of
+      // separating `escalation.resolve` from `conversation.resolve` is that this
+      // permission is not handed out automatically. The Platform Owner assigns it,
+      // by name, deliberately — and the delegation ceiling means this company's own
+      // administrators cannot grant it to themselves later.
+      //
+      // The name must not collide with a built-in role: a built-in name has its
+      // `permissions` column ignored by the application, so the ability would
+      // silently never apply.
+      await client.query(
+        `INSERT INTO roles (tenant_id, name, permissions) VALUES ($1,$2,$3::jsonb)
+         ON CONFLICT (tenant_id, name) DO NOTHING`,
+        [tenant.id, ESCALATION_MANAGER_ROLE, JSON.stringify([ESCALATION_RESOLVE_ABILITY])]
+      );
 
       // Create admin user
       const { rows: [admin] } = await client.query(

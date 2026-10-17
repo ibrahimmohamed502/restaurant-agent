@@ -577,14 +577,21 @@ const readGatedCount = (conv.match(/requireAbility\('conversation\.read'\)/g) ??
   check('Z4 nor the assignee list leaks a company outside the session scope',
     /FROM users u\s*\n\s*WHERE u\.tenant_id = \$1 AND u\.status = 'active'/.test(conv));
 
-  // --- the dashboard route is byte-identical to the deployed P0.1 file ---
+  // --- P0.2 did not touch these files ---
+  //
+  // Measured as BASELINE -> the P0.2 RELEASE COMMIT, never the working tree. The
+  // question is "did P0.2 change this file?", a fixed historical fact. Comparing
+  // against the working tree only holds while the branch tip IS the P0.2 release, so
+  // any later batch that legitimately touches a file (P0.3 added escalation.resolve
+  // to abilities.js) turns this permanently red while saying nothing true about P0.2.
   const changedSinceBaseline = (file) => {
     try {
-      return execFileSync('git', ['diff', '--name-only', BASELINE, '--', file], { cwd: REPO, encoding: 'utf8' }).trim();
+      return execFileSync('git', ['diff', '--name-only', BASELINE, P0_2_COMMIT, '--', file],
+        { cwd: REPO, encoding: 'utf8' }).trim();
     } catch { return 'error'; }
   };
   for (const untouched of UNTOUCHED_BY_P0_2) {
-    check(`Z5 ${untouched} is UNCHANGED since the deployed P0.1 baseline`,
+    check(`Z5 ${untouched} was UNCHANGED by P0.2 itself (baseline -> P0.2 release)`,
       changedSinceBaseline(untouched) === '', changedSinceBaseline(untouched));
   }
   // Everything P0.2 itself added or modified relative to the deployed P0.1

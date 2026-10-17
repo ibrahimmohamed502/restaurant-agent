@@ -193,6 +193,11 @@
       "assigneePlaceholder": "Choose a team member",
       "assigneeHint": "Only members you are allowed to assign to are listed. Access is checked again by the system when you save.",
       "handoffDescription": "The AI will stop replying to this conversation. No message is sent to the customer.",
+      "channelNoOutbound": {
+        "title": "Replies cannot be sent on this channel.",
+        "body": "This is a Facebook comment. You can still claim, assign and resolve it, but no employee reply can be delivered here, so the customer will not be answered from this panel.",
+        "claimNote": "Claiming does not let you reply here."
+      },
       "resumeAiDescription": "The AI will start replying again. This does not send a message by itself.",
       "escalationDescription": "This closes only the selected escalation. Other open escalations stay open, and the AI is NOT resumed.",
       "escalationNoAutoResume": "Closing this will not return the conversation to the AI.",
