@@ -12,6 +12,13 @@ import { audit } from '../../auth/audit.js';
 import {
   ESCALATION_MANAGER_ROLE, ESCALATION_RESOLVE_ABILITY
 } from '../../auth/abilities.js';
+import {
+  grantEscalationManager,
+  revokeEscalationManager,
+  listEscalationManagers,
+  listGrantableUsers,
+  PlatformRoleError
+} from '../../services/platformRoles.js';
 
 /**
  * Creates the platform router with an optional audit function override for testing.
@@ -317,6 +324,101 @@ const COMPANY_ADMIN_PERMISSIONS = [
       });
     } catch (err) {
       console.error('platform metrics failed:', err.message);
+      return apiError(res, 500, 'INTERNAL', 'unexpected error');
+    }
+  });
+
+  /* ------------------- escalation.resolve owner bootstrap --------------- */
+  //
+  // The ONLY way `escalation.resolve` reaches a human being.
+  //
+  // This whole router already sits behind `router.use(requireV1Auth,
+  // requirePlatformSuperAdmin)`, which demands BOTH a row in the authoritative
+  // `platform_super_admins` table AND the platform role. The role name alone is not
+  // accepted, so minting the role locally does not get anyone in here. That guard
+  // is the authentication; everything below is only about how narrow the action is.
+  //
+  // There is deliberately no tenant-facing equivalent, and no generic
+  // "assign this role" route. `canDelegateRole()` already refuses the Escalation
+  // Manager role to any tenant administrator, so a company cannot self-serve this.
+
+  /** POST /platform/escalation-managers — grant. */
+  router.post('/escalation-managers', async (req, res) => {
+    try {
+      const { tenantId, userId, reason } = req.body ?? {};
+      if (!tenantId || !userId) {
+        return apiError(res, 400, 'BAD_REQUEST', 'tenantId and userId are required');
+      }
+      const result = await grantEscalationManager({
+        tenantId,
+        userId,
+        reason,
+        actorUserId: req.v1.user.id,
+        ip: req.ip ?? null,
+        db: req.db
+      });
+      return res.json({ data: result });
+    } catch (err) {
+      if (err instanceof PlatformRoleError) {
+        return apiError(res, err.status, err.code, err.message, err.detail);
+      }
+      console.error('platform escalation grant failed:', err.message);
+      return apiError(res, 500, 'INTERNAL', 'unexpected error');
+    }
+  });
+
+  /** POST /platform/escalation-managers/revoke — revoke.
+   *  A POST action rather than DELETE because the client needs to carry a mandatory
+   *  reason, and DELETE-with-a-body is not dependable across intermediaries. This
+   *  matches the existing `POST /companies/:id/disable` shape in this router. */
+  router.post('/escalation-managers/revoke', async (req, res) => {
+    try {
+      const { tenantId, userId, reason } = req.body ?? {};
+      if (!tenantId || !userId) {
+        return apiError(res, 400, 'BAD_REQUEST', 'tenantId and userId are required');
+      }
+      const result = await revokeEscalationManager({
+        tenantId,
+        userId,
+        reason,
+        actorUserId: req.v1.user.id,
+        ip: req.ip ?? null,
+        db: req.db
+      });
+      return res.json({ data: result });
+    } catch (err) {
+      if (err instanceof PlatformRoleError) {
+        return apiError(res, err.status, err.code, err.message, err.detail);
+      }
+      console.error('platform escalation revoke failed:', err.message);
+      return apiError(res, 500, 'INTERNAL', 'unexpected error');
+    }
+  });
+
+  /** GET /platform/escalation-managers?tenantId=... — who holds it, and who can. */
+  router.get('/escalation-managers', async (req, res) => {
+    try {
+      const tenantId = req.query.tenantId;
+      if (!tenantId) {
+        return apiError(res, 400, 'BAD_REQUEST', 'tenantId is required');
+      }
+      const [holders, candidates] = await Promise.all([
+        listEscalationManagers({ tenantId, db: req.db }),
+        listGrantableUsers({ tenantId, db: req.db })
+      ]);
+      return res.json({
+        data: {
+          role: ESCALATION_MANAGER_ROLE,
+          permissions: [ESCALATION_RESOLVE_ABILITY],
+          holders,
+          candidates
+        }
+      });
+    } catch (err) {
+      if (err instanceof PlatformRoleError) {
+        return apiError(res, err.status, err.code, err.message, err.detail);
+      }
+      console.error('platform escalation list failed:', err.message);
       return apiError(res, 500, 'INTERNAL', 'unexpected error');
     }
   });

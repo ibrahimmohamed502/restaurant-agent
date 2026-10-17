@@ -60,6 +60,7 @@
  */
 import { pool } from '../db/pg.js';
 import { can, ESCALATION_RESOLVE_ABILITY } from '../auth/abilities.js';
+import { getHandoffAcknowledgment } from './handoffAcknowledgment.js';
 import { brandScopeSql } from '../api/v1/brandAccess.js';
 import { humanReplyInFlight } from './manualReplies.js';
 import {
@@ -1235,10 +1236,15 @@ export async function getHandoffContext({ session, conversationId, deps = {} }) 
   );
   if (!visible.rows[0]) throw new OpsError(404, OPS_ERRORS.NOT_FOUND, 'conversation not found');
 
-  const [history, members, openEscalations] = await Promise.all([
+  const [history, members, openEscalations, acknowledgment] = await Promise.all([
     listAssignmentHistory({ tenantId: authority.tenantId, conversationId, limit: 50, db }),
     listEligibleMembers({ tenantId: authority.tenantId, db }),
-    loadOpenEscalations(db, { tenantId: authority.tenantId, conversationId })
+    loadOpenEscalations(db, { tenantId: authority.tenantId, conversationId }),
+    // P0.3-C: surfaced so a failed or skipped acknowledgment is VISIBLE to staff.
+    // A customer who was told "someone will reply" and then got nothing must be
+    // findable here. It is read-only and never affects any permission below — the
+    // acknowledgment cannot re-enable the AI or unlock an action.
+    getHandoffAcknowledgment({ tenantId: authority.tenantId, conversationId, db })
   ]);
 
   const isAssignee = view.assigned_user_id === authority.userId;
@@ -1309,6 +1315,22 @@ export async function getHandoffContext({ session, conversationId, deps = {} }) 
       // stricter than resolve_own, so it is reported separately.
       // Requires the dedicated `escalation.resolve`, NOT conversation.resolve.
       canResolveEscalations: authority.canResolveEscalations && openEscalations.length > 0
+    },
+    // P0.3-C. `null` means no acknowledgment was ever attempted for this
+    // conversation, which is the normal case for a staff-initiated handoff and for
+    // anything that predates this feature.
+    //
+    // Deliberately reports the OUTCOME and never claims the customer was answered:
+    // `unknown` is surfaced as exactly that, because the message may or may not
+    // have arrived and staff must not treat that as either success or failure.
+    acknowledgment: acknowledgment && {
+      status: acknowledgment.status,
+      skipReason: acknowledgment.skip_reason,
+      language: acknowledgment.language,
+      provider: acknowledgment.provider,
+      deliveryError: acknowledgment.delivery_error,
+      createdAt: acknowledgment.created_at,
+      sentAt: acknowledgment.sent_at
     }
   };
 }

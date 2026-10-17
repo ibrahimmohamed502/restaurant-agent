@@ -268,6 +268,26 @@
         "humanEngaged": "A colleague is actively handling this conversation.",
         "replyInFlight": "An employee reply has not been delivered yet.",
         "server": "Something went wrong on our side. Please try again."
+      },
+      "ack": {
+        "label": "Customer acknowledgment:",
+        "status": {
+          "sent": "sent to the customer",
+          "pending": "being sent",
+          "failed": "could not be sent — the customer has not been told",
+          "unknown": "we cannot tell whether it arrived",
+          "skipped": "no acknowledgment was sent"
+        },
+        "skip": {
+          "not_customer_requested": "nobody asked for a person",
+          "conversation_missing": "the conversation could not be loaded",
+          "channel_unsupported": "this channel cannot receive a message",
+          "channel_inactive": "this channel is disconnected",
+          "window_closed": "the provider's messaging window had closed",
+          "language_undetermined": "the customer's language is unknown",
+          "duplicate": "the customer was already told"
+        },
+        "unknownNote": "It will not be retried, because the customer may already have received it. Check with them before sending anything else."
       }
     }
   },
@@ -697,6 +717,31 @@
     "statusLabels": {
       "active": "Active",
       "disabled": "Disabled"
+    },
+    "escalation": {
+      "title": "Complaint resolution — who may close a customer complaint",
+      "description": "Closing a customer complaint is separated from closing a conversation, so it is granted on its own and only by you. No company administrator can grant it to themselves, and nobody holds it until you name somebody below.",
+      "companyLabel": "Company",
+      "loading": "Loading…",
+      "loadError": "Could not load the current escalation managers for this company.",
+      "holdersLabel": "People who can close complaints",
+      "noHolders": "Nobody can close a customer complaint in this company right now.",
+      "grantLabel": "Allow somebody to close complaints",
+      "userLabel": "Employee",
+      "pickUser": "Choose an employee…",
+      "noCandidates": "Every active employee in this company already holds this permission.",
+      "reasonLabel": "Reason",
+      "reasonPlaceholder": "Why is this person being given or losing this?",
+      "reasonHint": "A reason of at least 8 characters is required. It is recorded with the change.",
+      "grant": "Grant permission",
+      "revoke": "Revoke",
+      "granted": "Permission granted.",
+      "alreadyGranted": "That person already had this permission — nothing changed.",
+      "revoked": "Permission revoked.",
+      "alreadyRevoked": "That person no longer had this permission — nothing changed.",
+      "genericError": "The request could not be completed.",
+      "scopeWarning": "This grants permission only. It does not give access to any conversation, brand or customer data — those come from separate brand grants, and a manager without them still cannot reach anything.",
+      "permissionsLabel": "Permissions granted"
     }
   },
   "brands": {

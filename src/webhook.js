@@ -23,6 +23,7 @@ import { classifyDeliveryError, createOutboundLedger } from './services/delivery
 import { evaluateAiGate, evaluateHumanOwnership } from './services/aiGate.js';
 import { detectCustomerHumanRequest, detectAutoEscalation, HANDOFF_REASONS } from './services/handoffDetector.js';
 import { requestHandoff, REQUESTED_BY } from './services/handoff.js';
+import { maybeAcknowledgeHandoff } from './services/handoffAcknowledgment.js';
 import { alreadyReplied, markReplied, userOverLimit } from './store.js';
 import { redactId, textSummary, safeErrorCode } from './services/redact.js';
 
@@ -350,6 +351,24 @@ async function applyStage7Gate({ tenantId, conversationId, text, pgEnabled }) {
         }
       );
       console.log(`🤝 [stage7] customer requested a human for ${conversationId} — AI stopped`);
+      // P0.3-C: tell the customer a person is coming. ONLY here — this is the one
+      // branch where the customer actually asked for a human.
+      //
+      // Branch 2 (auto-escalation) is deliberately excluded: nobody asked for a
+      // person there, so promising one would be a lie. A staff-initiated handoff
+      // is excluded too — nobody has approved telling a customer that their team
+      // took a conversation no employee was looking at.
+      //
+      // Wrapped so that no acknowledgment failure can affect the handoff that
+      // already succeeded above. The conversation is correctly queued either way.
+      await maybeAcknowledgeHandoff({
+        tenantId,
+        conversationId,
+        requestedBy: REQUESTED_BY.CUSTOMER,
+        reason: HANDOFF_REASONS.CUSTOMER_REQUESTED_HUMAN
+      }).catch((ackError) => {
+        console.error('⚠️ stage7 handoff acknowledgment failed:', safeErrorCode(ackError));
+      });
     } catch (e) {
       const after = await evaluateAiGate({ tenantId, conversationId });
       if (after.suppressed) return { suppressed: true, state: after.state };
@@ -359,6 +378,9 @@ async function applyStage7Gate({ tenantId, conversationId, text, pgEnabled }) {
   }
 
   // 2) Check auto-escalation triggers (food blogger, supplier, legal, events, etc.)
+  // NO acknowledgment here, by design. The customer never asked for a person —
+  // we decided on their behalf — so telling them a person is coming would be
+  // promising something nobody was asked for.
   const autoDetection = detectAutoEscalation(text);
   if (autoDetection.matched) {
     try {

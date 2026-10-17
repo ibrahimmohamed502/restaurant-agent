@@ -284,8 +284,10 @@ section('9. P0.3-A/B behaviour is preserved');
     migFiles.includes('016_manual_reply_idempotency.sql'));
   // 014 is intentionally absent from this repository (taken on an unreleased
   // branch), so the count is not a simple index. Assert the set, not the number.
-  check('no migration was added other than 017',
-    migFiles.filter((f) => /^01[4-9]_/.test(f)).join(',') === '015_brand_access_grants.sql,016_manual_reply_idempotency.sql,017_escalation_resolve_ability.sql',
+  check('no migration was added other than 017 (this batch) and 018 (P0.3-C)',
+    migFiles.filter((f) => /^01[4-9]_/.test(f)).join(',')
+      === '015_brand_access_grants.sql,016_manual_reply_idempotency.sql,'
+        + '017_escalation_resolve_ability.sql,018_handoff_acknowledgment.sql',
     migFiles.filter((f) => /^01[4-9]_/.test(f)).join(','));
   check('the new migration is additive: it creates a table reference only through roles',
     !/CREATE TABLE/i.test(MIG17_EXEC));

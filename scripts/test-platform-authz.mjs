@@ -131,12 +131,43 @@ function runGuard(guard, v1) {
 
   // The whole platform surface must be behind the same gate.
   const router = createPlatformRouter(() => {});
-  const names = (router.stack || []).flatMap((l) => (l.route ? [l.route.path] : []));
+  // One entry per (method, path): express records a separate layer for each verb, so
+  // `/companies` appears twice (GET and POST). Counting layers rather than distinct
+  // paths is what the original "6" meant.
+  const entries = (router.stack || []).flatMap((l) =>
+    l.route ? Object.keys(l.route.methods).map((m) => `${m.toUpperCase()} ${l.route.path}`) : []);
   const nonRouteLayers = router.stack.filter((l) => !l.route);
   check('the platform router installs its guards as router-level middleware',
     nonRouteLayers.length >= 1, 'layers=' + nonRouteLayers.length);
-  check('platform routes present and unchanged (6 paths)',
-    names.length === 6, 'count=' + names.length);
+
+  // The P0.1 baseline surface must still be present IN FULL. Asserted as an explicit
+  // list rather than as a bare count: a bare count breaks on any deliberate
+  // addition, which is pressure to delete a feature rather than to state what is
+  // actually guaranteed. Naming every original route means removing or renaming one
+  // still fails loudly — and the P0.3 additions are named too, so they cannot be
+  // slipped in anonymously.
+  const P0_1_ROUTES = [
+    'GET /companies',
+    'POST /companies',
+    'GET /companies/:id',
+    'PATCH /companies/:id',
+    'POST /companies/:id/disable',
+    'GET /metrics'
+  ];
+  const P0_3_ROUTES = [
+    'GET /escalation-managers',
+    'POST /escalation-managers',
+    'POST /escalation-managers/revoke'
+  ];
+  for (const r of P0_1_ROUTES) {
+    check(`P0.1 platform route still present: ${r}`, entries.includes(r));
+  }
+  for (const r of P0_3_ROUTES) {
+    check(`P0.3 platform route present and expected: ${r}`, entries.includes(r));
+  }
+  check('no platform route exists beyond the nine intended',
+    entries.length === P0_1_ROUTES.length + P0_3_ROUTES.length,
+    'count=' + entries.length + ' ' + JSON.stringify(entries));
 }
 
 // ------------------------------------------------ users router: role assignment

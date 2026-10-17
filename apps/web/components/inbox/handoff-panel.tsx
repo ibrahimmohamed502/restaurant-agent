@@ -296,7 +296,7 @@ export function HandoffPanel({
     );
   }
 
-  const { permissions: p, conversation, openEscalations, eligibleMembers, history } = ctx;
+  const { permissions: p, conversation, openEscalations, eligibleMembers, history, acknowledgment } = ctx;
   const disabled = busy !== null;
   const dialogBusy = busy !== null;
 
@@ -355,6 +355,43 @@ export function HandoffPanel({
             <span className="font-medium">{t('channelNoOutbound.title')}</span>{' '}
             {t('channelNoOutbound.body')}
           </span>
+        </div>
+      ) : null}
+
+      {/*
+        P0.3-C — the customer acknowledgment that was (or was not) sent.
+
+        Shown only when one was attempted, which means it appears on a
+        customer-requested-human handoff and NOT on a staff-initiated one (nobody
+        approved acknowledging those).
+
+        Purely informational: this block can never enable an action or re-activate
+        the AI. It exists so that a customer who was promised a human and then got
+        silence is visible to the team who has to chase them.
+
+        `unknown` is deliberately worded as "we cannot tell" and never as either
+        success or failure — the provider may have delivered it, and telling the
+        customer otherwise would compound the problem.
+      */}
+      {acknowledgment ? (
+        <div
+          data-testid="ack-status"
+          data-status={acknowledgment.status}
+          className="mx-4 mt-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs"
+        >
+          <span className="font-medium">{t('ack.label')}</span>{' '}
+          <span>{t(`ack.status.${acknowledgment.status}`)}</span>
+          {acknowledgment.status === 'skipped' && acknowledgment.skipReason ? (
+            <>
+              {' '}
+              <span className="text-muted-foreground">
+                {t(`ack.skip.${acknowledgment.skipReason}`, { defaultValue: acknowledgment.skipReason })}
+              </span>
+            </>
+          ) : null}
+          {acknowledgment.status === 'unknown' ? (
+            <span className="mt-1 block text-muted-foreground">{t('ack.unknownNote')}</span>
+          ) : null}
         </div>
       ) : null}
 

@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Table, TableHeader, TableBody, TableRow, TableCell, TableHead } from '@/components/ui/table';
 import { Separator } from '@/components/ui/separator';
 import { platformApi } from '@/lib/api';
+import { EscalationManagersCard } from './escalation-managers-card';
 import { ErrorState, PageLoading } from '@/components/ui/states';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -252,6 +253,13 @@ const [isDisableDialogOpen, setIsDisableDialogOpen] = React.useState(false);
           )}
         </CardContent>
       </Card>
+
+      {/* P0.3 — the only interface that can hand `escalation.resolve` to a person.
+          It lives on the platform page because it is a platform action, not a
+          tenant one: a company administrator cannot grant this to themselves. */}
+      {companies && companies.length > 0 ? (
+        <EscalationManagersCard companies={companies} />
+      ) : null}
 
       {/* Create Company Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

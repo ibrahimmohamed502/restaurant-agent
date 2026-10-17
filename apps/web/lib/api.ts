@@ -309,6 +309,28 @@ export type AssignmentHistoryEntry = {
 // `users.email` is NOT NULL in the schema, so `email: string` is correct; a second,
 // looser copy of this type is exactly how the two drift apart.
 
+/**
+ * P0.3-C — the one-time customer acknowledgment, as staff see it.
+ *
+ * Read-only and advisory: it can never re-enable the AI or unlock an action. Its
+ * purpose is to make a failed or skipped reassurance findable, so a customer who
+ * was told "someone will reply" and then got nothing is visible to the team
+ * responsible for them.
+ *
+ * `unknown` is the important one. It means the provider may or may not have
+ * delivered, and it is never retried — so staff must treat it as "we cannot tell",
+ * not as either success or failure, and must not tell the customer it was sent.
+ */
+export type HandoffAcknowledgment = {
+  status: 'pending' | 'sent' | 'failed' | 'unknown' | 'skipped';
+  skipReason: string | null;
+  language: string | null;
+  provider: string | null;
+  deliveryError: string | null;
+  createdAt: string;
+  sentAt: string | null;
+};
+
 export type HandoffContext = {
   conversation: {
     id: string;
@@ -329,6 +351,8 @@ export type HandoffContext = {
   history: AssignmentHistoryEntry[];
   eligibleMembers: EligibleMember[];
   permissions: HandoffPermission;
+  /** `null` when no acknowledgment was ever attempted — the normal case. */
+  acknowledgment?: HandoffAcknowledgment | null;
 };
 
 /** Shared shape of every P0.3-A mutation response. */
@@ -597,6 +621,64 @@ export type PlatformMetrics = {
   channels: { total: number; active: number };
 };
 
+/* ------------------------- P0.3: escalation-resolve owner bootstrap ------------------------- */
+
+/** One person who holds the escalation role in a given company. */
+export type EscalationManagerHolder = {
+  id: string;
+  email: string;
+  name: string | null;
+  status: string;
+  role: string;
+  /** The role's STORED permissions, shown so the operator can see what is being handed out. */
+  permissions: string[];
+  /** When the grant happened, taken from the audit row written with the assignment. */
+  grantedAt: string | null;
+};
+
+/** An active user who could be granted the role (possibly already holding it). */
+export type EscalationManagerCandidate = {
+  id: string;
+  email: string;
+  name: string | null;
+  already_granted: boolean;
+};
+
+/**
+ * The server's own description of the grant, not a client-side guess.
+ *
+ * `permissions` is included so the UI never hardcodes what this role carries: if
+ * the server's approved set ever changes, the screen follows it.
+ */
+export type EscalationManagersView = {
+  role: string;
+  permissions: string[];
+  holders: EscalationManagerHolder[];
+  candidates: EscalationManagerCandidate[];
+};
+
+export type EscalationGrantResult = {
+  granted: boolean;
+  /** True when the person already held it — a repeat request, not a new grant. */
+  alreadyGranted: boolean;
+  tenantId: string;
+  userId: string;
+  email: string;
+  role: string;
+  permissions: string[];
+  reason: string;
+};
+
+export type EscalationRevokeResult = {
+  revoked: boolean;
+  alreadyRevoked: boolean;
+  tenantId: string;
+  userId: string;
+  email: string;
+  role: string;
+  reason: string;
+};
+
 export const platformApi = {
   listCompanies: () => api.get<CompanyInfo[]>('/platform/companies'),
   getCompany: (id: string) => api.get<CompanyDetail>(`/platform/companies/${id}`),
@@ -608,7 +690,20 @@ export const platformApi = {
     api.patch<{ id: string; name: string; slug: string; status: string; createdAt: string }>(`/platform/companies/${id}`, payload),
   disableCompany: (id: string) =>
     api.post<{ id: string; name: string; slug: string; status: string }>(`/platform/companies/${id}/disable`),
-  getMetrics: () => api.get<PlatformMetrics>('/platform/metrics')
+  getMetrics: () => api.get<PlatformMetrics>('/platform/metrics'),
+  /* ------------------------ P0.3: escalation-resolve owner bootstrap ------------------- */
+  /* The only path by which the complaint-closing ability reaches a person.
+     Server-side the whole /platform router requires BOTH a platform_super_admins row
+     AND the platform role, so hiding these buttons is a convenience, never the
+     control. The ability NAME deliberately appears nowhere in this client: authority
+     is whatever the server reports, and a client that could name an ability could
+     one day start branching on it. */
+  listEscalationManagers: (tenantId: string) =>
+    api.get<EscalationManagersView>(`/platform/escalation-managers?tenantId=${encodeURIComponent(tenantId)}`),
+  grantEscalationManager: (payload: { tenantId: string; userId: string; reason: string }) =>
+    api.post<EscalationGrantResult>('/platform/escalation-managers', payload),
+  revokeEscalationManager: (payload: { tenantId: string; userId: string; reason: string }) =>
+    api.post<EscalationRevokeResult>('/platform/escalation-managers/revoke', payload)
 };
 
 /* ----------------------------------- Stage 8 Batch 1: Company Admin ----------------------------------- */
