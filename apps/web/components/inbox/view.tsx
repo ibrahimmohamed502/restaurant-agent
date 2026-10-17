@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/states';
 import { ReplySources } from './reply-sources';
 import { ReplyComposer, type SendOutcome } from './composer';
+import { HandoffPanel } from './handoff-panel';
 import { authApi, conversationsApi, type ConversationReplyPolicy } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -317,6 +318,13 @@ export function InboxView() {
                 </li>
               ))}
             </ul>
+            {/* P0.3-B: human operations. Rendered ABOVE the composer so the
+                controls sit with the thread header, and it re-reads the server
+                itself; onChanged only makes the thread refresh to match. */}
+            <HandoffPanel
+              conversationId={detail.conversation.id}
+              onChanged={() => setRefreshToken((n) => n + 1)}
+            />
             <ReplyComposer
               conversationId={detail.conversation.id}
               policy={detail.reply}

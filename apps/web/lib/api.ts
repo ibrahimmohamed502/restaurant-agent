@@ -265,6 +265,98 @@ export type ConversationReplyPolicy = {
   requiresHandoff: boolean;
 };
 
+/**
+ * P0.3-A handoff context — GET /api/v1/conversations/:id/handoff
+ *
+ * Mirrors the server response exactly. `permissions` is SERVER-AUTHORITATIVE: it
+ * describes what this caller may attempt right now. The UI renders from it and the
+ * write path re-decides the same questions inside its own transaction, so hiding a
+ * button is a courtesy, never a boundary.
+ */
+export type HandoffPermission = {
+  canClaim: boolean;
+  canAssign: boolean;
+  canReassign: boolean;
+  canUnassign: boolean;
+  canResolve: boolean;
+  canResumeAi: boolean;
+  resumeAiBlockedReason: string | null;
+  isAssignee: boolean;
+  canHandoff: boolean;
+  canResolveEscalations: boolean;
+};
+
+export type OpenEscalation = {
+  id: string;
+  category: string | null;
+  status: string;
+  priority: string;
+  createdAt: string | null;
+};
+
+export type AssignmentHistoryEntry = {
+  id: string;
+  action: 'assigned' | 'reassigned' | 'unassigned' | 'resumed' | 'resolved';
+  userId: string | null;
+  userName: string | null;
+  assignedBy: string | null;
+  assignedByName: string | null;
+  reason: string | null;
+  createdAt: string | null;
+};
+
+// NOTE: EligibleMember is declared ONCE, below, alongside the other v1 types.
+// `users.email` is NOT NULL in the schema, so `email: string` is correct; a second,
+// looser copy of this type is exactly how the two drift apart.
+
+export type HandoffContext = {
+  conversation: {
+    id: string;
+    state: ConversationState;
+    assignedUserId: string | null;
+    assignedUserName: string | null;
+    assignedTeamId: string | null;
+    assignedTeamName: string | null;
+    brandId: string | null;
+    brandName: string | null;
+    channelProvider: string | null;
+    channelName: string | null;
+    priority: string | null;
+    resolvedAt: string | null;
+    createdAt: string | null;
+  };
+  openEscalations: OpenEscalation[];
+  history: AssignmentHistoryEntry[];
+  eligibleMembers: EligibleMember[];
+  permissions: HandoffPermission;
+};
+
+/** Shared shape of every P0.3-A mutation response. */
+export type HandoffOperationResult = {
+  conversationId: string;
+  state: ConversationState;
+  assignedUserId: string | null;
+  brandId?: string | null;
+  /**
+   * True when the postcondition already held and this request changed nothing.
+   * Rendered as a neutral "already done", NOT an error — a retried request must not
+   * look like a failure.
+   */
+  duplicate: boolean;
+  action: string | null;
+};
+
+export type EscalationResolveResult = {
+  conversationId: string;
+  escalationId: string;
+  conversationState: ConversationState;
+  state: ConversationState;
+  duplicate: boolean;
+  /** Always false. Closing an escalation never resumes the AI. */
+  aiResumed: boolean;
+  remainingOpenEscalations?: number;
+};
+
 export type ConversationDetail = {
   conversation: {
     id: string;
@@ -352,33 +444,75 @@ export const conversationsApi = {
   },
   detail: (id: string) => api.get<ConversationDetail>(`/conversations/${id}`),
 
+  /**
+   * P0.3-A handoff context. Read-only; grants nothing.
+   *
+   * Returns `permissions` describing what THIS caller may attempt right now, so the
+   * Inbox never re-derives a rule the server already decided.
+   */
+  handoffContext: (id: string) => api.get<HandoffContext>(`/conversations/${id}/handoff`),
+
+  /**
+   * P0.3-A staff-initiated handoff: AI_ACTIVE -> QUEUED.
+   *
+   * Requires `conversation.handoff` and a real reason on the server. Idempotent: a
+   * retry on an already-queued conversation returns `duplicate: true` rather than a
+   * second handoff. A conversation another actor has advanced is a 409.
+   */
   requestHandoff: (id: string, reason: string, teamId?: string) =>
-    api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/handoff`, { reason, teamId }),
+    api.post<HandoffOperationResult>(`/conversations/${id}/handoff`, { reason, teamId }),
+
+  /**
+   * P0.3-A escalation closure — closes exactly ONE escalation.
+   *
+   * Requires `conversation.resolve` (supervisory) and a reason. Never deletes the
+   * row, never touches a sibling, and NEVER resumes the AI: the response carries
+   * `aiResumed: false`, and Resume AI remains a separate explicit action.
+   */
+  resolveEscalation: (id: string, escalationId: string, reason: string) =>
+    api.post<EscalationResolveResult>(`/conversations/${id}/escalations/${escalationId}/resolve`, { reason }),
 
   /** Race-safe self-assign. Loser receives HANDOFF_CONFLICT (409). */
   claim: (id: string, reason?: string) =>
-    api.post<{ conversationId: string; state: ConversationState; assignedUserId: string }>(
+    api.post<HandoffOperationResult>(
       `/conversations/${id}/claim`,
       { reason }
     ),
 
+  /**
+   * Assign / reassign. `userId` must be one of `handoffContext().eligibleMembers`.
+   *
+   * The server additionally enforces that the target holds LIVE access to this
+   * conversation's brand, and refuses with `OPS_ASSIGNEE_NO_BRAND_ACCESS` otherwise —
+   * so the member list is a convenience, not the boundary.
+   */
   assign: (id: string, userId: string, reason?: string) =>
-    api.post<{ conversationId: string; state: ConversationState; assignedUserId: string; action: string }>(
+    api.post<HandoffOperationResult>(
       `/conversations/${id}/assign`,
       { userId, reason }
     ),
 
   unassign: (id: string, reason?: string) =>
-    api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/unassign`, { reason }),
+    api.post<HandoffOperationResult>(`/conversations/${id}/unassign`, { reason }),
 
-  activate: (id: string) =>
-    api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/activate`, {}),
+  // NOTE: there is deliberately no `activate` method. One used to be declared here
+  // pointing at /conversations/:id/activate, a route that has never existed on the
+  // server — a dead promise that would have 404ed the moment anyone called it.
+  // ASSIGNED -> HUMAN_ACTIVE happens implicitly when an employee replies, inside the
+  // P0.2 write path, so there is nothing for the client to invoke.
 
-  resolve: (id: string) =>
-    api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/resolve`, {}),
+  resolve: (id: string, reason?: string) =>
+    api.post<HandoffOperationResult>(`/conversations/${id}/resolve`, { reason }),
 
+  /**
+   * P0.3-A Resume AI — the ONLY way a conversation returns to the AI.
+   *
+   * The server refuses this while any escalation is unresolved, while a human is
+   * engaged, or while an employee reply is undelivered, and reports which. There is
+   * deliberately no override parameter anywhere in the stack.
+   */
   resumeAi: (id: string, reason: string) =>
-    api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/resume-ai`, { reason }),
+    api.post<HandoffOperationResult>(`/conversations/${id}/resume-ai`, { reason }),
 
   /**
    * Human reply — delivered to the real customer through the company's channel.
@@ -407,8 +541,11 @@ export const conversationsApi = {
       {}
     ),
 
-  eligibleMembers: (teamId?: string) =>
-    api.get<EligibleMember[]>(`/conversations/eligible-members${teamId ? `?teamId=${teamId}` : ''}`),
+  // NOTE: there is deliberately no `eligibleMembers` method. One used to be declared
+  // here pointing at /conversations/eligible-members, a route that has never existed
+  // on the server. P0.3-A serves the assignee list inside
+  // `handoffContext()`, brand-scoped and tenant-scoped in one place; a second
+  // unscoped endpoint for the same data would be one more surface to get wrong.
 
   notes: (id: string) => api.get<InternalNote[]>(`/conversations/${id}/notes`),
   addNote: (id: string, body: string) =>
