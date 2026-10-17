@@ -250,6 +250,44 @@ try {
   eq('an EMPTY grant means zero brands, never tenant-wide', r7.rows[0].claimed_count, 0);
   eq('and the conversation is invisible', r7.rows[0].target_count, 0);
 
+  // A COMPANY-WIDE channel (brand_id IS NULL) is the case the `ch.brand_id IS NOT
+  // NULL` half of the predicate exists for. It is not attributable to any single
+  // brand, so a caller restricted to specific brands must never reach it — not
+  // even when they hold a grant to one of that company's brands. Without that
+  // half, a restricted employee could answer every customer on every company-wide
+  // page while holding a grant to a single brand.
+  const [wideChannel] = (await q(
+    `INSERT INTO channels (tenant_id, brand_id, provider, display_name)
+     VALUES ($1, NULL, 'meta_dm', 'company-wide') RETURNING id`, [t1.id])).rows;
+  const [wideConv] = (await q(
+    `INSERT INTO conversations (tenant_id, channel_id, external_key, state)
+     VALUES ($1,$2,'psid-wide','QUEUED') RETURNING id`, [t1.id, wideChannel.id])).rows;
+  await q(`INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, text, provider_message_id, provider_ts)
+           VALUES ($1,$2,'inbound','customer','hi','in-wide',$3)`,
+    [t1.id, wideConv.id, new Date(Date.now() - 60_000)]);
+
+  const wideRestricted = await q(claimSql,
+    [t1.id, wideConv.id, admin.id, 'x', 'idem-nullbrand-01', false, [b1.id], true, 86400, STATES, PROVIDERS]);
+  eq('a NULL-brand channel is NOT reachable by a brand-restricted caller',
+    wideRestricted.rows[0].claimed_count, 0);
+  eq('and the conversation is not even visible to them',
+    wideRestricted.rows[0].target_count, 0);
+
+  const wideEmpty = await q(claimSql,
+    [t1.id, wideConv.id, admin.id, 'x', 'idem-nullbrand-03', false, [], true, 86400, STATES, PROVIDERS]);
+  eq('nor by a caller holding an empty grant', wideEmpty.rows[0].claimed_count, 0);
+
+  const wideTenant = await q(claimSql,
+    [t1.id, wideConv.id, admin.id, 'x', 'idem-nullbrand-02', true, [], true, 86400, STATES, PROVIDERS]);
+  eq('a TENANT-WIDE caller CAN reach it - that is exactly what the delegation means',
+    wideTenant.rows[0].claimed_count, 1);
+
+  // And the company-wide channel of ANOTHER company is still invisible.
+  const wideOther = await q(claimSql,
+    [t2.id, wideConv.id, admin.id, 'x', 'idem-nullbrand-04', true, [], true, 86400, STATES, PROVIDERS]);
+  eq('a company-wide channel of ANOTHER company writes nothing',
+    wideOther.rows[0].claimed_count, 0);
+
   section('9 assignment is enforced for reply_own');
   const [agentA] = (await q(`INSERT INTO users (tenant_id, name) VALUES ($1,'agentA') RETURNING id`, [t1.id])).rows;
   const [agentB] = (await q(`INSERT INTO users (tenant_id, name) VALUES ($1,'agentB') RETURNING id`, [t1.id])).rows;
