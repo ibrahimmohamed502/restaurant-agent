@@ -7,7 +7,8 @@ import { Inbox as InboxIcon, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/states';
 import { ReplySources } from './reply-sources';
-import { authApi } from '@/lib/api';
+import { ReplyComposer, type SendOutcome } from './composer';
+import { authApi, conversationsApi, type ConversationReplyPolicy } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 type Conversation = {
@@ -16,14 +17,52 @@ type Conversation = {
   provider: string | null;
   state: string | null;
   language: string | null;
+  assignedUserId?: string | null;
   messageCount: number;
   lastText: string | null;
   lastMessageAt: string | null;
 };
 type Detail = {
-  conversation: { id: string; customerName: string | null; provider: string | null; channelName: string | null; state: string | null; language: string | null; createdAt: string | null };
-  messages: Array<{ id?: string; direction: string; senderType: string; text: string | null; createdAt: string | null }>;
+  conversation: {
+    id: string;
+    customerName: string | null;
+    provider: string | null;
+    channelName: string | null;
+    state: string | null;
+    language: string | null;
+    createdAt: string | null;
+    assignedUserName?: string | null;
+  };
+  messages: Array<{
+    id?: string;
+    direction: string;
+    senderType: string;
+    text: string | null;
+    createdAt: string | null;
+    deliveryStatus?: 'pending' | 'sent' | 'failed' | null;
+    deliveryError?: string | null;
+  }>;
+  /** Server-authoritative. The composer draws from it; the API decides from SQL. */
+  reply: ConversationReplyPolicy;
 };
+
+/**
+ * Human-readable lifecycle label.
+ *
+ * Derived from the state the server sent, not re-derived from a client-side rule
+ * set — an unrecognised state renders as itself rather than being guessed at.
+ */
+function stateLabel(state: string | null | undefined, t: (k: string) => string): string {
+  switch (state) {
+    case 'AI_ACTIVE': return t('states.aiActive');
+    case 'HUMAN_REQUIRED': return t('states.humanRequired');
+    case 'QUEUED': return t('states.queued');
+    case 'ASSIGNED': return t('states.assigned');
+    case 'HUMAN_ACTIVE': return t('states.humanActive');
+    case 'RESOLVED': return t('states.resolved');
+    default: return state ?? '';
+  }
+}
 
 function relTime(iso: string | null): string {
   if (!iso) return '';
@@ -38,6 +77,7 @@ function relTime(iso: string | null): string {
 
 export function InboxView() {
   const t = useTranslations('inbox');
+  const tk = useTranslations('inbox');
   const router = useRouter();
   const [items, setItems] = React.useState<Conversation[] | null>(null);
   const [selected, setSelected] = React.useState<string | null>(null);
@@ -46,6 +86,9 @@ export function InboxView() {
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [isAdmin, setIsAdmin] = React.useState(false);
+  // Bumped after a reply lands so the thread re-reads; the server is the only
+  // source of truth for what was actually delivered.
+  const [refreshToken, setRefreshToken] = React.useState(0);
 
   React.useEffect(() => {
     let alive = true;
@@ -84,6 +127,16 @@ export function InboxView() {
       }
     })();
     return () => { alive = false; };
+  }, [selected, refreshToken]);
+
+  // A conversation can leave the AI's hands (or be reassigned) without the
+  // employee doing anything, so the reply permission is re-read on a timer while
+  // a thread is open. Ten seconds: long enough to be invisible, short enough
+  // that a stale "you can reply" cannot linger on screen.
+  React.useEffect(() => {
+    if (!selected) return;
+    const timer = setInterval(() => setRefreshToken((n) => n + 1), 10000);
+    return () => clearInterval(timer);
   }, [selected]);
 
   if (loading) {
@@ -134,6 +187,11 @@ export function InboxView() {
                 <span className="rounded-md border border-border bg-surface-2 px-1.5 py-0.5 text-2xs text-muted-foreground">
                   {c.provider === 'meta_dm' ? t('dm') : t('comment')}
                 </span>
+                {c.state && c.state !== 'AI_ACTIVE' ? (
+                  <span className="rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-2xs text-primary">
+                    {stateLabel(c.state, tk)}
+                  </span>
+                ) : null}
               </div>
             </button>
           </li>
@@ -165,23 +223,83 @@ export function InboxView() {
                   {detail.conversation.provider === 'meta_dm' ? t('dm') : t('comment')} · {relTime(detail.conversation.createdAt)}
                 </p>
               </div>
-              <span className="rounded-md border border-border bg-surface-2 px-1.5 py-0.5 text-2xs text-muted-foreground">{detail.conversation.state ?? ''}</span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {detail.conversation.assignedUserName ? (
+                  <span className="rounded-md border border-border bg-surface-2 px-1.5 py-0.5 text-2xs text-muted-foreground">
+                    {t('assignedTo', { name: detail.conversation.assignedUserName })}
+                  </span>
+                ) : null}
+                <span
+                  className={cn(
+                    'rounded-md border px-1.5 py-0.5 text-2xs',
+                    detail.conversation.state === 'AI_ACTIVE'
+                      ? 'border-info/40 bg-info/10 text-info'
+                      : detail.conversation.state === 'RESOLVED'
+                        ? 'border-border bg-surface-2 text-muted-foreground'
+                        : 'border-primary/30 bg-primary/10 text-primary'
+                  )}
+                >
+                  {stateLabel(detail.conversation.state, tk)}
+                </span>
+              </div>
             </header>
             <ul className="max-h-[60vh] space-y-3 overflow-y-auto p-4">
               {detail.messages.map((m, i) => (
                 <li key={i} className={cn('flex', m.direction === 'inbound' ? 'justify-start' : 'justify-end')}>
                   <div className={cn('max-w-[80%] rounded-lg px-3 py-2 text-[13px] shadow-sm', m.direction === 'inbound' ? 'bg-muted text-foreground' : 'bg-primary text-primary-foreground')}>
-                    <p className="whitespace-pre-wrap">{m.text ?? ''}</p>
-                    <p className="mt-1 text-2xs opacity-70">{relTime(m.createdAt)}</p>
+                    {/* dir="auto" so a reply written in one script renders correctly
+                        inside a thread written in the other. */}
+                    <p className="whitespace-pre-wrap" dir="auto">
+                      {m.text ?? ''}
+                    </p>
+                    <p className="mt-1 text-2xs opacity-70">
+                      {relTime(m.createdAt)}
+                      {m.direction === 'outbound' ? (
+                        <DeliveryBadge status={m.deliveryStatus} failedLabel={tk('reply.deliveryFailed')} pendingLabel={tk('reply.deliveryPending')} sentLabel={tk('reply.deliverySent')} />
+                      ) : null}
+                    </p>
                     {/* Stage 6: admin-only reply sources (outbound messages only) */}
                     {m.direction !== 'inbound' ? <ReplySources messageId={m.id} canView={isAdmin} /> : null}
                   </div>
                 </li>
               ))}
             </ul>
+            <ReplyComposer
+              conversationId={detail.conversation.id}
+              policy={detail.reply}
+              onSent={(_outcome: SendOutcome) => setRefreshToken((n) => n + 1)}
+            />
           </>
         )}
       </section>
     </div>
   );
+}
+
+/**
+ * Outbound delivery state.
+ *
+ * 'pending' on an employee reply most often means the provider's outcome was
+ * never established — it does NOT mean "press send again", and nothing here
+ * offers that.
+ */
+function DeliveryBadge({
+  status,
+  sentLabel,
+  pendingLabel,
+  failedLabel
+}: {
+  status?: 'pending' | 'sent' | 'failed' | null;
+  sentLabel: string;
+  pendingLabel: string;
+  failedLabel: string;
+}) {
+  if (!status) return null;
+  const map = {
+    sent: { label: sentLabel, className: 'opacity-70' },
+    pending: { label: pendingLabel, className: 'text-warning opacity-100' },
+    failed: { label: failedLabel, className: 'text-destructive opacity-100' }
+  } as const;
+  const v = map[status];
+  return <span className={cn('ms-1.5', v.className)}>· {v.label}</span>;
 }

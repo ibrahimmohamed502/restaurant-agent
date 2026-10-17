@@ -19,7 +19,7 @@ import {
   escalationCategory
 } from './services/conversations.js';
 import { classifyDeliveryError, createOutboundLedger } from './services/deliveryOutcome.js';
-import { evaluateAiGate } from './services/aiGate.js';
+import { evaluateAiGate, evaluateHumanOwnership } from './services/aiGate.js';
 import { detectCustomerHumanRequest, detectAutoEscalation, HANDOFF_REASONS } from './services/handoffDetector.js';
 import { requestHandoff, REQUESTED_BY } from './services/handoff.js';
 import { alreadyReplied, markReplied, userOverLimit } from './store.js';
@@ -386,14 +386,33 @@ async function applyStage7Gate({ tenantId, conversationId, text, pgEnabled }) {
  * Stage 7 / OBJ-8 — final lightweight state check, taken immediately before the
  * AI outbound row is created and the provider send is issued.
  *
- * This does NOT eliminate the bounded in-flight window (an AI event that passed
- * the gate a moment before a handoff can still be in flight) — it only shrinks
- * it. Persist-first inbound behaviour is never compromised.
+ * Two independent questions are asked here, in order:
+ *
+ *   1. STATE  — is the conversation still AI_ACTIVE?
+ *   2. OWNERSHIP (P0.2) — has an employee already claimed a reply on it?
+ *
+ * Question 2 exists because question 1 alone cannot close the AI/human race. An
+ * AI event can pass this check while the conversation is still AI_ACTIVE and
+ * only THEN lose ownership to a handoff plus an employee reply; that send would
+ * land on top of the human's. A claimed, undelivered employee reply therefore
+ * refuses the AI send outright.
+ *
+ * This shrinks the window; it does not claim to eliminate it. A human reply is
+ * only ever accepted in a state where the AI gate is already closed, so the
+ * remaining overlap needs an AI send that was already inside the provider call
+ * at the instant of the handoff. Persist-first inbound behaviour is never
+ * compromised.
  */
 async function finalAiSendCheck({ tenantId, conversationId, pgEnabled }) {
   if (!pgEnabled || !tenantId || !conversationId) return { suppressed: false };
   const gate = await evaluateAiGate({ tenantId, conversationId });
-  return { suppressed: gate.suppressed, state: gate.state };
+  if (gate.suppressed) return { suppressed: true, state: gate.state };
+
+  const ownership = await evaluateHumanOwnership({ tenantId, conversationId });
+  if (ownership.suppressed) {
+    return { suppressed: true, state: gate.state, reason: ownership.reason };
+  }
+  return { suppressed: false, state: gate.state };
 }
 
 // handlePayload is exported inline above (legacy inline/test entry point).

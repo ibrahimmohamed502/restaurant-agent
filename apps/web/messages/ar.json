@@ -100,6 +100,63 @@
       "faq": "سؤال شائع",
       "policies": "سياسة",
       "overview": "معلومات العلامة"
+    },
+    "assignedTo": "مُسند إلى {name}",
+    "states": {
+      "aiActive": "البوت بيرد",
+      "humanRequired": "محتاج موظف",
+      "queued": "في الانتظار",
+      "assigned": "مُسند",
+      "humanActive": "فيه موظف شغال عليه",
+      "resolved": "مقفول"
+    },
+    "reply": {
+      "label": "رد على العميل",
+      "placeholder": "اكتب ردك… (Enter للإرسال، Shift+Enter لسطر جديد)",
+      "counter": "{current} / {max} حرف",
+      "overLimit": "الرد طويل — الحد الأقصى {count} حرف",
+      "send": "إرسال",
+      "sending": "بنبعت…",
+      "clear": "مسح",
+      "blockedTitle": "مفيش رد دلوقتي",
+      "handoffHint": "اطلب من مشرف إنه يسلمك المحادثة، وبعدين رد من هنا.",
+      "assignedHint": "تقدر ترد على المحادثات المسندة ليك بس.",
+      "outcomeSent": "اتبعت — العميل وصله.",
+      "outcomeDuplicate": "كان مبعوت قبل كده — مبعتناش تاني.",
+      "outcomePending": "الطلب اتبعت، بس Meta ماأكدتش إن وصل. متتبعتهوش تاني — ممكن يكون وصل.",
+      "outcomeFailed": "الرد ما وصلش. اتسجّل عند المسؤول.",
+      "deliverySent": "اتبعت",
+      "deliveryPending": "التوصيل مش مؤكد",
+      "deliveryFailed": "ما وصلش",
+      "reasons": {
+        "ok": "تقدر ترد على المحادثة دي.",
+        "no_ability": "مفيش صلاحية تبعت ردود لدورك.",
+        "not_assigned": "المحادثة دي مسندة لموظف تاني.",
+        "ai_active": "البوت لسه بيرد. لازم تتسلم المحادثة الأول.",
+        "closed": "المحادثة دي مقفولة.",
+        "invalid_state": "المحادثة دي في حالة مش بتقبل ردود.",
+        "channel_unsupported": "الرد على القناة دي مش متاح لسه.",
+        "channel_inactive": "القناة دي مفصولة.",
+        "channel_missing": "المحادثة دي مالهاش قناة متوصّلة.",
+        "window_closed": "نافذة الرسائل عند Meta اتقفلت للعميل ده.",
+        "not_found": "المحادثة دي مش متاحة ليك."
+      },
+      "errors": {
+        "REPLY_VALIDATION_FAILED": "الرد مش قابل للإرسال — راجع الكلام وحاول تاني.",
+        "IDEMPOTENCY_KEY_REQUIRED": "مقدرناش نجهّز الإرسال. افتح الصفحة من جديد وحاول تاني.",
+        "IDEMPOTENCY_KEY_INVALID": "مقدرناش نجهّز الإرسال. افتح الصفحة من جديد وحاول تاني.",
+        "MESSAGING_WINDOW_CLOSED": "نافذة الرسائل عند Meta اتقفلت للعميل ده.",
+        "AI_OWNS_CONVERSATION": "البوت رجّع المحادثة. اطلب تسليمها وحاول تاني.",
+        "CONVERSATION_CLOSED": "المحادثة دي مقفولة.",
+        "CHANNEL_REPLY_UNSUPPORTED": "الرد على القناة دي مش متاح لسه.",
+        "CHANNEL_INACTIVE": "القناة دي مفصولة. صلّحها من الإعدادات.",
+        "CHANNEL_CREDENTIAL_MISSING": "مفيش حساب ميتا متوصّل بالقناة دي. صلّحها من الإعدادات.",
+        "REPLY_NOT_ASSIGNED": "المحادثة دي مسندة لموظف تاني.",
+        "CONVERSATION_STATE_CHANGED": "المحادثة اتغيّرت وإنت بتكتب. افتحها تاني وحاول.",
+        "REPLY_FORBIDDEN": "مفيش صلاحية تبعت ردود لدورك.",
+        "REPLY_INTERNAL": "حصل خطأ عندنا. الرد مبعتهوش.",
+        "NETWORK_ERROR": "مفيش اتصال بالسيرفر. الكلام لسه موجود — حاول تاني."
+      }
     }
   },
   "dashboard": {
@@ -562,16 +619,10 @@
     "actions": "الإجراءات",
     "emptyTitle": "لا توجد علامات تجارية بعد",
     "emptyDescription": "أنشئ أول علامة تجارية للبدء",
-    "editBrand": "تعديل العلامة التجارية",
-    "editBrandDescription": "تعديل تفاصيل العلامة التجارية وحالتها واللغة الافتراضية",
-    "save": "حفظ",
-    "saving": "جاري الحفظ…",
     "disableBrand": "تعطيل العلامة التجارية",
     "disabling": "جاري التعطيل…",
     "disableBrandDescription": "سيؤدي ذلك إلى تعطيل العلامة التجارية وقنواتها المرتبطة. لا يمكن التراجع عن هذا الإجراء.",
-    "brands": "العلامات التجارية",
-    "emptyTitle": "لا توجد علامات تجارية بعد",
-    "emptyDescription": "أنشئ أول علامة تجارية للبدء"
+    "brands": "العلامات التجارية"
   },
   "integrations": {
     "title": "التكاملات",

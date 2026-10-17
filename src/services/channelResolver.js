@@ -112,3 +112,44 @@ export async function resolveMetaChannel(pageId, { includeCredential = false, db
 
   return result;
 }
+
+/**
+ * P0.2 — resolve the page credential for a channel we already hold an id for.
+ *
+ * WHY A SEPARATE FUNCTION
+ * ----------------------
+ * resolveMetaChannel() takes a PAGE ID and re-runs the whole routing query,
+ * which deliberately prefers a `provider='meta'` channel carrying credentials
+ * over `meta_dm` / `meta_comment`. That preference is correct for an INBOUND
+ * webhook (several channel rows can describe the same page) and wrong for an
+ * OUTBOUND reply: the conversation hangs off one specific channel, and sending
+ * with a different channel's credential would deliver a company's reply through
+ * the wrong page.
+ *
+ * So this resolves strictly by (channel_id, tenant_id) — the pair the caller has
+ * already proved it owns — and returns the newest page_access_token for that
+ * exact channel. No id-guessing, no cross-tenant selection, and NO
+ * FB_PAGE_ACCESS_TOKEN env fallback: a channel with no stored credential is a
+ * hard failure, never a silent use of some global token.
+ *
+ * The decrypted value is returned ONLY to the outbound caller and must never be
+ * logged, serialized, audited or placed in an error.
+ *
+ * @param {{channelId: string, tenantId: string, db?: object}} args
+ * @returns {Promise<string|null>} the credential, or null when none is stored
+ */
+export async function resolveCredentialForChannel({ channelId, tenantId, db } = {}) {
+  const executor = db ?? pool;
+  if (!channelId || !tenantId) return null;
+  const { rows } = await executor.query(
+    `SELECT value_encrypted, iv
+       FROM provider_credentials
+      WHERE channel_id = $1 AND tenant_id = $2 AND kind = 'page_access_token'
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [channelId, tenantId]
+  );
+  const cred = rows[0];
+  if (!cred) return null;
+  return decrypt(cred.value_encrypted, cred.iv);
+}

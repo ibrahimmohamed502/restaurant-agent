@@ -210,6 +210,9 @@ export type ConversationListItem = {
   channelName: string | null;
   needsHuman: boolean;
   language: string | null;
+  /** True while the AI owns the conversation — drives the row badge. */
+  aiActive?: boolean;
+  channelStatus?: string | null;
   messageCount: number;
   lastText: string | null;
   lastMessageAt: string | null;
@@ -219,10 +222,47 @@ export type ConversationMessage = {
   id: string;
   direction: 'inbound' | 'outbound';
   senderType: 'customer' | 'ai' | 'employee' | 'system';
+  senderUserId?: string | null;
   text: string | null;
   createdAt: string | null;
-  deliveryStatus?: 'pending' | 'sent' | 'failed';
+  /** Only outbound rows carry one; null on inbound. */
+  deliveryStatus?: 'pending' | 'sent' | 'failed' | null;
   deliveryError?: string | null;
+};
+
+/**
+ * Server-authoritative reply permissions.
+ *
+ * These decide what the composer DRAWS. They never grant anything: the API
+ * re-evaluates company, brand, state, assignment and channel inside the same SQL
+ * statement that writes the message, so a doctored client gains nothing by
+ * ignoring them.
+ */
+export type ConversationReplyReason =
+  | 'ok'
+  | 'no_ability'
+  | 'not_assigned'
+  | 'ai_active'
+  | 'closed'
+  | 'invalid_state'
+  | 'channel_unsupported'
+  | 'channel_inactive'
+  | 'channel_missing'
+  | 'window_closed'
+  | 'not_found';
+
+export type ConversationReplyPolicy = {
+  canReply: boolean;
+  reason: ConversationReplyReason;
+  reasonText: string;
+  canReplyAnyConversation: boolean;
+  canReplyOnlyAssigned: boolean;
+  maxLength: number;
+  messagingWindowSeconds: number;
+  sendableProviders: string[];
+  replyableStates: string[];
+  /** The AI still owns it — an explicit handoff is required, and that is P0.3. */
+  requiresHandoff: boolean;
 };
 
 export type ConversationDetail = {
@@ -254,6 +294,10 @@ export type ConversationDetail = {
     actorUserName: string | null;
     assignedByName: string | null;
   }>;
+  /** P0.2 — server-authoritative reply permissions + limits. */
+  reply: ConversationReplyPolicy;
+  /** Active team members of the caller's own company, for the assignee list (P0.3). */
+  assigneeOptions: Array<{ id: string; name: string | null; email: string }>;
   /** Server-authoritative permissions — the UI only uses these to hide controls. */
   permissions: {
     canRequestHandoff: boolean;
@@ -336,12 +380,23 @@ export const conversationsApi = {
   resumeAi: (id: string, reason: string) =>
     api.post<{ conversationId: string; state: ConversationState }>(`/conversations/${id}/resume-ai`, { reason }),
 
-  /** Human reply — sent through the provider to the real customer. */
-  reply: (id: string, text: string, idempotencyKey?: string) =>
+  /**
+   * Human reply — delivered to the real customer through the company's channel.
+   *
+   * `idempotencyKey` is REQUIRED, not optional. The Graph send endpoint carries no
+   * idempotency key of its own, so this key — held unique by the database on
+   * (company, conversation, key) — is the only thing preventing a retried request
+   * from delivering a second copy. Generate it ONCE per draft and reuse it for
+   * every attempt to send that same draft; see components/inbox/composer.tsx.
+   */
+  reply: (id: string, text: string, idempotencyKey: string) =>
     api.post<{
       messageId: string | null;
       providerMessageId: string | null;
       deliveryStatus: 'pending' | 'sent' | 'failed';
+      deliveryError: string | null;
+      /** True only for a refusal Meta documented as transient. Never for ambiguity. */
+      retryable: boolean;
       mechanism: string | null;
       duplicate: boolean;
     }>(`/conversations/${id}/reply`, { text, idempotencyKey }),

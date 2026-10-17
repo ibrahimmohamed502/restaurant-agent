@@ -100,6 +100,63 @@
       "faq": "FAQ",
       "policies": "Policy",
       "overview": "Brand info"
+    },
+    "assignedTo": "Assigned to {name}",
+    "states": {
+      "aiActive": "AI is replying",
+      "humanRequired": "Needs a human",
+      "queued": "In the queue",
+      "assigned": "Assigned",
+      "humanActive": "Human handling",
+      "resolved": "Closed"
+    },
+    "reply": {
+      "label": "Reply to the customer",
+      "placeholder": "Write your reply… (Enter to send, Shift+Enter for a new line)",
+      "counter": "{current} / {max} characters",
+      "overLimit": "Too long — the maximum is {count} characters",
+      "send": "Send",
+      "sending": "Sending…",
+      "clear": "Clear",
+      "blockedTitle": "You cannot reply to this conversation",
+      "handoffHint": "Ask a supervisor to hand it over, then reply from here.",
+      "assignedHint": "You can reply only to conversations assigned to you.",
+      "outcomeSent": "Sent — the customer has it.",
+      "outcomeDuplicate": "Already sent — it was not sent twice.",
+      "outcomePending": "Sent, but Meta did not confirm delivery. Do not resend: it may already have arrived.",
+      "outcomeFailed": "The reply was not delivered. It has been recorded for an operator.",
+      "deliverySent": "sent",
+      "deliveryPending": "delivery unconfirmed",
+      "deliveryFailed": "not delivered",
+      "reasons": {
+        "ok": "You can reply to this conversation.",
+        "no_ability": "Your role is not allowed to send replies.",
+        "not_assigned": "This conversation is assigned to another agent.",
+        "ai_active": "The AI is still replying. A handoff is needed first.",
+        "closed": "This conversation is closed.",
+        "invalid_state": "This conversation is not in a state that accepts replies.",
+        "channel_unsupported": "Replies are not supported on this channel yet.",
+        "channel_inactive": "This channel is disconnected.",
+        "channel_missing": "This conversation has no connected channel.",
+        "window_closed": "The provider messaging window for this customer has closed.",
+        "not_found": "This conversation is not available to you."
+      },
+      "errors": {
+        "REPLY_VALIDATION_FAILED": "That message cannot be sent — check the text and try again.",
+        "IDEMPOTENCY_KEY_REQUIRED": "The send could not be prepared. Reload the page and try again.",
+        "IDEMPOTENCY_KEY_INVALID": "The send could not be prepared. Reload the page and try again.",
+        "MESSAGING_WINDOW_CLOSED": "The provider messaging window for this customer has closed.",
+        "AI_OWNS_CONVERSATION": "The AI took this conversation back. Ask for a handoff and try again.",
+        "CONVERSATION_CLOSED": "This conversation is closed.",
+        "CHANNEL_REPLY_UNSUPPORTED": "Replies are not supported on this channel yet.",
+        "CHANNEL_INACTIVE": "This channel is disconnected. Reconnect it from Settings.",
+        "CHANNEL_CREDENTIAL_MISSING": "This channel has no connected Meta account. Reconnect it from Settings.",
+        "REPLY_NOT_ASSIGNED": "This conversation is assigned to another agent.",
+        "CONVERSATION_STATE_CHANGED": "The conversation changed while you were typing. Reopen it and try again.",
+        "REPLY_FORBIDDEN": "Your role is not allowed to send replies.",
+        "REPLY_INTERNAL": "Something went wrong on our side. The message was not sent.",
+        "NETWORK_ERROR": "No connection to the server. Your text is still here — try again."
+      }
     }
   },
   "dashboard": {
@@ -562,16 +619,10 @@
     "actions": "Actions",
     "emptyTitle": "No brands yet",
     "emptyDescription": "Create your first brand to get started",
-    "editBrand": "Edit Brand",
-    "editBrandDescription": "Edit brand details, status, and default language",
-    "save": "Save",
-    "saving": "Saving…",
     "disableBrand": "Disable Brand",
     "disabling": "Disabling…",
     "disableBrandDescription": "This will disable the brand and its associated channels. This action cannot be undone.",
-    "brands": "Brands",
-    "emptyTitle": "No brands yet",
-    "emptyDescription": "Create your first brand to get started"
+    "brands": "Brands"
   },
   "integrations": {
     "title": "Integrations",
