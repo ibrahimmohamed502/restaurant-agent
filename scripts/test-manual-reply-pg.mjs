@@ -241,9 +241,16 @@ try {
     for (let i = 0; i < N; i++) {
       const c = new pg.Client({ connectionString: url });
       await c.connect();
+      // search_path is per-SESSION, so every racer must be pointed at the test
+      // schema itself. Without this the connections resolve \"conversations\"
+      // in \"public\", which is empty in a throwaway database.
+      await c.query(`SET search_path TO ${SCHEMA}, public`);
       conns.push(c);
     }
     check(`opened ${N} INDEPENDENT database connections`, conns.length === N);
+    const visible = await conns[0].query(
+      `SELECT count(*)::int n FROM pg_tables WHERE schemaname='${SCHEMA}'`);
+    check('every racer can see the test schema', visible.rows[0].n > 0, String(visible.rows[0].n));
 
     // Every connection issues the SAME claim at the same moment.
     const start = Promise.resolve();
