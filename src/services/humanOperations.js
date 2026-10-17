@@ -68,6 +68,8 @@ import {
   unassignConversation,
   resolveConversation,
   resumeAi,
+  requestHandoff,
+  REQUESTED_BY,
   getConversationHandoffView,
   listAssignmentHistory,
   listEligibleMembers,
@@ -84,6 +86,9 @@ export const OPS_ERRORS = Object.freeze({
   HUMAN_ENGAGED: 'OPS_HUMAN_ENGAGED',
   REPLY_IN_FLIGHT: 'OPS_REPLY_IN_FLIGHT',
   NOT_ASSIGNED: 'OPS_NOT_ASSIGNED',
+  ASSIGNEE_NO_BRAND_ACCESS: 'OPS_ASSIGNEE_NO_BRAND_ACCESS',
+  ASSIGNEE_NOT_ELIGIBLE: 'OPS_ASSIGNEE_NOT_ELIGIBLE',
+  ESCALATION_NOT_FOUND: 'OPS_ESCALATION_NOT_FOUND',
   INTERNAL: 'OPS_INTERNAL'
 });
 
@@ -141,6 +146,7 @@ export function resolveOpsAuthority(session) {
     brandIds: tenantWide ? null : (Array.isArray(session?.brandIds) ? session.brandIds : []),
     allBrandsInCompany: tenantWide,
     canClaim: can(roles, 'conversation.assign_self', custom),
+    canHandoff: can(roles, 'conversation.handoff', custom),
     canAssign: can(roles, 'conversation.assign', custom),
     canReassign: can(roles, 'conversation.reassign', custom),
     canUnassign: can(roles, 'conversation.unassign', custom),
@@ -221,6 +227,21 @@ async function writeDeniedRow(client, { tenantId, actorUserId, action, objectId,
  *
  * Returns null for "not visible" and "does not exist" alike, so a caller cannot
  * probe for the existence of another brand's conversation.
+ *
+ * DELIBERATELY NOT `FOR UPDATE`. A row lock here was tried and reverted: it turns
+ * a millisecond operation into a lock convoy, because the transaction stays open
+ * across the assignment INSERT, the escalation sync and the audit write, so a
+ * second actor's request blocks for the whole of that instead of failing fast.
+ * Under load that is a deadlock risk, and it buys nothing.
+ *
+ * The real serialisation is the `state = ANY(from)` predicate inside
+ * `applyTransition`'s single UPDATE. That predicate is evaluated by the database
+ * against the state at the moment of the write, so of N concurrent claims exactly
+ * one UPDATE matches a row and the rest match zero rows and are refused. That is
+ * proven by the 12-way independent-connection test in
+ * scripts/test-human-operations-pg.mjs, not merely assumed.
+ *
+ * Read-only callers (getHandoffContext) do not use this function.
  */
 async function loadScopedConversation(client, { tenantId, conversationId, scope }) {
   const bs = brandScopeSql('ch', { tenantWideParam: 1, brandIdsParam: 2 });
@@ -278,6 +299,10 @@ function translate(err) {
   if (err && typeof err.status === 'number' && typeof err.code === 'string') {
     return new OpsError(err.status, err.code, err.message);
   }
+  // Never echo internals to the caller, but do not lose them either: an unexplained
+  // 500 with nothing in the logs is exactly what made the P0 Inbox bug invisible.
+  // Codes and names only, never a message, a detail or a stack.
+  console.error('human operation: unmapped error', err?.code ?? err?.name ?? 'error');
   return new OpsError(500, OPS_ERRORS.INTERNAL, 'unexpected error');
 }
 
@@ -412,10 +437,10 @@ export async function claimConversationOperation({ session, conversationId, body
  * `conversation.reassign`, so a role that may place work but may not take it away
  * cannot quietly strip another agent's conversation.
  *
- * The assignee's OWN brand scope is reported (`assigneeCanSee`) but is NOT
- * enforced: blocking on it would be a policy decision about who may receive work,
- * which is not implied by the ability list. Assignment confers no data access by
- * itself — the assignee still has to pass the same brand scope on every read.
+ * The assignee's brand scope is ENFORCED, not reported: see
+ * assertAssigneeBrandAccess(). Assignment confers no data access by itself, but an
+ * assignee who cannot open the conversation can never act on it, so the operation
+ * is refused rather than creating a silent dead end.
  */
 export async function assignConversationOperation({ session, conversationId, body = {}, deps = {} }) {
   const db = deps.db ?? pool;
@@ -460,7 +485,8 @@ export async function assignConversationOperation({ session, conversationId, bod
     }
 
     const teamId = await assertTeamInTenant(client, { tenantId: authority.tenantId, teamId: body.teamId });
-    const assigneeCanSee = await assigneeHasBrandAccess(client, {
+    // BLOCKING: the assignee must be able to reach this conversation's brand.
+    await assertAssigneeBrandAccess(client, {
       tenantId: authority.tenantId, userId: body.userId, brandId: conv.brand_id
     });
 
@@ -489,7 +515,9 @@ export async function assignConversationOperation({ session, conversationId, bod
         extra: {
           assignedUserId: result.assignedUserId,
           previousAssignee: result.previousAssignee,
-          assigneeCanSee
+          // Brand access was proven inside this transaction, immediately before the
+          // write, with the grant row locked. Recorded so the trail shows the check ran.
+          assigneeBrandAccessVerified: true
         }
       })
     });
@@ -499,34 +527,85 @@ export async function assignConversationOperation({ session, conversationId, bod
       assignedUserId: result.assignedUserId,
       duplicate: false,
       action: result.action,
-      extra: { assigneeCanSee }
+      extra: { assigneeBrandAccessVerified: true }
     });
   });
 }
 
 /**
- * Does this assignee hold a brand grant that covers this conversation's brand?
+ * ENFORCE that the assignee can actually reach this conversation's brand.
  *
- * Advisory only. Returns true for a company-wide delegation row and for a
- * NULL-brand (company-wide) channel, matching how `brandScopeSql` treats them.
+ * Blocking, and evaluated inside the mutation transaction. Replaces the previous
+ * advisory `assigneeCanSee` flag: assigning work to someone who cannot open the
+ * conversation is a silent dead end, so it is refused instead of reported.
+ *
+ * Three conditions, all required:
+ *   1. active membership of the SAME tenant (cross-company is refused),
+ *   2. a live (not revoked) `user_brand_scope_all` delegation, OR
+ *   3. a live (not revoked) `user_brand_grants` row for this conversation's brand.
+ *
+ * A company-wide channel (brand_id IS NULL) requires the all-brands delegation,
+ * matching `brandScopeSql`: it is visible ONLY to a tenant-wide caller.
+ *
+ * CONCURRENCY. Both grant tables are read `FOR UPDATE`, which locks the live grant
+ * row for the rest of the transaction. A concurrent revoke is an UPDATE of exactly
+ * that row, so it now blocks until this transaction commits; if it committed
+ * first, this read sees the revoked row and refuses. That closes the
+ * check-then-revoke window that a plain SELECT would leave open.
+ *
+ * The error message is deliberately uniform. It never says whether the target
+ * exists, is inactive, belongs to another company, or merely lacks this brand -
+ * all four are the same 422, so this endpoint cannot be used to enumerate users.
  */
-async function assigneeHasBrandAccess(client, { tenantId, userId, brandId }) {
-  if (!brandId) return true;
-  const { rows } = await client.query(
-    `SELECT 1
+async function assertAssigneeBrandAccess(client, { tenantId, userId, brandId }) {
+  const { rows: [member] } = await client.query(
+    `SELECT u.id
        FROM users u
-      WHERE u.id = $1 AND u.tenant_id = $2 AND u.status = 'active'
-        AND (
-          EXISTS (SELECT 1 FROM user_brand_scope_all a
-                   WHERE a.user_id = u.id AND a.tenant_id = u.tenant_id AND a.revoked_at IS NULL)
-          OR EXISTS (SELECT 1 FROM user_brand_grants g
-                   WHERE g.user_id = u.id AND g.tenant_id = u.tenant_id AND g.revoked_at IS NULL
-                     AND g.brand_id = $3)
-        )
-      LIMIT 1`,
+      WHERE u.id = $1 AND u.tenant_id = $2 AND u.status = 'active'`,
+    [userId, tenantId]
+  );
+  if (!member) {
+    throw new OpsError(422, OPS_ERRORS.ASSIGNEE_NOT_ELIGIBLE,
+      'the target user cannot be assigned this conversation');
+  }
+
+  // Company-wide channel: only an all-brands delegation can see it.
+  if (!brandId) {
+    const { rows } = await client.query(
+      `SELECT 1 FROM user_brand_scope_all
+        WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL
+        FOR UPDATE`,
+      [userId, tenantId]
+    );
+    if (!rows[0]) {
+      throw new OpsError(422, OPS_ERRORS.ASSIGNEE_NO_BRAND_ACCESS,
+        'the target user cannot be assigned this conversation');
+    }
+    return true;
+  }
+
+  // Two top-level locking reads. `FOR UPDATE` is not permitted inside an EXISTS
+  // sub-select, and doing it as two plain statements is also easier to read.
+  // Each locks the live grant row, so a concurrent revoke of THAT row blocks
+  // until this transaction finishes.
+  const { rows: allBrands } = await client.query(
+    `SELECT 1 FROM user_brand_scope_all
+      WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL
+      FOR UPDATE`,
+    [userId, tenantId]
+  );
+  if (allBrands[0]) return true;
+
+  const { rows: perBrand } = await client.query(
+    `SELECT 1 FROM user_brand_grants
+      WHERE user_id = $1 AND tenant_id = $2 AND brand_id = $3 AND revoked_at IS NULL
+      FOR UPDATE`,
     [userId, tenantId, brandId]
   );
-  return rows.length > 0;
+  if (perBrand[0]) return true;
+
+  throw new OpsError(422, OPS_ERRORS.ASSIGNEE_NO_BRAND_ACCESS,
+    'the target user cannot be assigned this conversation');
 }
 
 /* ============================================================= unassign === */
@@ -834,6 +913,284 @@ async function findResumeBlocker(client, { tenantId, conversationId, conv, actor
   return null;
 }
 
+/* ==================================================== 8. escalation closure */
+
+/**
+ * CLOSE ONE ESCALATION — `POST /:id/escalations/:escalationId/resolve`.
+ *
+ * Deliberately narrow. It closes exactly the escalation named in the path and
+ * NOTHING else:
+ *
+ *   - it never deletes a row; `status='done'` + `resolved_at` keeps the full
+ *     complaint history, its category, who raised it and when,
+ *   - it never touches a sibling escalation on the same conversation,
+ *   - it NEVER resumes the AI. A conversation with no escalation left is still
+ *     QUEUED and still needs an explicit, separately-audited Resume AI — which in
+ *     turn will be refused while any escalation remains open.
+ *
+ * Authority reuses `conversation.resolve` (Supervisor, Company Admin). No new
+ * ability is introduced, so the P0.1 delegation ceiling and the custom-role rules
+ * are untouched. An Agent holding only `conversation.resolve_own` cannot close an
+ * escalation.
+ *
+ * The UPDATE is guarded on `resolved_at IS NULL`, so two supervisors closing the
+ * same escalation produce one update and one `duplicate:true` — never a second
+ * effect and never an error for work already done.
+ */
+export async function resolveEscalationOperation({ session, conversationId, escalationId, body = {}, deps = {} }) {
+  const db = deps.db ?? pool;
+  const authority = resolveOpsAuthority(session);
+  requireContext(authority);
+  if (!isUuid(conversationId) || !isUuid(escalationId)) {
+    throw new OpsError(404, OPS_ERRORS.NOT_FOUND, 'conversation not found');
+  }
+  if (!authority.canResolveAny) {
+    throw new OpsError(403, OPS_ERRORS.FORBIDDEN, 'your role cannot resolve escalations');
+  }
+  const rawReason = normalizeReason(body.reason, null);
+  if (!rawReason || rawReason.length < 2) {
+    throw new OpsError(422, 'HANDOFF_REASON_REQUIRED', 'a reason is required to close an escalation');
+  }
+  const scope = deps.scope ?? null;
+
+  return withTransaction(db, async (client) => {
+    // The scoped reader returns the conversation before anything is audited, so an
+    // out-of-scope conversation produces a 404 and NO audit row — an auditor can
+    // never infer that it exists.
+    const conv = await loadScopedConversation(client, {
+      tenantId: authority.tenantId, conversationId, scope
+    });
+    if (!conv) throw new OpsError(404, OPS_ERRORS.NOT_FOUND, 'conversation not found');
+
+    const { rows: [esc] } = await client.query(
+      `SELECT id, category, status, resolved_at FROM escalations
+        WHERE id = $1 AND conversation_id = $2 AND tenant_id = $3
+        FOR UPDATE`,
+      [escalationId, conversationId, authority.tenantId]
+    );
+    if (!esc) {
+      // An escalation belonging to another conversation or tenant is reported as
+      // "not found", never as "exists but is not yours".
+      throw new OpsError(404, OPS_ERRORS.ESCALATION_NOT_FOUND, 'escalation not found');
+    }
+
+    // Idempotent replay: someone (possibly another supervisor) already closed it.
+    if (esc.resolved_at) {
+      await writeAuditRow(client, {
+        tenantId: authority.tenantId, actorUserId: authority.userId,
+        action: 'escalation.resolve', objectId: conversationId, ip: deps.ip ?? null,
+        metadata: {
+          ...auditMeta(conv, { fromState: conv.state, toState: conv.state, reason: rawReason }),
+          escalationId,
+          escalationCategory: esc.category,
+          duplicate: true
+        }
+      });
+      return {
+        conversationId,
+        escalationId,
+        // The AI is deliberately NOT resumed here, so the conversation state is
+        // unchanged and must be reported as such.
+        conversationState: conv.state,
+        state: conv.state,
+        duplicate: true,
+        aiResumed: false
+      };
+    }
+
+    // `escalations` has no `resolved_by` column (001_init.sql) and adding one would
+    // mean a migration, so WHO closed it is recorded in `audit_logs.actor_user_id`
+    // instead. The escalation row itself is never deleted and never rewritten
+    // beyond status/resolved_at, so the complaint history is preserved.
+    const { rows: [closed] } = await client.query(
+      `UPDATE escalations
+          SET status = 'done', resolved_at = now()
+        WHERE id = $1 AND conversation_id = $2 AND tenant_id = $3 AND resolved_at IS NULL
+        RETURNING id, resolved_at`,
+      [escalationId, conversationId, authority.tenantId]
+    );
+
+    if (!closed) {
+      // Lost a race against a concurrent close; report it as already done.
+      const after = await loadScopedConversation(client, {
+        tenantId: authority.tenantId, conversationId, scope
+      });
+      await writeAuditRow(client, {
+        tenantId: authority.tenantId, actorUserId: authority.userId,
+        action: 'escalation.resolve', objectId: conversationId, ip: deps.ip ?? null,
+        metadata: {
+          ...auditMeta(conv, { fromState: conv.state, toState: after?.state ?? conv.state, reason: rawReason }),
+          escalationId, escalationCategory: esc.category, duplicate: true
+        }
+      });
+      return {
+        conversationId, escalationId,
+        conversationState: after?.state ?? conv.state,
+        state: after?.state ?? conv.state,
+        duplicate: true, aiResumed: false
+      };
+    }
+
+    const stillOpen = await loadOpenEscalations(client, {
+      tenantId: authority.tenantId, conversationId
+    });
+
+    await writeAuditRow(client, {
+      tenantId: authority.tenantId, actorUserId: authority.userId,
+      action: 'escalation.resolve', objectId: conversationId, ip: deps.ip ?? null,
+      metadata: {
+        ...auditMeta(conv, { fromState: conv.state, toState: conv.state, reason: rawReason }),
+        escalationId,
+        escalationCategory: esc.category,
+        resolvedAt: closed.resolved_at,
+        remainingOpenEscalations: stillOpen.length,
+        aiResumed: false
+      }
+    });
+
+    return {
+      conversationId,
+      escalationId,
+      conversationState: conv.state,
+      state: conv.state,
+      duplicate: false,
+      aiResumed: false,
+      remainingOpenEscalations: stillOpen.length
+    };
+  });
+}
+
+/* ================================================= 9. staff-initiated handoff */
+
+/**
+ * HAND OFF TO A HUMAN — `POST /:id/handoff`. AI_ACTIVE -> QUEUED.
+ *
+ * The escalation paths in src/webhook.js can already move a conversation into the
+ * human queue, but only from an inbound message. This is the staff-initiated
+ * equivalent: an employee who can see something wrong takes the conversation away
+ * from the AI.
+ *
+ * `handoff.requestHandoff()` already performs AI_ACTIVE -> HUMAN_REQUIRED ->
+ * QUEUED and writes both the assignment-history row and the escalation row, so it
+ * is reused rather than reimplemented.
+ *
+ * IDEMPOTENCY. On a retry the conversation is no longer AI_ACTIVE, and the naive
+ * call would append a SECOND assignment row and a SECOND escalation for the same
+ * logical handoff. So the postcondition is checked first: a conversation already
+ * in QUEUED or HUMAN_REQUIRED reports `duplicate:true` and writes nothing extra.
+ * A conversation that a human has since progressed to ASSIGNED / HUMAN_ACTIVE, or
+ * that is RESOLVED, is a genuine conflict and is refused 409 — that is another
+ * actor's work being overwritten, not a duplicate.
+ *
+ * Requires `conversation.handoff`, which Agent, Supervisor and Company Admin all
+ * hold. A reason is mandatory.
+ *
+ * The AI stops immediately: `src/services/aiGate.js` reads `conversations.state`
+ * from PostgreSQL on every inbound event, so the very next message is suppressed,
+ * and the P0.2 send-time collision checks (`finalAiSendCheck` /
+ * `lastInstantAiSendCheck`) additionally refuse a reply that was already in flight.
+ */
+export async function requestStaffHandoffOperation({ session, conversationId, body = {}, deps = {} }) {
+  const db = deps.db ?? pool;
+  const authority = resolveOpsAuthority(session);
+  requireContext(authority);
+  if (!isUuid(conversationId)) {
+    throw new OpsError(404, OPS_ERRORS.NOT_FOUND, 'conversation not found');
+  }
+  if (!authority.canHandoff) {
+    throw new OpsError(403, OPS_ERRORS.FORBIDDEN, 'your role cannot hand off a conversation');
+  }
+  const rawReason = normalizeReason(body.reason, null);
+  if (!rawReason || rawReason.length < 2) {
+    throw new OpsError(422, 'HANDOFF_REASON_REQUIRED', 'a handoff reason is required');
+  }
+  const scope = deps.scope ?? null;
+
+  return withTransaction(db, async (client) => {
+    const conv = await loadScopedConversation(client, {
+      tenantId: authority.tenantId, conversationId, scope
+    });
+    if (!conv) throw new OpsError(404, OPS_ERRORS.NOT_FOUND, 'conversation not found');
+
+    // Already handed off and nobody has touched it since -> idempotent replay.
+    if (conv.state === CONVERSATION_STATES.QUEUED || conv.state === CONVERSATION_STATES.HUMAN_REQUIRED) {
+      await writeAuditRow(client, {
+        tenantId: authority.tenantId, actorUserId: authority.userId,
+        action: 'conversation.handoff', objectId: conversationId, ip: deps.ip ?? null,
+        metadata: {
+          ...auditMeta(conv, { fromState: conv.state, toState: conv.state, reason: rawReason }),
+          duplicate: true
+        }
+      });
+      return operationResult(conv, {
+        state: conv.state, assignedUserId: conv.assigned_user_id, duplicate: true, action: 'handoff'
+      });
+    }
+
+    // Someone else already advanced this conversation. Refusing is the point:
+    // overwriting a colleague's active handling is not a duplicate, it is damage.
+    if (conv.state !== CONVERSATION_STATES.AI_ACTIVE) {
+      await writeDeniedRow(client, {
+        tenantId: authority.tenantId, actorUserId: authority.userId,
+        action: 'conversation.handoff.denied', objectId: conversationId, ip: deps.ip ?? null,
+        metadata: {
+          ...auditMeta(conv, { fromState: conv.state, toState: null, reason: rawReason }),
+          code: 'HANDOFF_INVALID_TRANSITION'
+        }
+      });
+      throw new OpsError(409, 'HANDOFF_INVALID_TRANSITION',
+        'this conversation is already being handled');
+    }
+
+    const assignedTeamId = await assertTeamInTenant(client, {
+      tenantId: authority.tenantId, teamId: body.teamId
+    });
+
+    let result;
+    try {
+      result = await requestHandoff(
+        {
+          tenantId: authority.tenantId,
+          conversationId,
+          reason: rawReason,
+          priority: normalizeReason(body.priority, 'normal'),
+          requestedBy: REQUESTED_BY.STAFF,
+          category: normalizeReason(body.category, 'handoff'),
+          assignedTeamId
+        },
+        { db: client, actorUserId: authority.userId }
+      );
+    } catch (e) {
+      const t = translate(e);
+      await writeDeniedRow(client, {
+        tenantId: authority.tenantId, actorUserId: authority.userId,
+        action: 'conversation.handoff.denied', objectId: conversationId, ip: deps.ip ?? null,
+        metadata: {
+          ...auditMeta(conv, { fromState: conv.state, toState: null, reason: rawReason }),
+          code: t.code
+        }
+      });
+      throw t;
+    }
+
+    await writeAuditRow(client, {
+      tenantId: authority.tenantId, actorUserId: authority.userId,
+      action: 'conversation.handoff', objectId: conversationId, ip: deps.ip ?? null,
+      metadata: auditMeta(conv, {
+        fromState: conv.state, toState: result.state, reason: rawReason,
+        extra: { requestedBy: REQUESTED_BY.STAFF, priority: result.priority }
+      })
+    });
+
+    return operationResult(conv, {
+      state: result.state,
+      assignedUserId: conv.assigned_user_id,
+      duplicate: false,
+      action: 'handoff'
+    });
+  });
+}
+
 /* ============================================================ read context */
 
 /**
@@ -935,7 +1292,11 @@ export async function getHandoffContext({ session, conversationId, deps = {} }) 
                     : openEscalations.length > 0
                         ? RESUME_AI_BLOCKERS.OPEN_ESCALATIONS
                         : 'state_not_resumable'),
-      isAssignee
+      isAssignee,
+      canHandoff: authority.canHandoff && view.state === CONVERSATION_STATES.AI_ACTIVE,
+      // Closing an escalation needs `conversation.resolve` (supervisory), which is
+      // stricter than resolve_own, so it is reported separately.
+      canResolveEscalations: authority.canResolveAny && openEscalations.length > 0
     }
   };
 }

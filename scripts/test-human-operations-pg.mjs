@@ -279,12 +279,15 @@
     check('an Agent may NOT resume the AI', e3 !== null);
     eq('  403', e3?.status, 403);
 
-    // Supervisor assigns to a user in ANOTHER tenant -> refused.
+    // A Supervisor may NOT assign across tenants. The brand-access guard now fires
+    // first, with its own uniform 422 rather than handoff.js's USER_NOT_ELIGIBLE.
     let e4 = null;
     try { await OPS.assignConversationOperation({ session: sSup, conversationId: c.id, body: { userId: OUTSIDER.id }, deps: ops(sSup) }); }
     catch (e) { e4 = e; }
     check('a Supervisor may NOT assign across tenants', e4 !== null);
-    eq('  422 USER_NOT_ELIGIBLE', e4?.code, 'HANDOFF_USER_NOT_ELIGIBLE');
+    eq('  422', e4?.status, 422);
+    eq('  with a uniform refusal that does not reveal whether the user exists',
+      e4?.message, 'the target user cannot be assigned this conversation');
 
     // Supervisor assigns to a legitimate member.
     const ok = await OPS.assignConversationOperation({ session: sSup, conversationId: c.id, body: { userId: AGENT.id }, deps: ops(sSup) });
@@ -544,6 +547,367 @@
     eq('  state is ASSIGNED', gate.state, 'ASSIGNED');
     const own = await evaluateHumanOwnership({ tenantId: T1.id, conversationId: c.id });
     eq('with no reply in flight, human ownership is clear', own.suppressed, false);
+  }
+
+  /* ================================= 10. assignee brand access is ENFORCED ==== */
+
+  section('10. Assignee brand access is enforced inside the mutation');
+  {
+    // AGENT has brand A only. AGENT2 gets brand B only. SUP has all brands.
+    const c = await mkQueued(CH_A_DM);           // brand A channel
+    const cB = await mkQueued(CH_B_DM);          // brand B channel
+    const sSup = sSupFor();
+    const sAdm = sAdminFor();
+
+    // 1. cross-company target is refused.
+    let e = null;
+    try { await OPS.assignConversationOperation({ session: sSup, conversationId: c.id, body: { userId: OUTSIDER.id }, deps: ops(sSup) }); }
+    catch (x) { e = x; }
+    check('assigning to a user of ANOTHER company is refused', e !== null);
+    eq('  with 422', e?.status, 422);
+
+    // 2. cross-brand target is refused.
+    const [AGENT_B] = [await mkUser(T1.id, 'agentB')];
+    await grant(AGENT_B, R_AGENT);
+    await q(`INSERT INTO user_brand_grants (user_id, tenant_id, brand_id) VALUES ($1,$2,$3)`,
+      [AGENT_B.id, T1.id, BR_B.id]);
+    let e2 = null;
+    try { await OPS.assignConversationOperation({ session: sSup, conversationId: c.id, body: { userId: AGENT_B.id }, deps: ops(sSup) }); }
+    catch (x) { e2 = x; }
+    check('assigning a BRAND-A conversation to a BRAND-B-only user is refused', e2 !== null);
+    eq('  with OPS_ASSIGNEE_NO_BRAND_ACCESS', e2?.code, 'OPS_ASSIGNEE_NO_BRAND_ACCESS');
+    eq('  and a uniform message (no user enumeration)',
+      e2?.message, 'the target user cannot be assigned this conversation');
+
+    // 3. an inactive member is refused.
+    await q(`UPDATE users SET status='disabled' WHERE id=$1`, [AGENT_B.id]);
+    let e3 = null;
+    try { await OPS.assignConversationOperation({ session: sSup, conversationId: c.id, body: { userId: AGENT_B.id }, deps: ops(sSup) }); }
+    catch (x) { e3 = x; }
+    check('assigning a DISABLED user is refused', e3 !== null);
+    eq('  with 422 ASSIGNEE_NOT_ELIGIBLE', e3?.code, 'OPS_ASSIGNEE_NOT_ELIGIBLE');
+    await q(`UPDATE users SET status='active' WHERE id=$1`, [AGENT_B.id]);
+
+    // 4. a user with NO grant at all is refused.
+    const [NOGRANT] = [await mkUser(T1.id, 'nogrant')];
+    await grant(NOGRANT, R_AGENT);
+    let e4 = null;
+    try { await OPS.assignConversationOperation({ session: sSup, conversationId: c.id, body: { userId: NOGRANT.id }, deps: ops(sSup) }); }
+    catch (x) { e4 = x; }
+    check('assigning to a member with NO brand grant is refused (fail-closed on absence)',
+      e4?.code === 'OPS_ASSIGNEE_NO_BRAND_ACCESS', e4?.code);
+
+    // 5. a revoked grant is refused.
+    await q(`UPDATE user_brand_grants SET revoked_at=now() WHERE user_id=$1 AND brand_id=$2`,
+      [AGENT_B.id, BR_B.id]);
+    let e5 = null;
+    try { await OPS.assignConversationOperation({ session: sSup, conversationId: cB.id, body: { userId: AGENT_B.id }, deps: ops(sSup) }); }
+    catch (x) { e5 = x; }
+    check('assigning with a REVOKED grant is refused', e5?.code === 'OPS_ASSIGNEE_NO_BRAND_ACCESS', e5?.code);
+
+    // 6. the matching grant succeeds.
+    const ok = await OPS.assignConversationOperation({ session: sSup, conversationId: c.id, body: { userId: AGENT.id }, deps: ops(sSup) });
+    eq('a user WITH the brand grant is accepted', ok.state, 'ASSIGNED');
+    eq('  and the response records that brand access was verified',
+      ok.assigneeBrandAccessVerified, true);
+    eq('  no conversation was left assigned on a refusal',
+      (await one(`SELECT state FROM conversations WHERE id=$1`, [cB.id])).state, 'QUEUED');
+
+    // 7. a revoked all-brands delegation is refused.
+    const [ALLBRANDS_REVOKED] = [await mkUser(T1.id, 'revokedall')];
+    await grant(ALLBRANDS_REVOKED, R_AGENT);
+    await q(`INSERT INTO user_brand_scope_all (user_id, tenant_id) VALUES ($1,$2)`,
+      [ALLBRANDS_REVOKED.id, T1.id]);
+    const beforeRevoke = await OPS.assignConversationOperation({
+      session: sSup, conversationId: cB.id, body: { userId: ALLBRANDS_REVOKED.id }, deps: ops(sSup)
+    });
+    eq('an all-brands delegation is accepted', beforeRevoke.state, 'ASSIGNED');
+    await q(`UPDATE user_brand_scope_all SET revoked_at=now() WHERE user_id=$1`, [ALLBRANDS_REVOKED.id]);
+    const cB2 = await mkQueued(CH_B_DM);
+    let e6 = null;
+    try { await OPS.assignConversationOperation({ session: sSup, conversationId: cB2.id, body: { userId: ALLBRANDS_REVOKED.id }, deps: ops(sSup) }); }
+    catch (x) { e6 = x; }
+    check('a REVOKED all-brands delegation is refused', e6?.code === 'OPS_ASSIGNEE_NO_BRAND_ACCESS', e6?.code);
+  }
+
+  /* ================================= 11. escalation closure + resume rules ==== */
+
+  section('11. Escalation closure is narrow, audited, and never resumes the AI');
+  {
+    const c = await mkQueued(CH_A_DM);
+    const [e1, e2] = await q(
+      `INSERT INTO escalations (tenant_id, conversation_id, category, reason, priority, status, requested_by)
+       VALUES ($1,$2,'complaint','first complaint','normal','new','ai'),
+              ($1,$2,'handoff','customer_requested_human','high','new','customer')
+       RETURNING id`, [T1.id, c.id]);
+    const sSup = sSupFor();
+    const sAgent = sess(AGENT, T1.id, [BR_A.id], false, ['Agent']);
+
+    // An Agent may not close an escalation.
+    let ea = null;
+    try { await OPS.resolveEscalationOperation({ session: sAgent, conversationId: c.id, escalationId: e1.id, body: { reason: 'x' }, deps: ops(sAgent) }); }
+    catch (x) { ea = x; }
+    check('an Agent may NOT close an escalation', ea?.status === 403, `${ea?.status} ${ea?.code}`);
+
+    // A reason is mandatory.
+    let er = null;
+    try { await OPS.resolveEscalationOperation({ session: sSup, conversationId: c.id, escalationId: e1.id, body: {}, deps: ops(sSup) }); }
+    catch (x) { er = x; }
+    eq('a missing reason is refused', er?.code, 'HANDOFF_REASON_REQUIRED');
+
+    // An escalation belonging to another conversation is 404.
+    const otherC = await mkQueued(CH_A_DM);
+    let eo = null;
+    try { await OPS.resolveEscalationOperation({ session: sSup, conversationId: otherC.id, escalationId: e1.id, body: { reason: 'wrong conversation' }, deps: ops(sSup) }); }
+    catch (x) { eo = x; }
+    eq('an escalation from ANOTHER conversation is 404', eo?.status, 404);
+    eq('  with ESCALATION_NOT_FOUND', eo?.code, 'OPS_ESCALATION_NOT_FOUND');
+
+    // Close exactly one.
+    const r1 = await OPS.resolveEscalationOperation({
+      session: sSup, conversationId: c.id, escalationId: e1.id,
+      body: { reason: 'complaint answered by phone' }, deps: ops(sSup)
+    });
+    eq('the escalation is closed', r1.duplicate, false);
+    eq('  and the AI is NOT resumed', r1.aiResumed, false);
+    eq('  and the conversation state is untouched', r1.conversationState, 'QUEUED');
+    eq('  and one escalation is still open', r1.remainingOpenEscalations, 1);
+
+    // The sibling is untouched, and history is preserved.
+    const rows = await q(`SELECT id, status, resolved_at, reason FROM escalations WHERE conversation_id=$1 ORDER BY created_at`, [c.id]);
+    eq('both escalation rows still exist (nothing deleted)', rows.length, 2);
+    eq('  the closed one keeps its reason', rows[0].reason, 'first complaint');
+    eq('  the closed one is status done', rows[0].status, 'done');
+    check('  the closed one has resolved_at', rows[0].resolved_at !== null);
+    eq('  the sibling is STILL open', rows[1].resolved_at, null);
+    eq('  and the sibling keeps status new', rows[1].status, 'new');
+
+    // Retry -> duplicate, no second effect.
+    const r2 = await OPS.resolveEscalationOperation({
+      session: sSup, conversationId: c.id, escalationId: e1.id,
+      body: { reason: 'already done' }, deps: ops(sSup)
+    });
+    eq('a retried close reports duplicate', r2.duplicate, true);
+
+    // Resume AI is still refused while the sibling is open.
+    let eb = null;
+    try { await OPS.resumeAiOperation({ session: sSup, conversationId: c.id, body: { reason: 'try' }, deps: ops(sSup) }); }
+    catch (x) { eb = x; }
+    check('Resume AI is STILL refused while a sibling escalation is open', eb?.code === 'OPS_OPEN_ESCALATIONS', eb?.code);
+    eq('  and it names the remaining escalation', eb?.details?.openEscalations?.length, 1);
+
+    // Close the sibling -> now Resume AI is permitted.
+    await OPS.resolveEscalationOperation({
+      session: sSup, conversationId: c.id, escalationId: e2.id,
+      body: { reason: 'customer request withdrawn' }, deps: ops(sSup)
+    });
+    const resumed = await OPS.resumeAiOperation({
+      session: sSup, conversationId: c.id, body: { reason: 'all escalations closed' }, deps: ops(sSup)
+    });
+    eq('once every escalation is closed, Resume AI succeeds', resumed.state, 'AI_ACTIVE');
+
+    // Closing an escalation alone never resumes: prove it on a fresh conversation.
+    const c2 = await mkQueued(CH_A_DM);
+    const [only] = await q(
+      `INSERT INTO escalations (tenant_id, conversation_id, category, reason, priority, status, requested_by)
+       VALUES ($1,$2,'complaint','lone complaint','normal','new','ai') RETURNING id`, [T1.id, c2.id]);
+    const onlyRes = await OPS.resolveEscalationOperation({
+      session: sSup, conversationId: c2.id, escalationId: only.id,
+      body: { reason: 'done' }, deps: ops(sSup)
+    });
+    eq('closing the ONLY escalation leaves the conversation QUEUED, not AI_ACTIVE',
+      onlyRes.conversationState, 'QUEUED');
+    eq('  and the database agrees', (await one(`SELECT state FROM conversations WHERE id=$1`, [c2.id])).state, 'QUEUED');
+
+    // Audit trail.
+    const aud = await q(`SELECT actor_user_id, action, metadata FROM audit_logs WHERE object_id=$1 AND action='escalation.resolve' ORDER BY created_at`, [c.id]);
+    check('every close is audited', aud.length >= 3, String(aud.length));
+    eq('  actor is the supervisor', aud[0].actor_user_id, SUP.id);
+    eq('  metadata names the escalation', typeof aud[0].metadata.escalationId, 'string');
+    eq('  metadata records aiResumed:false', aud[0].metadata.aiResumed, false);
+
+    // A denial on an out-of-scope conversation writes NO audit row. Use a
+    // SUPERVISOR scoped to brand A: an Agent would be refused 403 on ability
+    // before the brand scope is ever evaluated, which proves nothing about scope.
+    const supA = await mkUser(T1.id, 'supA');
+    await grant(supA, R_SUP);
+    await q(`INSERT INTO user_brand_grants (user_id, tenant_id, brand_id) VALUES ($1,$2,$3)`,
+      [supA.id, T1.id, BR_A.id]);
+    const hidden = await mkQueued(CH_B_DM);
+    const hiddenEsc = (await q(
+      `INSERT INTO escalations (tenant_id, conversation_id, category, reason, priority, status, requested_by)
+       VALUES ($1,$2,'complaint','hidden','normal','new','ai') RETURNING id`, [T1.id, hidden.id]))[0];
+    const auditBefore = (await q(`SELECT count(*)::int n FROM audit_logs WHERE object_id=$1`, [hidden.id]))[0].n;
+    const sSupBrandA = sess(supA, T1.id, [BR_A.id], false, ['Supervisor']);
+    let eh = null;
+    try { await OPS.resolveEscalationOperation({ session: sSupBrandA, conversationId: hidden.id, escalationId: hiddenEsc.id, body: { reason: 'probe' }, deps: ops(sSupBrandA) }); }
+    catch (x) { eh = x; }
+    check('a brand-A SUPERVISOR gets 404 for a brand-B conversation', eh?.status === 404, String(eh?.status));
+    eq('  and NO audit row was written for it (no existence leak)',
+      (await q(`SELECT count(*)::int n FROM audit_logs WHERE object_id=$1`, [hidden.id]))[0].n, auditBefore);
+    eq('  and the escalation is untouched', (await one(`SELECT resolved_at FROM escalations WHERE id=$1`, [hiddenEsc.id])).resolved_at, null);
+
+    // And the ability check runs FIRST for a caller who lacks it entirely, which
+    // likewise discloses nothing about whether the conversation exists.
+    const sBrandA = sess(AGENT, T1.id, [BR_A.id], false, ['Agent']);
+    let ea2 = null;
+    try { await OPS.resolveEscalationOperation({ session: sBrandA, conversationId: hidden.id, escalationId: hiddenEsc.id, body: { reason: 'probe' }, deps: ops(sBrandA) }); }
+    catch (x) { ea2 = x; }
+    eq('a caller without conversation.resolve gets 403 regardless of scope', ea2?.status, 403);
+  }
+
+  /* ========================================= 12. staff-initiated handoff ====== */
+
+  section('12. Staff-initiated handoff');
+  {
+    const c = await mkConv(T1.id, CH_A_DM, 'AI_ACTIVE');
+    const sSup = sSupFor();
+    const sAgent = sess(AGENT, T1.id, [BR_A.id], false, ['Agent']);
+
+    // A reason is mandatory.
+    let e0 = null;
+    try { await OPS.requestStaffHandoffOperation({ session: sSup, conversationId: c.id, body: {}, deps: ops(sSup) }); }
+    catch (x) { e0 = x; }
+    eq('a missing reason is refused', e0?.code, 'HANDOFF_REASON_REQUIRED');
+
+    // An Agent CAN hand off (holds conversation.handoff).
+    const ho = await OPS.requestStaffHandoffOperation({
+      session: sAgent, conversationId: c.id, body: { reason: 'customer asked for a manager' }, deps: ops(sAgent)
+    });
+    eq('an Agent may hand off an AI_ACTIVE conversation', ho.state, 'QUEUED');
+    eq('  and it is not a duplicate', ho.duplicate, false);
+
+    // Exactly one assignment row + one escalation, both attributed to staff.
+    const asg = await q(`SELECT action, reason, assigned_by FROM assignments WHERE conversation_id=$1`, [c.id]);
+    eq('exactly ONE assignment row was written', asg.length, 1);
+    eq('  attributed to the staff member', asg[0].assigned_by, AGENT.id);
+    const escs = await q(`SELECT category, requested_by, status FROM escalations WHERE conversation_id=$1`, [c.id]);
+    eq('exactly ONE escalation row was written', escs.length, 1);
+    eq('  requested_by is staff', escs[0].requested_by, 'staff');
+    eq('  it is a handoff escalation', escs[0].category, 'handoff');
+
+    // The AI is now off.
+    const { evaluateAiGate } = await import('../src/services/aiGate.js');
+    eq('the AI gate is CLOSED after a staff handoff',
+      (await evaluateAiGate({ tenantId: T1.id, conversationId: c.id })).suppressed, true);
+
+    // Retry -> duplicate, and NO extra rows.
+    const again = await OPS.requestStaffHandoffOperation({
+      session: sAgent, conversationId: c.id, body: { reason: 'oops, sent twice' }, deps: ops(sAgent)
+    });
+    eq('a retried handoff reports duplicate', again.duplicate, true);
+    eq('  and writes NO second assignment row', (await q(`SELECT id FROM assignments WHERE conversation_id=$1`, [c.id])).length, 1);
+    eq('  and NO second escalation', (await q(`SELECT id FROM escalations WHERE conversation_id=$1`, [c.id])).length, 1);
+
+    // Someone else progressed it -> 409 conflict, NOT a duplicate.
+    const claimed = await OPS.claimConversationOperation({
+      session: sAgent, conversationId: c.id, deps: ops(sAgent)
+    });
+    eq('an agent then claims the handed-off conversation', claimed.state, 'ASSIGNED');
+    let ec = null;
+    try { await OPS.requestStaffHandoffOperation({ session: sSup, conversationId: c.id, body: { reason: 'again' }, deps: ops(sSup) }); }
+    catch (x) { ec = x; }
+    check('a handoff over someone else\'s active handling is a 409 CONFLICT, not a duplicate',
+      ec?.status === 409, `${ec?.status} ${ec?.code}`);
+    eq('  the assignment survived', (await one(`SELECT state, assigned_user_id FROM conversations WHERE id=$1`, [c.id])).assigned_user_id, AGENT.id);
+
+    // A RESOLVED conversation cannot be handed off either.
+    const c3 = await mkConv(T1.id, CH_A_DM, 'AI_ACTIVE');
+    await OPS.requestStaffHandoffOperation({ session: sSup, conversationId: c3.id, body: { reason: 'go' }, deps: ops(sSup) });
+    await OPS.claimConversationOperation({ session: sAgent, conversationId: c3.id, deps: ops(sAgent) });
+    await OPS.resolveConversationOperation({ session: sSup, conversationId: c3.id, deps: ops(sSup) });
+    let ed = null;
+    try { await OPS.requestStaffHandoffOperation({ session: sSup, conversationId: c3.id, body: { reason: 'reopen?' }, deps: ops(sSup) }); }
+    catch (x) { ed = x; }
+    check('a RESOLVED conversation cannot be handed off', ed?.status === 409, String(ed?.status));
+
+    // Brand scope.
+    const hidden = await mkConv(T1.id, CH_B_DM, 'AI_ACTIVE');
+    const sBrandA = sess(AGENT, T1.id, [BR_A.id], false, ['Agent']);
+    let eh = null;
+    try { await OPS.requestStaffHandoffOperation({ session: sBrandA, conversationId: hidden.id, body: { reason: 'probe' }, deps: ops(sBrandA) }); }
+    catch (x) { eh = x; }
+    eq('an out-of-BRAND handoff is 404', eh?.status, 404);
+    eq('  and the conversation is still AI_ACTIVE',
+      (await one(`SELECT state FROM conversations WHERE id=$1`, [hidden.id])).state, 'AI_ACTIVE');
+  }
+
+  /* ================================ 13. cross-operation concurrency ======== */
+
+  section('13. Interleaved mutations produce one authoritative outcome');
+  {
+    // Escalation closure vs Resume AI: closing the last escalation and resuming at
+    // the same time must not produce a resume that skipped the blocker.
+    const c = await mkQueued(CH_A_DM);
+    const [esc] = await q(
+      `INSERT INTO escalations (tenant_id, conversation_id, category, reason, priority, status, requested_by)
+       VALUES ($1,$2,'complaint','c','normal','new','ai') RETURNING id`, [T1.id, c.id]);
+    const s = sSupFor();
+    const [closeRes, resumeRes] = await Promise.allSettled([
+      OPS.resolveEscalationOperation({ session: s, conversationId: c.id, escalationId: esc.id, body: { reason: 'closing' }, deps: ops(s) }),
+      OPS.resumeAiOperation({ session: s, conversationId: c.id, body: { reason: 'resuming' }, deps: ops(s) })
+    ]);
+    const final = await one(`SELECT state FROM conversations WHERE id=$1`, [c.id]);
+    if (resumeRes.status === 'fulfilled') {
+      eq('if the resume won the race, the escalation really was closed first', final.state, 'AI_ACTIVE');
+      eq('  and the escalation is resolved', (await one(`SELECT resolved_at FROM escalations WHERE id=$1`, [esc.id])).resolved_at !== null, true);
+    } else {
+      eq('if the resume lost the race, the blocker was reported', resumeRes.reason?.code, 'OPS_OPEN_ESCALATIONS');
+      eq('  and the AI did NOT resume', final.state, 'QUEUED');
+    }
+    check('escalation-close vs resume-ai always ends in a consistent state',
+      ['AI_ACTIVE', 'QUEUED'].includes(final.state), final.state);
+
+    // Claim vs claim, many racers, each on its own connection.
+    const c2 = await mkQueued(CH_A_DM);
+    const N = 10;
+    const clients = [];
+    const racers = [];
+    for (let i = 0; i < N; i++) {
+      const u = await mkUser(T1.id, `lock_racer_${i}`);
+      await grant(u, R_AGENT);
+      await q(`INSERT INTO user_brand_grants (user_id, tenant_id, brand_id) VALUES ($1,$2,$3)`, [u.id, T1.id, BR_A.id]);
+      const cl = new pg.Client({ connectionString: url });
+      await cl.connect();
+      clients.push(cl);
+      racers.push({ u, cl });
+    }
+    const settled = await Promise.all(racers.map(async ({ u, cl }) => {
+      const ss = sess(u, T1.id, [BR_A.id], false, ['Agent']);
+      const shim = { connect: async () => ({ query: (sql, p) => cl.query(sql, p), release: () => {} }) };
+      try {
+        await OPS.claimConversationOperation({ session: ss, conversationId: c2.id, deps: { ...ops(ss), db: shim } });
+        return true;
+      } catch { return false; }
+    }));
+    await Promise.all(clients.map((c3) => c3.end().catch(() => {})));
+    eq(`the state guard alone (no row lock) still lets exactly ONE of ${N} concurrent claims win`,
+      settled.filter(Boolean).length, 1);
+    eq('  and the stored state is ASSIGNED', (await one(`SELECT state FROM conversations WHERE id=$1`, [c2.id])).state, 'ASSIGNED');
+    eq('  with exactly ONE assignment row', (await q(`SELECT id FROM assignments WHERE conversation_id=$1`, [c2.id])).length, 1);
+
+    // Repeated retries of the same operation never multiply rows.
+    const c3 = await mkQueued(CH_A_DM);
+    const sA = sess(AGENT, T1.id, [BR_A.id], false, ['Agent']);
+    for (let i = 0; i < 5; i++) await OPS.claimConversationOperation({ session: sA, conversationId: c3.id, deps: ops(sA) });
+    eq('5 identical claims write exactly ONE assignment row',
+      (await q(`SELECT id FROM assignments WHERE conversation_id=$1`, [c3.id])).length, 1);
+
+    // Resolve vs manual reply: RESOLVED must win deterministically, or the reply
+    // must be refused. Either way the conversation ends RESOLVED, never replying.
+    const c4 = await mkQueued(CH_A_DM);
+    await OPS.claimConversationOperation({ session: sA, conversationId: c4.id, deps: ops(sA) });
+    const before = (await one(`SELECT state FROM conversations WHERE id=$1`, [c4.id])).state;
+    await OPS.resolveConversationOperation({ session: sSupFor(), conversationId: c4.id, deps: ops(sSupFor()) });
+    eq('resolve vs reply ends RESOLVED (reply would be refused by state)', before, 'ASSIGNED');
+    eq('  final state', (await one(`SELECT state FROM conversations WHERE id=$1`, [c4.id])).state, 'RESOLVED');
+    const { evaluateReplyEligibility, resolveReplyAuthority } = await import('../src/services/manualReplies.js');
+    const elig = evaluateReplyEligibility({
+      authority: resolveReplyAuthority(sA),
+      conversation: { state: 'RESOLVED', channelProvider: 'meta_dm', channelStatus: 'active', assignedUserId: sA.user.id, lastInboundAt: new Date() }
+    });
+    eq('  and a reply on a RESOLVED conversation is refused', elig.allowed, false);
+    eq('  with reason closed', elig.reason, 'closed');
   }
 
   /* ----------------------------------------------------------------- cleanup */

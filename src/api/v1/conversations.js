@@ -39,6 +39,8 @@ import {
   unassignConversationOperation,
   resolveConversationOperation,
   resumeAiOperation,
+  requestStaffHandoffOperation,
+  resolveEscalationOperation,
   getHandoffContext,
   OpsError,
   OPS_ERRORS
@@ -316,6 +318,55 @@ export function createConversationsRouter({ pool, auditFn, deps = {} }) {
    * an employee reply is undelivered. Never automatic.
    */
   router.post('/:id/resume-ai', requireAbility('conversation.resume_ai'), runOp(resumeAiOperation));
+
+  /**
+   * POST /api/v1/conversations/:id/handoff
+   * Staff-initiated AI_ACTIVE -> QUEUED. The employee sees something the AI should
+   * not be answering and takes the conversation away from it. Mandatory reason.
+   *
+   * Idempotent: a retry on an already-queued conversation returns duplicate:true
+   * and writes no second assignment or escalation row. A conversation another
+   * actor has since progressed is a 409 conflict, never a duplicate.
+   */
+  router.post('/:id/handoff', requireAbility('conversation.handoff'), runOp(requestStaffHandoffOperation));
+
+  /**
+   * POST /api/v1/conversations/:id/escalations/:escalationId/resolve
+   * Close exactly ONE escalation. Never deletes it, never touches a sibling, and
+   * never resumes the AI — Resume AI remains a separate explicit action that is
+   * itself refused while any escalation on the conversation is still open.
+   */
+  router.post(
+    '/:id/escalations/:escalationId/resolve',
+    requireAbility('conversation.resolve'),
+    async (req, res) => {
+      try {
+        if (!isUuid(req.params.id) || !isUuid(req.params.escalationId)) {
+          return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'conversation not found' } });
+        }
+        const scope = brandScopeFromSession(req.v1);
+        const result = await resolveEscalationOperation({
+          session: req.v1,
+          conversationId: req.params.id,
+          escalationId: req.params.escalationId,
+          body: req.body ?? {},
+          deps: { pool, scope, ip: req.ip ?? null }
+        });
+        return res.status(200).json({ data: result });
+      } catch (err) {
+        if (err instanceof OpsError) {
+          return res.status(err.status).json({
+            error: { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) }
+          });
+        }
+        if (err && typeof err.status === 'number' && typeof err.code === 'string') {
+          return res.status(err.status).json({ error: { code: err.code, message: err.message } });
+        }
+        console.error('escalation resolve failed:', err?.code ?? err?.name ?? 'error');
+        return res.status(500).json({ error: { code: OPS_ERRORS.INTERNAL, message: 'unexpected error' } });
+      }
+    }
+  );
 
   return router;
 }

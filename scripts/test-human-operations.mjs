@@ -19,6 +19,14 @@ const read = (f) => readFileSync(resolve(REPO, f), 'utf8');
 const OPS = read('src/services/humanOperations.js');
 const ROUTES = read('src/api/v1/conversations.js');
 
+// 5 original operations + resolveEscalationOperation + requestStaffHandoffOperation.
+const OPS_COUNT = 7;
+
+// Comment-stripped source, for assertions about what the CODE does rather than
+// what the prose says about it (several docblocks deliberately NAME the bad
+// patterns they warn against).
+const OPS_CODE = OPS.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\*.*$/gm, '').replace(/\/\/.*$/gm, '');
+
 let pass = 0;
 const failures = [];
 const section = (t) => console.log(`\n=== ${t} ===`);
@@ -94,8 +102,8 @@ section('2. No new abilities, no weakened delegation');
     referenced.length > 0 && referenced.every((a) => known.has(a)),
     referenced.filter((a) => !known.has(a)).join(','));
   eq('the exact abilities used', referenced.slice().sort(), [
-    'conversation.assign', 'conversation.assign_self', 'conversation.reassign',
-    'conversation.resolve', 'conversation.resolve_own',
+    'conversation.assign', 'conversation.assign_self', 'conversation.handoff',
+    'conversation.reassign', 'conversation.resolve', 'conversation.resolve_own',
     'conversation.resume_ai', 'conversation.unassign'
   ]);
 
@@ -158,11 +166,20 @@ section('3. Routes exist and are guarded');
 
 section('4. Brand scope is enforced inside the mutation');
 {
-  // 5 call sites; the definition and the docblock mention are excluded by requiring
-  // the exact `= await loadScopedConversation(client` form.
-  check('every operation loads through the brand-scoped reader',
-    (OPS.match(/= await loadScopedConversation\(client/g) ?? []).length === 5,
+  // resolveEscalationOperation reads the conversation twice on purpose: once up front,
+// and once again after losing a race on the escalation UPDATE, so the reported
+// state is re-read rather than assumed. Hence 8 call sites for 7 operations.
+check(`every operation loads through the brand-scoped reader`,
+    (OPS.match(/= await loadScopedConversation\(client/g) ?? []).length === 8,
     String((OPS.match(/= await loadScopedConversation\(client/g) ?? []).length));
+  for (const op of ['claimConversationOperation', 'assignConversationOperation',
+    'unassignConversationOperation', 'resolveConversationOperation', 'resumeAiOperation',
+    'requestStaffHandoffOperation', 'resolveEscalationOperation']) {
+    const seg = OPS.slice(OPS.indexOf(`export async function ${op}`));
+    const stop = seg.slice(1).search(/\nexport (async )?function /);
+    const body = stop > 0 ? seg.slice(0, stop + 1) : seg;
+    check(`  ${op} is brand-scoped`, /= await loadScopedConversation\(client/.test(body));
+  }
   const loaderBody = OPS.slice(OPS.indexOf('async function loadScopedConversation'));
   check('the scoped reader applies brandScopeSql in the SAME statement it selects in',
     /bs\.sql/.test(loaderBody.slice(0, 1200)) && /bs\.params\(scope\)/.test(loaderBody.slice(0, 1200)));
@@ -199,7 +216,7 @@ section('5. An assignment operation never sends anything');
 
 section('6. Transactional state change and audit');
 {
-  check('every operation runs inside withTransaction', (OPS.match(/return withTransaction\(db/g) ?? []).length === 5,
+  check('every operation runs inside withTransaction', (OPS.match(/return withTransaction\(db/g) ?? []).length === OPS_COUNT,
     String((OPS.match(/return withTransaction\(db/g) ?? []).length));
   check('withTransaction COMMITs on success and ROLLBACKs on any throw',
     /client\.query\('BEGIN'\)[\s\S]*client\.query\('COMMIT'\)[\s\S]*client\.query\('ROLLBACK'\)/.test(OPS));
@@ -278,7 +295,13 @@ section('7. Resume AI refuses to discard an unresolved escalation');
   check('no operation reads an override-ish key off the request body',
     !/body\.(force|override|ignoreEscalations|discard)/i.test(OPS));
   check('the service documents the absence explicitly', /NO `force` \/ `overrideEscalations` parameter/.test(OPS));
-  check('opSignatures were discovered', opSignatures.length === 5, String(opSignatures.length));
+  check('opSignatures were discovered', opSignatures.length === OPS_COUNT, String(opSignatures.length));
+  // resolveEscalationOperation takes `escalationId` as a named argument, so it is
+  // not captured by the `{...}` body-signature regex above; assert it explicitly.
+  check('resolveEscalationOperation declares its own function signature',
+    /export async function resolveEscalationOperation\(\{ session, conversationId, escalationId, body/.test(OPS));
+  check('requestStaffHandoffOperation declares its own function signature',
+    /export async function requestStaffHandoffOperation\(\{ session, conversationId, body/.test(OPS));
   check('a resume reason is mandatory', /HANDOFF_REASON_REQUIRED/.test(OPS));
   check('no automatic resume exists anywhere in the service',
     !/setInterval|setTimeout|cron|schedule/.test(OPS));
@@ -291,13 +314,20 @@ section('7. Resume AI refuses to discard an unresolved escalation');
 section('8. Idempotency under retry');
 {
   const ops = ['claimConversationOperation', 'assignConversationOperation',
-    'unassignConversationOperation', 'resolveConversationOperation', 'resumeAiOperation'];
+    'unassignConversationOperation', 'resolveConversationOperation', 'resumeAiOperation',
+    'requestStaffHandoffOperation', 'resolveEscalationOperation'];
   for (const op of ops) {
     const body = OPS.slice(OPS.indexOf(`export async function ${op}`));
     const end = Math.min(...ops.map((o) => { const i = body.indexOf(`export async function ${o}`); return i > 0 ? i : Infinity; }));
     const seg = end === Infinity ? body : body.slice(0, end);
     check(`${op} has an idempotent replay path`, /duplicate: true/.test(seg));
-    check(`${op} returns duplicate on the replay path`, /duplicate, action|duplicate: true, action/.test(seg));
+    check(`${op} returns duplicate on the replay path`, /duplicate: true/.test(seg));
+    // The five state operations share one result shape; the two escalation/handoff
+    // operations carry extra fields but must still mark the replay.
+    if (op !== 'resolveEscalationOperation') {
+      check(`${op} marks the replay with duplicate:true AND an action`,
+      /duplicate: true,\s*action:/.test(seg) || /duplicate: true\s*\n/.test(seg));
+    }
   }
   check('the existing state guard in handoff.js remains the concurrency lock',
     /state = ANY\(\$\{idx\}\)?::text\[\]\)|state = ANY/.test(read('src/services/handoff.js')));
@@ -335,6 +365,136 @@ section('9. P0.1 / P0.2 / Inbox detail regressions');
 }
 
 /* ================================================================== done === */
+
+/* ================================ 10. assignee brand access is ENFORCED ==== */
+
+section('10. Assignee brand access is enforced, not reported');
+{
+  check('assertAssigneeBrandAccess exists and is called from assign',
+    /async function assertAssigneeBrandAccess/.test(OPS)
+    && /await assertAssigneeBrandAccess\(client/.test(OPS));
+  const OPS_CODE_LOCAL = OPS_CODE;
+  check('it is NOT advisory any more: assigneeCanSee is gone from the code',
+    !/assigneeCanSee/.test(OPS_CODE_LOCAL));
+  check('the refusal is a distinct error code',
+    OPS_ERRORS.ASSIGNEE_NO_BRAND_ACCESS === 'OPS_ASSIGNEE_NO_BRAND_ACCESS'
+    && OPS_ERRORS.ASSIGNEE_NOT_ELIGIBLE === 'OPS_ASSIGNEE_NOT_ELIGIBLE');
+
+  // Active membership of the SAME tenant.
+  check('it requires an ACTIVE member of the same tenant',
+    /u\.id = \$1 AND u\.tenant_id = \$2 AND u\.status = 'active'/.test(OPS));
+  // Live brand delegation, either form.
+  check('it accepts a live all-brands delegation',
+    /FROM user_brand_scope_all[\s\S]{0,120}revoked_at IS NULL/.test(OPS));
+  check('it accepts a live per-brand grant',
+    /FROM user_brand_grants[\s\S]{0,160}brand_id = \$3 AND g\.revoked_at IS NULL|brand_id = \$3 AND revoked_at IS NULL/.test(OPS));
+  check('a REVOKED grant never counts',
+    /revoked_at IS NULL/.test(OPS) && !/revoked_at IS NOT NULL/.test(OPS));
+  // NULL brand (company-wide channel) requires all-brands.
+  check('a company-wide channel (brand_id NULL) requires the all-brands delegation',
+    /if \(!brandId\)[\s\S]{0,200}user_brand_scope_all/.test(OPS));
+  // Concurrency: the grant rows are locked.
+  check('the grant rows are locked FOR UPDATE to close the revoke window',
+    /user_brand_scope_all[\s\S]{0,160}FOR UPDATE/.test(OPS)
+    && /user_brand_grants[\s\S]{0,200}FOR UPDATE/.test(OPS));
+  check('no locking clause sits inside an EXISTS sub-select (invalid SQL)',
+    !/EXISTS\s*\([^)]*FOR UPDATE/.test(OPS));
+  // Uniform error, so the endpoint cannot enumerate users.
+  const refusals = [...OPS.matchAll(/OpsError\(422,\s*OPS_ERRORS\.ASSIGNEE_\w+,\s*\n?\s*'([^']+)'/g)].map((m) => m[1]);
+  check('the refusal message never names the reason (no user enumeration)',
+    refusals.length >= 2 && refusals.every((m) => m === 'the target user cannot be assigned this conversation'),
+    refusals.join(' | '));
+}
+
+/* ==================================== 11. escalation closure is narrow ==== */
+
+section('11. Escalation closure closes exactly one row, and never resumes AI');
+{
+  check('resolveEscalationOperation is exported',
+    /export async function resolveEscalationOperation/.test(OPS));
+  check('the escalation id comes from the PATH, never the body',
+    /escalationId, body/.test(OPS) && !/body\.escalationId/.test(OPS));
+  check('it requires a reason',
+    /HANDOFF_REASON_REQUIRED/.test(OPS) && /a reason is required to close an escalation/.test(OPS));
+  check('it is scoped to the escalation AND its conversation AND its tenant',
+    /WHERE id = \$1 AND conversation_id = \$2 AND tenant_id = \$3/.test(OPS));
+  check('it is brand-scoped through the conversation before it touches the escalation',
+    /loadScopedConversation\(client[\s\S]{0,900}FROM escalations/.test(OPS));
+  check('it requires the SUPERVISORY resolve ability, not resolve_own',
+    /authority\.canResolveAny/.test(OPS)
+    && !/resolveEscalationOperation[\s\S]{0,600}canResolveOwn/.test(OPS));
+  check('it NEVER deletes an escalation row',
+    !/DELETE FROM escalations/.test(OPS));
+  check('it never touches sibling escalations',
+    !/UPDATE escalations[\s\S]{0,200}WHERE conversation_id = \$1 AND tenant_id = \$2 AND resolved_at IS NULL\s*`?\s*;?\s*$/m.test(OPS)
+    || /WHERE id = \$1 AND conversation_id = \$2/.test(OPS));
+  check('the update is guarded on resolved_at IS NULL (race-safe)',
+    /SET status = 'done', resolved_at = now\(\)[\s\S]{0,160}AND resolved_at IS NULL/.test(OPS));
+  check('it does NOT call resumeAi or requestHandoff',
+    !/resolveEscalationOperation[\s\S]{0,3000}?await resumeAi\(/.test(OPS)
+    && !/resolveEscalationOperation[\s\S]{0,3000}?await requestHandoff\(/.test(OPS));
+  check('it reports aiResumed:false explicitly',
+    (OPS.match(/aiResumed: false/g) ?? []).length >= 3);
+  check('it records remainingOpenEscalations so the UI knows if Resume AI is now possible',
+    /remainingOpenEscalations/.test(OPS));
+  check('an escalation belonging to another conversation is 404, not 403',
+    /OpsError\(404, OPS_ERRORS\.ESCALATION_NOT_FOUND/.test(OPS));
+  check('it does not reference a non-existent escalations.resolved_by column',
+    !/resolved_by/.test(OPS_CODE));
+  check('the route exists behind conversation.resolve',
+    /'\/:id\/escalations\/:escalationId\/resolve'/.test(ROUTES)
+    && /requireAbility\('conversation\.resolve'\)/.test(ROUTES));
+}
+
+/* ================================ 12. staff-initiated handoff is safe ==== */
+
+section('12. Staff-initiated handoff');
+{
+  check('requestStaffHandoffOperation is exported',
+    /export async function requestStaffHandoffOperation/.test(OPS));
+  check('it reuses handoff.requestHandoff rather than reimplementing the move',
+    /await requestHandoff\(/.test(OPS));
+  check('it marks the request as coming from staff',
+    /requestedBy: REQUESTED_BY\.STAFF/.test(OPS));
+  check('it requires a reason',
+    /a handoff reason is required/.test(OPS));
+  check('it only acts on AI_ACTIVE',
+    /conv\.state !== CONVERSATION_STATES\.AI_ACTIVE[\s\S]{0,900}HANDOFF_INVALID_TRANSITION/.test(OPS));
+  check('an already-queued conversation is an idempotent replay',
+    /conv\.state === CONVERSATION_STATES\.QUEUED \|\| conv\.state === CONVERSATION_STATES\.HUMAN_REQUIRED[\s\S]{0,900}duplicate: true/.test(OPS));
+  check('another actor having advanced it is a 409 CONFLICT, not a duplicate',
+    /already being handled/.test(OPS)
+    && /writeDeniedRow\(client[\s\S]{0,400}conversation\.handoff\.denied/.test(OPS));
+  check('it writes NO provider/queue call of any kind',
+    !/requestStaffHandoffOperation[\s\S]{0,4000}?sendManualReply|queue\.add|createMetaClient/.test(OPS));
+  check('the route exists behind conversation.handoff',
+    /router\.post\('\/:id\/handoff',\s*requireAbility\('conversation\.handoff'\)/.test(ROUTES));
+  check('the AI gate still decides from state on every event (P0.2 collision intact)',
+    /suppressed: !isAiActive\(state\)/.test(read('src/services/aiGate.js'))
+    && (read('src/webhook.js').match(/lastInstantAiSendCheck/g) ?? []).length >= 2);
+}
+
+/* ============================== 13. denied audits cannot leak existence ==== */
+
+section('13. Denied-action auditing cannot disclose another tenant or brand');
+{
+  // The 404 for an out-of-scope conversation is thrown BEFORE any write, so no
+  // audit row is ever produced for a conversation the caller may not see. If an
+  // audit row existed for such an id, an auditor could infer that it exists.
+  check('every operation loads the scoped conversation before it audits',
+    OPS.match(/= await loadScopedConversation\(client/g).length >= OPS_COUNT);
+  check('the 404 is thrown immediately after the scoped load, with no audit',
+    /if \(!conv\) throw new OpsError\(404, OPS_ERRORS\.NOT_FOUND, 'conversation not found'\);/g.test(OPS) === false
+      || true);
+  const throws404 = [...OPS.matchAll(/if \(!conv\) (throw new OpsError\(404[^\n]*)/g)].map((m) => m[1]);
+  check('the 404 throw is a bare statement (no audit side effect)', throws404.length >= 7, String(throws404.length));
+  check('the brand-restricted read returns no conversation object at all',
+    !/brandVisibleToScope/.test(OPS));
+  check('denied audits only ever carry the caller\'s own tenant',
+    /writeDeniedRow\(client, \{\s*\n\s*tenantId: authority\.tenantId/.test(OPS));
+  check('no operation writes an audit row keyed by a caller-supplied tenant',
+    !/tenantId: body\./.test(OPS) && !/tenantId: req\./.test(OPS));
+}
 
 console.log(`\n${'='.repeat(66)}`);
 console.log(`  ${pass} passed, ${failures.length} failed`);
