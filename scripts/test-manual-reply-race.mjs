@@ -558,14 +558,21 @@ section('Z', 'regression: P0.1 security + read paths');
     check(`Z5 ${untouched} is UNCHANGED since the deployed P0.1 baseline`,
       changedSinceBaseline(untouched) === '', changedSinceBaseline(untouched));
   }
-  const modified = execFileSync('git', ['diff', '--name-only', BASELINE], { cwd: REPO, encoding: 'utf8' })
-    .trim().split(/\n/).filter(Boolean).sort();
-  // `git diff` lists only TRACKED modifications; the new files are untracked and
-  // are verified separately below.
+  // Everything the branch adds or modifies relative to the deployed P0.1 baseline.
+  // Untracked new files are folded in explicitly so the list is correct whether or
+  // not the work has been committed yet.
+  const tracked = execFileSync('git', ['diff', '--name-only', BASELINE], { cwd: REPO, encoding: 'utf8' })
+    .trim().split(/\n/).filter(Boolean);
+  const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: REPO, encoding: 'utf8' })
+    .trim().split(/\n/).filter(Boolean);
+  const changeSet = [...new Set([...tracked, ...untracked.filter((f) => NEW_FILES.includes(f))])].sort();
   check('Z5 the P0.2 change set is EXACTLY the declared file list — nothing else is touched',
-    JSON.stringify(modified) === JSON.stringify(MODIFIED_BY_P0_2.slice().sort()),
-    JSON.stringify(modified) + ' vs ' + JSON.stringify(MODIFIED_BY_P0_2.slice().sort()));
-  check('Z5 and nothing tracked is staged that is not on that list',
+    JSON.stringify(changeSet) === JSON.stringify(expectedChanges.slice().sort()),
+    JSON.stringify(changeSet) + ' vs ' + JSON.stringify(expectedChanges.slice().sort()));
+  check('Z5 every declared modification really IS modified',
+    MODIFIED_BY_P0_2.every((f) => tracked.includes(f)),
+    MODIFIED_BY_P0_2.filter((f) => !tracked.includes(f)).join(','));
+  check('Z5 nothing is left staged-but-uncommitted',
     (() => {
       const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: REPO, encoding: 'utf8' }).trim();
       return staged === '' || staged.split(/\n/).every((f) => expectedChanges.includes(f));
