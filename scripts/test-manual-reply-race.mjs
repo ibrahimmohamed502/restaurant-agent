@@ -588,8 +588,9 @@ section('Z', 'regression: P0.1 security + read paths');
   check('Z5 nothing outside the change set is staged for commit',
     staged === '' || staged.split(/\n/).every((f) => expectedChanges.includes(f)), staged);
   check('Z5 the pre-existing untracked GROUP-C-PATCH/ scratch directory is NOT committed',
-    !modified.includes('GROUP-C-PATCH/009_handoff.sql') &&
-    !execFileSync('git', ['ls-files', 'GROUP-C-PATCH'], { cwd: REPO, encoding: 'utf8' }).includes('009_handoff.sql'));
+    !changeSet.some((f) => f.startsWith('GROUP-C-PATCH/')) &&
+    !execFileSync('git', ['ls-files', 'GROUP-C-PATCH'], { cwd: REPO, encoding: 'utf8' }).includes('009_handoff.sql'),
+    changeSet.filter((f) => f.startsWith('GROUP-C-PATCH/')).join(','));
 
   // --- migration discipline ---
   const mig016 = read('migrations/016_manual_reply_idempotency.sql');
