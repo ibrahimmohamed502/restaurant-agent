@@ -5,7 +5,15 @@
  * GET  /:id         one conversation + its messages
  * POST /:id/reply   P0.2 — an employee replies to the customer
  *
- * All three derive tenant and brand scope from the AUTHENTICATED SESSION. No
+ * P0.3-A human operations (see ../services/humanOperations.js):
+ * GET  /:id/handoff        read-only handoff context for the Inbox UI
+ * POST /:id/claim          QUEUED            -> ASSIGNED  (self)
+ * POST /:id/assign         QUEUED | ASSIGNED -> ASSIGNED  (supervisor)
+ * POST /:id/unassign       ASSIGNED | HUMAN_ACTIVE -> QUEUED
+ * POST /:id/resolve        ASSIGNED | HUMAN_ACTIVE -> RESOLVED
+ * POST /:id/resume-ai      any handled state  -> AI_ACTIVE (guarded, fail-closed)
+ *
+ * All of them derive tenant and brand scope from the AUTHENTICATED SESSION. No
  * identifier that decides access is ever read from the request body or query.
  */
 import express from 'express';
@@ -25,6 +33,16 @@ import {
   ReplyValidationError,
   REPLY_ERRORS
 } from '../../services/manualReplies.js';
+import {
+  claimConversationOperation,
+  assignConversationOperation,
+  unassignConversationOperation,
+  resolveConversationOperation,
+  resumeAiOperation,
+  getHandoffContext,
+  OpsError,
+  OPS_ERRORS
+} from '../../services/humanOperations.js';
 
 /** Fixed cap on how much of a thread one request returns. */
 const MAX_THREAD_MESSAGES = 200;
@@ -200,6 +218,104 @@ export function createConversationsRouter({ pool, auditFn, deps = {} }) {
       return res.status(500).json({ error: { code: REPLY_ERRORS.INTERNAL, message: 'unexpected error' } });
     }
   });
+
+  /* ------------------------------------------------- P0.3-A: human operations */
+
+  /**
+   * Shared plumbing for the five state-changing operations.
+   *
+   * Brand scope is computed HERE, from the session, and handed to the service as
+   * `deps.scope`. The service then applies it inside the same transaction that
+   * performs the mutation, so an out-of-scope conversation is never selected. The
+   * service re-derives tenant and abilities from `req.v1` too — the guard below
+   * is a fast fail, not the authority.
+   *
+   * `duplicate: true` means the postcondition already held and this request
+   * changed nothing; it still returns 200 so a retried request is not reported to
+   * the operator as a failure for work that already succeeded.
+   */
+  const runOp = (handler) => async (req, res) => {
+    try {
+      if (!isUuid(req.params.id)) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'conversation not found' } });
+      }
+      const scope = brandScopeFromSession(req.v1);
+      const result = await handler({
+        session: req.v1,
+        conversationId: req.params.id,
+        body: req.body ?? {},
+        deps: { pool, scope, ip: req.ip ?? null }
+      });
+      return res.status(200).json({ data: result });
+    } catch (err) {
+      if (err instanceof OpsError) {
+        return res.status(err.status).json({
+          error: {
+            code: err.code,
+            message: err.message,
+            ...(err.details ? { details: err.details } : {})
+          }
+        });
+      }
+      if (err && typeof err.status === 'number' && typeof err.code === 'string') {
+        // A HandoffError that escaped translation — surfaced with its own contract.
+        return res.status(err.status).json({ error: { code: err.code, message: err.message } });
+      }
+      // Never echo internals: a driver message can carry connection strings.
+      console.error('human operation failed:', err?.code ?? err?.name ?? 'error');
+      return res.status(500).json({ error: { code: OPS_ERRORS.INTERNAL, message: 'unexpected error' } });
+    }
+  };
+
+  /**
+   * GET /api/v1/conversations/:id/handoff
+   * Read-only context for the Inbox UI: current state, open escalations, full
+   * assignment history, eligible members, and what THIS caller may attempt.
+   */
+  router.get('/:id/handoff', requireAbility('conversation.read'), async (req, res) => {
+    try {
+      if (!isUuid(req.params.id)) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'conversation not found' } });
+      }
+      const data = await getHandoffContext({
+        session: req.v1,
+        conversationId: req.params.id,
+        deps: { pool, scope: brandScopeFromSession(req.v1) }
+      });
+      return res.json({ data });
+    } catch (err) {
+      if (err instanceof OpsError) {
+        return res.status(err.status).json({
+          error: { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) }
+        });
+      }
+      console.error('handoff context failed:', err?.code ?? err?.name ?? 'error');
+      return res.status(500).json({ error: { code: OPS_ERRORS.INTERNAL, message: 'unexpected error' } });
+    }
+  });
+
+  /** POST /api/v1/conversations/:id/claim — self-service take ownership. */
+  router.post('/:id/claim', requireAbility('conversation.assign_self'), runOp(claimConversationOperation));
+
+  /** POST /api/v1/conversations/:id/assign — supervisor places work on an eligible member. */
+  router.post('/:id/assign', requireAbility('conversation.assign'), runOp(assignConversationOperation));
+
+  /** POST /api/v1/conversations/:id/unassign — supervisor releases it back to the queue. */
+  router.post('/:id/unassign', requireAbility('conversation.unassign'), runOp(unassignConversationOperation));
+
+  /** POST /api/v1/conversations/:id/resolve — close it. The AI stays off. */
+  router.post(
+    '/:id/resolve',
+    requireAbility('conversation.resolve', 'conversation.resolve_own'),
+    runOp(resolveConversationOperation)
+  );
+
+  /**
+   * POST /api/v1/conversations/:id/resume-ai — hand the conversation back to the AI.
+   * Refuses while an escalation is unresolved, while a human is engaged, or while
+   * an employee reply is undelivered. Never automatic.
+   */
+  router.post('/:id/resume-ai', requireAbility('conversation.resume_ai'), runOp(resumeAiOperation));
 
   return router;
 }

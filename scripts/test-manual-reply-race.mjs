@@ -496,6 +496,17 @@ section('Y', 'AI send path wiring (source contract)');
 section('Z', 'regression: P0.1 security + read paths');
 {
   const BASELINE = 'f1608e1481abecee084a5309261700d451f129f4';
+
+  // P0.2's own release commit.
+  //
+  // Z5 asserts what P0.2 CHANGED, which is a fixed historical fact. It used to
+  // measure that as `BASELINE -> working tree`, which only holds while the branch
+  // tip is exactly the P0.2 release: on any later branch (the P0.2 inbox hotfix,
+  // P0.3, ...) the diff grows, so the assertion turns permanently red while
+  // saying nothing true about P0.2. Diffing BASELINE -> P0_2_COMMIT measures the
+  // same declared list exactly, on every branch.
+  const P0_2_COMMIT = '26613957b7e20b812de1e43cc7dd2d458c3434a9';
+
   const blobAt = (file) => {
     try {
       return execFileSync('git', ['rev-parse', `${BASELINE}:${file}`], { cwd: REPO, encoding: 'utf8' }).trim();
@@ -544,8 +555,22 @@ section('Z', 'regression: P0.1 security + read paths');
     /c\.tenant_id = \$3 AND \$\{bs\.sql\}/.test(conv));
   check('Z3 the detail still returns 404 rather than 403 for an out-of-scope conversation',
     /res\.status\(404\)\.json\(\{ error: \{ code: 'NOT_FOUND'/g.test(conv));
-  check('Z3 conversation.read is still required to list or read',
-    (conv.match(/requireAbility\('conversation\.read'\)/g) ?? []).length === 2);
+  // Was `=== 2`, i.e. "exactly the list and the detail are read-gated". A count is
+  // a change-control fact, not a security property, and it broke the moment a
+  // THIRD route was added to this file (P0.3-A's GET /:id/handoff, which is itself
+  // read-gated). The security property is "no read route is left unguarded", so
+  // assert that directly: the two original routes are still gated, AND every GET
+  // in the file carries the ability.
+const readGatedCount = (conv.match(/requireAbility\('conversation\.read'\)/g) ?? []).length;
+    const getRoutes = [...conv.matchAll(/router\.get\(\s*'([^']+)'/g)].map((m) => m[1]);
+    check('Z3 the list and the detail are still read-gated',
+      /router\.get\('\/',\s*requireAbility\('conversation\.read'\)/.test(conv)
+      && /router\.get\('\/:id',\s*requireAbility\('conversation\.read'\)/.test(conv));
+    check('Z3 NO read route in this file is left unguarded',
+      getRoutes.length > 0
+      && readGatedCount >= getRoutes.length
+      && getRoutes.every((p) => conv.includes(`router.get('${p}', requireAbility('conversation.read'`)),
+      `routes=${JSON.stringify(getRoutes)} gated=${readGatedCount}`);
   check('Z4 no response payload ever contains a tenant identifier for the browser',
     !/tenantId\s*:/.test(conv) && !/tenant_id\s*:/.test(conv),
     (conv.match(/tenant_?[Ii]d\s*:/g) ?? []).join(','));
@@ -562,24 +587,27 @@ section('Z', 'regression: P0.1 security + read paths');
     check(`Z5 ${untouched} is UNCHANGED since the deployed P0.1 baseline`,
       changedSinceBaseline(untouched) === '', changedSinceBaseline(untouched));
   }
-  // Everything the branch adds or modifies relative to the deployed P0.1 baseline.
-  // Untracked new files are folded in explicitly so the list is correct whether or
-  // not the work has been committed yet.
+  // Everything P0.2 itself added or modified relative to the deployed P0.1
+  // baseline. Measured commit-to-commit, so the answer is the same historical fact
+  // no matter which branch this suite is running on.
   const tracked = execFileSync('git', ['diff', '--name-only', BASELINE], { cwd: REPO, encoding: 'utf8' })
     .trim().split(/\n/).filter(Boolean);
-  const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: REPO, encoding: 'utf8' })
-    .trim().split(/\n/).filter(Boolean);
-  const changeSet = [...new Set([...tracked, ...untracked.filter((f) => NEW_FILES.includes(f))])].sort();
+  const changeSet = execFileSync('git', ['diff', '--name-only', BASELINE, P0_2_COMMIT], { cwd: REPO, encoding: 'utf8' })
+    .trim().split(/\n/).filter(Boolean).sort();
   check('Z5 the P0.2 change set is EXACTLY the declared file list — nothing else is touched',
     JSON.stringify(changeSet) === JSON.stringify(expectedChanges.slice().sort()),
     JSON.stringify(changeSet) + ' vs ' + JSON.stringify(expectedChanges.slice().sort()));
   check('Z5 every declared modification really IS modified',
     MODIFIED_BY_P0_2.every((f) => tracked.includes(f)),
     MODIFIED_BY_P0_2.filter((f) => !tracked.includes(f)).join(','));
+  // Scoped to P0.2's own files: none of them may be left staged-but-uncommitted.
+  // Unrelated staged work from another branch (P0.3) is none of P0.2's business
+  // and must not turn this red.
   check('Z5 nothing is left staged-but-uncommitted',
     (() => {
       const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: REPO, encoding: 'utf8' }).trim();
-      return staged === '' || staged.split(/\n/).every((f) => expectedChanges.includes(f));
+      if (!staged) return true;
+      return staged.split(/\n/).every((f) => !expectedChanges.includes(f));
     })(), '');
   for (const f of NEW_FILES) {
     let present = false;
