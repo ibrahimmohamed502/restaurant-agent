@@ -18,6 +18,7 @@ import {
   createEscalationRecord,
   escalationCategory
 } from './services/conversations.js';
+import { DELIVERY_CATEGORY } from './services/deliveryOutcome.js';
 import { classifyDeliveryError, createOutboundLedger } from './services/deliveryOutcome.js';
 import { evaluateAiGate, evaluateHumanOwnership } from './services/aiGate.js';
 import { detectCustomerHumanRequest, detectAutoEscalation, HANDOFF_REASONS } from './services/handoffDetector.js';
@@ -397,11 +398,13 @@ async function applyStage7Gate({ tenantId, conversationId, text, pgEnabled }) {
  * land on top of the human's. A claimed, undelivered employee reply therefore
  * refuses the AI send outright.
  *
- * This shrinks the window; it does not claim to eliminate it. A human reply is
- * only ever accepted in a state where the AI gate is already closed, so the
- * remaining overlap needs an AI send that was already inside the provider call
- * at the instant of the handoff. Persist-first inbound behaviour is never
- * compromised.
+ * Called TWICE per reply: once where it has always been (so a conversation that
+ * is already handed off never pays for a generation it cannot use), and once
+ * more at the last possible instant by `lastInstantAiSendCheck` below.
+ *
+ * This shrinks the window; it does NOT claim to eliminate it. A send already
+ * inside the provider HTTP call when the handoff lands cannot be recalled. See
+ * lastInstantAiSendCheck() for the exact residual.
  */
 async function finalAiSendCheck({ tenantId, conversationId, pgEnabled }) {
   if (!pgEnabled || !tenantId || !conversationId) return { suppressed: false };
@@ -413,6 +416,73 @@ async function finalAiSendCheck({ tenantId, conversationId, pgEnabled }) {
     return { suppressed: true, state: gate.state, reason: ownership.reason };
   }
   return { suppressed: false, state: gate.state };
+}
+
+/**
+ * P0.2 — the LAST possible ownership check, immediately before the provider call.
+ *
+ * WHY A SECOND CHECK
+ * ------------------
+ * finalAiSendCheck() has always run AFTER generation, so the pre-existing window
+ * was already only "persistOutboundMessage() plus the provider HTTP call". Being
+ * precise about what this buys: it removes the persist from the window, and it
+ * sits with NOTHING between it and the irreversible call — noteOutboundAttempt()
+ * is a synchronous in-memory flag, so there is no await for the world to slip
+ * through.
+ *
+ * THE RESIDUAL WINDOW IS NOT ELIMINATED AND MUST NOT BE DESCRIBED AS IF IT WERE.
+ * Once `await sendMessengerReply(...)` has issued, the request is on the wire.
+ * A handoff landing after that point cannot be recalled by anything in this
+ * codebase. Closing it would need either provider-side idempotency or a
+ * conversation lock held ACROSS the provider call; the Graph send endpoints offer
+ * neither, and holding a row lock across an HTTP call to a third party is how a
+ * database gets wedged. The residual is therefore bounded by one provider
+ * round-trip. It is accepted deliberately, not overlooked.
+ *
+ * NO ORPHAN ROW
+ * -------------
+ * This runs AFTER the outbound row exists, so suppression must not leave that row
+ * claiming "pending" — a pending row is a lie about a send that will never
+ * happen, and it is exactly what the dashboard's unresolved-outbound view reads.
+ * It is closed as `failed` + `suppressed_human_handoff`: accurate, visible in the
+ * inbox, and structurally non-retryable (the allow-list is a frozen one-element
+ * array).
+ *
+ * NO LOCKS, NO BOUNDED-WAIT PROBLEMS
+ * ----------------------------------
+ * Two SELECTs — conversation state and the pending-employee-row predicate — both
+ * already indexed and both already executed moments earlier on this same path.
+ * No lock, no retry loop, no unbounded wait. On ANY error the check fails OPEN and
+ * the send proceeds exactly as it did before this change: refusing a customer
+ * reply because a status query blipped would be a worse outcome than the race it
+ * protects against.
+ */
+async function lastInstantAiSendCheck({ tenantId, conversationId, pgEnabled }) {
+  try {
+    return await finalAiSendCheck({ tenantId, conversationId, pgEnabled });
+  } catch (e) {
+    console.error(`⚠️ last-instant AI check failed [${safeErrorCode(e)}] — sending anyway`);
+    return { suppressed: false };
+  }
+}
+
+/**
+ * Close an AI outbound row that will never be sent because a human took the
+ * conversation over first. Never throws — it runs on a suppression path and must
+ * not mask the real answer.
+ */
+async function closeSuppressedOutbound(outboundRow, ctx, { pgEnabled }) {
+  if (!pgEnabled || !outboundRow?.id) return;
+  try {
+    await updateMessageDelivery({
+      tenantId: ctx.tenantId,
+      messageId: outboundRow.id,
+      deliveryStatus: 'failed',
+      errorCategory: DELIVERY_CATEGORY.SUPPRESSED_HUMAN_HANDOFF
+    });
+  } catch (e) {
+    console.error(`⚠️ suppressed AI reply could not be closed [${safeErrorCode(e)}]`);
+  }
 }
 
 // handlePayload is exported inline above (legacy inline/test entry point).
@@ -530,6 +600,16 @@ async function processMessage(event, ctx, deps = {}) {
     outboundRow = await persistOutboundMessage({
       tenantId: ctx.tenantId, conversationId, text: draft.reply, deliveryStatus: 'pending'
     });
+  }
+
+  // ---- P0.2 last-instant ownership re-check (DM) ----
+  // Nothing but a synchronous in-memory flag sits between this and the provider
+  // call below, so it is the last moment a handoff can still stop the send.
+  const lastCheck = await lastInstantAiSendCheck({ tenantId: ctx?.tenantId, conversationId, pgEnabled });
+  if (lastCheck.suppressed) {
+    console.log(`🤝 [stage7] AI suppressed at last check for DM ${redactId(msg.mid)} — state=${lastCheck.state}`);
+    await closeSuppressedOutbound(outboundRow, ctx, { pgEnabled });
+    return;
   }
 
   // Flag the ledger BEFORE the irreversible call, so a crash or a late error can
@@ -734,6 +814,16 @@ async function processComment(value, ctx, deps = {}) {
     outboundRow = await persistOutboundMessage({
       tenantId: ctx.tenantId, conversationId, text: finalMessage, deliveryStatus: 'pending'
     });
+  }
+
+  // ---- P0.2 last-instant ownership re-check (comment) ----
+  // Same placement and same reasoning as the DM path: this is the last moment a
+  // handoff can still stop the send, and nothing awaits between here and the call.
+  const lastCheck = await lastInstantAiSendCheck({ tenantId: ctx?.tenantId, conversationId, pgEnabled });
+  if (lastCheck.suppressed) {
+    console.log(`🤝 [stage7] AI suppressed at last check for comment ${redactId(commentId)} — state=${lastCheck.state}`);
+    await closeSuppressedOutbound(outboundRow, ctx, { pgEnabled });
+    return;
   }
 
   noteOutboundAttempt(ledger, 'attempted');

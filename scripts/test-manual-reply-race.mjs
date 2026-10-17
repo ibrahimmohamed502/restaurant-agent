@@ -57,6 +57,7 @@ const MODIFIED_BY_P0_2 = [
   'src/api/v1/conversations.js',
   'src/services/aiGate.js',
   'src/services/channelResolver.js',
+  'src/services/deliveryOutcome.js',
   'src/webhook.js',
   'apps/web/lib/api.ts',
   'apps/web/components/inbox/view.tsx',
@@ -71,6 +72,7 @@ const NEW_FILES = [
   'scripts/test-manual-reply.mjs',
   'scripts/test-manual-reply-race.mjs',
   'scripts/test-manual-reply-pg.mjs',
+  'scripts/test-ai-human-collision.mjs',
   'apps/web/components/inbox/composer.tsx',
   'apps/web/tests/inbox-reply.test.tsx'
 ];
@@ -457,8 +459,10 @@ section('Y', 'AI send path wiring (source contract)');
     body.includes('evaluateHumanOwnership({ tenantId, conversationId })'));
   check('Y2 and suppresses on either', /if \(ownership\.suppressed\)/.test(body));
 
-  const callSites = [...webhook.matchAll(/await finalAiSendCheck\(\{/g)].length;
-  eq('Y3 both AI send paths still guard on it (comment + DM)', callSites, 2);
+  const callSites = [...webhook.matchAll(/const finalCheck = await finalAiSendCheck\(\{/g)].length;
+  eq('Y3 both AI send paths still gate on it (comment + DM)', callSites, 2);
+  const helper = [...webhook.matchAll(/await lastInstantAiSendCheck\(\{/g)].length;
+  eq('Y3 and both also re-check at the last instant before the provider call', helper, 2);
   check('Y3 each call site refuses on suppression',
     [...webhook.matchAll(/if \(finalCheck\.suppressed\) \{/g)].length === 2);
 

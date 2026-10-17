@@ -85,6 +85,19 @@ export const DELIVERY_CATEGORY = {
   UNKNOWN: 'delivery_unknown',
 
   /**
+   * The AI produced a reply, then a human took the conversation over before the
+   * send went out. The draft was deliberately NOT delivered (P0.2).
+   *
+   * NOT a reconciliation marker: nothing is in doubt. The provider was never
+   * called, so there is no outcome left to establish and nothing to reconcile.
+   *
+   * NOT retryable, and it must never become retryable. Sending this draft later
+   * is precisely the duplicate-reply defect the last-instant re-check exists to
+   * prevent. If a human wanted to send it, they will have typed it.
+   */
+  SUPPRESSED_HUMAN_HANDOFF: 'suppressed_human_handoff',
+
+  /**
    * RECONCILIATION MARKERS.
    *
    * Written ONLY when the provider's outcome was established but the row could
