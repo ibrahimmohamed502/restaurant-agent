@@ -64,7 +64,11 @@ export function createConversationsRouter({ pool, auditFn, deps = {} }) {
       const scope = brandScopeFromSession(req.v1);
       const rows = await loadForList(scope, req.v1.tenantId, limit);
       return res.json({ data: rows.map(toListItem) });
-    } catch {
+    } catch (err) {
+      // Never silent. A swallowed 500 left nothing in the container logs AND made
+      // a failing conversation indistinguishable from a loading one in the UI.
+      // The response stays generic; the code is what is worth having.
+      console.error('conversations list failed:', err?.code ?? err?.message ?? 'error');
       return res.status(500).json({ error: { code: 'INTERNAL', message: 'unexpected error' } });
     }
   });
@@ -84,7 +88,7 @@ export function createConversationsRouter({ pool, auditFn, deps = {} }) {
                 cu.display_name AS customer_name,
                 ch.provider, ch.display_name AS channel_name,
                 ch.status AS channel_status, ch.brand_id,
-                (SELECT u.display_name FROM users u WHERE u.id = c.assigned_user_id) AS assigned_user_name,
+                (SELECT u.name FROM users u WHERE u.id = c.assigned_user_id) AS assigned_user_name,
                 (SELECT max(COALESCE(m.provider_ts, m.created_at)) FROM messages m
                   WHERE m.conversation_id = c.id AND m.direction = 'inbound') AS last_inbound_at
            FROM conversations c
@@ -104,12 +108,12 @@ export function createConversationsRouter({ pool, auditFn, deps = {} }) {
         [conv.id, req.v1.tenantId, MAX_THREAD_MESSAGES]
       );
       const { rows: assignees } = await pool.query(
-        `SELECT u.id, u.display_name, u.email
+        `SELECT u.id, u.name, u.email
            FROM users u
           WHERE u.tenant_id = $1 AND u.status = 'active'
             AND EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
                          WHERE ur.user_id = u.id AND r.name IN ('Company Admin','Supervisor','Agent'))
-          ORDER BY u.display_name NULLS LAST`,
+          ORDER BY u.name NULLS LAST`,
         [req.v1.tenantId]
       );
 
@@ -137,11 +141,15 @@ export function createConversationsRouter({ pool, auditFn, deps = {} }) {
           // write path re-decides the same question inside its own statement.
           reply: describeReply(req.v1, conversation),
           assigneeOptions: assignees.map((a) => ({
-            id: a.id, name: a.display_name, email: a.email
+            id: a.id, name: a.name, email: a.email
           }))
         }
       });
-    } catch {
+    } catch (err) {
+      // Never silent. A swallowed 500 left nothing in the container logs AND made
+      // a failing conversation indistinguishable from a loading one in the UI.
+      // The response stays generic; the code is what is worth having.
+      console.error('conversations list failed:', err?.code ?? err?.message ?? 'error');
       return res.status(500).json({ error: { code: 'INTERNAL', message: 'unexpected error' } });
     }
   });

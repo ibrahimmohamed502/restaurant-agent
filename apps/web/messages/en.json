@@ -157,7 +157,13 @@
         "REPLY_INTERNAL": "Something went wrong on our side. The message was not sent.",
         "NETWORK_ERROR": "No connection to the server. Your text is still here — try again."
       }
-    }
+    },
+    "detailErrorTitle": "Could not load this conversation",
+    "detailErrorNotFound": "This conversation is not available to you.",
+    "detailErrorForbidden": "You do not have access to this conversation.",
+    "detailErrorNetwork": "No connection to the server. Check your connection and retry.",
+    "detailErrorServer": "The server could not load this conversation. It has been logged — please retry.",
+    "detailErrorUnknown": "This conversation could not be loaded. Please retry."
   },
   "dashboard": {
     "greeting": "Welcome back",

@@ -47,6 +47,31 @@ type Detail = {
 };
 
 /**
+ * Turn a failure into something an employee can act on.
+ *
+ * A bare status code is not an explanation, and an error with no retry is worse
+ * than the spinner it replaced — so every branch names the cause and the panel
+ * always offers a retry.
+ */
+function detailErrorDescription(t: (k: string) => string, code: string): string {
+  switch (code) {
+    case 'not_found':
+    case 'Conversation not found':
+      return t('detailErrorNotFound');
+    case 'forbidden':
+    case 'Forbidden':
+      return t('detailErrorForbidden');
+    case 'network':
+      return t('detailErrorNetwork');
+    case 'http_500':
+    case '500':
+      return t('detailErrorServer');
+    default:
+      return t('detailErrorUnknown');
+  }
+}
+
+/**
  * Human-readable lifecycle label.
  *
  * Derived from the state the server sent, not re-derived from a client-side rule
@@ -83,6 +108,11 @@ export function InboxView() {
   const [selected, setSelected] = React.useState<string | null>(null);
   const [detail, setDetail] = React.useState<Detail | null>(null);
   const [detailLoading, setDetailLoading] = React.useState(false);
+  // P0 FIX: a failed detail fetch must be DISTINGUISHABLE from a load.
+  // Previously any non-ok response did `setDetail(null)`, and the render branch
+  // was `detailLoading || !detail ? <skeleton/> : <thread/>` — so a 500 rendered an
+  // animated skeleton for ever with no error and no explanation.
+  const [detailError, setDetailError] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [isAdmin, setIsAdmin] = React.useState(false);
@@ -113,21 +143,35 @@ export function InboxView() {
   }, [router]);
 
   React.useEffect(() => {
-    if (!selected) { setDetail(null); return; }
+    if (!selected) { setDetail(null); setDetailError(null); return; }
     let alive = true;
     setDetailLoading(true);
+    setDetailError(null);
     (async () => {
       try {
         const r = await fetch(`/api/v1/conversations/${selected}`, { credentials: 'include' });
+        if (r.status === 401) { if (alive) router.replace('/login'); return; }
         const body = await r.json().catch(() => ({}));
         if (!alive) return;
-        setDetail(r.ok ? body.data : null);
+        if (r.ok && body?.data) { setDetail(body.data); return; }
+        // Record WHY. The old code collapsed every failure to null, which is the
+        // same value that means "still loading", and that is what left the panel
+        // spinning on a server error.
+        setDetail(null);
+        setDetailError(
+          body?.error?.message ||
+          (r.status === 404 ? 'not_found' : r.status === 403 ? 'forbidden' : `http_${r.status}`)
+        );
+      } catch {
+        if (!alive) return;
+        setDetail(null);
+        setDetailError('network');
       } finally {
         if (alive) setDetailLoading(false);
       }
     })();
     return () => { alive = false; };
-  }, [selected, refreshToken]);
+  }, [selected, refreshToken, router]);
 
   // A conversation can leave the AI's hands (or be reassigned) without the
   // employee doing anything, so the reply permission is re-read on a timer while
@@ -207,6 +251,15 @@ export function InboxView() {
               </span>
               <p className="mt-3 text-sm text-muted-foreground">{t('selectConversation')}</p>
             </div>
+          </div>
+        ) : detailError ? (
+          <div className="flex h-full min-h-64 items-center justify-center px-6 py-12">
+            <ErrorState
+              title={t('detailErrorTitle')}
+              description={detailErrorDescription(t, detailError)}
+              actionLabel={t('retry')}
+              onAction={() => setRefreshToken((n) => n + 1)}
+            />
           </div>
         ) : detailLoading || !detail ? (
           <div className="space-y-3 p-4" aria-busy="true">
