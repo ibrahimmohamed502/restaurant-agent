@@ -136,12 +136,26 @@ export async function resolveRoutingRule({ tenantId, brandId = null, detection, 
  *   3. a company-wide (NULL brand) conversation needs the all-brands
  *      delegation, matching the rest of the product.
  *
- * The grant rows are read `FOR SHARE`, which takes a row lock for the rest of
- * the transaction without blocking the writers. A concurrent revocation is an
- * UPDATE of exactly that row, so it now waits: either this read happens first
- * and the assignment is still legitimate at this instant, or the revoke wins
- * and the read sees `revoked_at` set and refuses. That closes the
- * check-then-revoke window that a plain SELECT would leave open.
+ * NO LOCK IS TAKEN HERE, AND THAT IS CORRECT. This is a candidate shortlist,
+ * not the decision. Locking rows here would be wrong twice over: the pool call
+ * is outside any transaction (a row lock would be released immediately, giving
+ * the *appearance* of safety), and it would serialise a read that is allowed to
+ * be stale.
+ *
+ * The guarantee lives in `maybeAutoRoute`'s write path instead: selection and
+ * assignment run in ONE transaction, and `assertAssigneeBrandAccess` reads both
+ * grant tables `FOR UPDATE` immediately before the mutation. A stale pick here
+ * is caught there - a grant revoked in the meantime is refused, and a concurrent
+ * revoke blocks on that lock until the assignment commits.
+ *
+ * WHAT IS *NOT* LOCKED, stated honestly: `users.status`, `user_roles` and
+ * `team_members` are re-read inside the write transaction but without a row
+ * lock. `isEligibleAssignee` re-checks active + handling role as its own
+ * statement, so a deactivation or role removal committed BEFORE that statement
+ * is caught; one committed after it is not, and the assignment lands. Closing
+ * that window means locking those rows too, or running the check at a stronger
+ * isolation level - tracked before AI_ROUTING_MODE can be set to live. It does
+ * not affect off or dry_run.
  *
  * LOAD BALANCING is best-effort and deterministic: fewest open assignments
  * first, then role_in_team (a team lead is preferred over a newcomer), then
