@@ -87,10 +87,41 @@ the existence of people.
 }
 ```
 
-**Invariant the UI can rely on and must not re-derive:**
-`assignment_eligible === (warnings.length === 0)`.
-Warnings list **every** outstanding reason, not the first one. An administrator
-should see the whole to-do list at once.
+**Two different questions, answered by two different fields. Do not collapse
+them.**
+
+| Field | Question |
+|---|---|
+| `assignment_eligible` | May this person be assigned a conversation **by hand**? |
+| `warnings` | What is outstanding — for hand assignment **and** for automatic routing? |
+
+`assignment_eligible` is `active && has_handling_role && brand_reachable`. It
+deliberately **does not require a department**, because assigning by hand never
+has. `NO_TEAM` is still raised, because automatic routing targets a team and
+without one it can never select that person.
+
+So an employee can be `assignment_eligible: true` **and** carry
+`warnings: ["NO_TEAM"]` at the same time. Both are correct; they answer
+different questions. A UI that renders a green "ready" badge beside "not in any
+department" is telling the administrator the opposite of the truth, and that is
+exactly what the first version of `/teams` did.
+
+Three states the screen must show:
+
+| State | Condition | Meaning |
+|---|---|---|
+| Ready | `assignment_eligible` and no warnings | Assignable by hand **and** reachable by routing |
+| Manual only | `assignment_eligible` and `NO_TEAM` | Assignable by hand; routing can never select them |
+| Not ready | not `assignment_eligible` | Cannot be assigned at all yet |
+
+The only relationship that does hold is: **nobody is ever `not assignment_eligible`
+with an empty warning list**, and an `assignment_eligible` person may carry
+`NO_TEAM` and nothing else. Both are asserted against real server output in
+`scripts/test-team-access-pg.mjs`.
+
+**"Ready" is not a promise of an automatic conversation.** Eligibility is
+necessary, not sufficient — load balancing, the conversation's own brand scope,
+and queue order still apply.
 
 `warnings` values: `NO_HANDLING_ROLE` · `NO_BRAND_ACCESS` · `NO_TEAM` · `INACTIVE`
 

@@ -38,7 +38,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Table, TableHeader, TableBody, TableRow, TableCell, TableHead } from '@/components/ui/table';
 import { ErrorState, EmptyState, PageLoading } from '@/components/ui/states';
 import {
-  teamsApi, describeError,
+  teamsApi, describeError, eligibilityState, inAnyDepartment,
   type Team, type EffectivePermission, type BrandOption, type EligibilityWarning
 } from '@/lib/teams-api';
 
@@ -172,7 +172,9 @@ export default function TeamsPage() {
 
   const emptyTeams = teams?.length === 0;
   const eligible = people?.filter((p) => p.assignment_eligible).length ?? 0;
+  const inDept = inAnyDepartment(people ?? []);
   const totalPeople = people?.length ?? 0;
+  const noPeopleYet = people === null;
 
   return (
     <div className="space-y-6">
@@ -304,13 +306,25 @@ export default function TeamsPage() {
                   {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
               </div>
-              <Badge variant={eligible > 0 ? 'success' : 'destructive'}>
-                {totalPeople === 0 ? t('eligibility.summaryNone')
-                  : eligible === totalPeople ? t('eligibility.summary', { eligible, total: totalPeople })
-                    : t('eligibility.summary', { eligible, total: totalPeople })}
-              </Badge>
+              {/* Two numbers, deliberately not one. "Eligible" is about hand
+                  assignment; "in a department" is about who routing can ever
+                  select. Collapsing them would imply that being in a
+                  department guarantees an automatic conversation - it does not.
+                  Eligibility is necessary, not sufficient. */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={eligible > 0 ? 'success' : 'destructive'}
+                  title={t('eligibility.hint.manualSummary')}>
+                  {t('eligibility.summaryManual', { eligible, total: totalPeople })}
+                </Badge>
+                <Badge variant={inDept > 0 ? 'info' : 'warning'}
+                  title={t('eligibility.hint.routingSummary')}>
+                  {t('eligibility.summaryRouting', { inDept, total: totalPeople })}
+                </Badge>
+              </div>
             </CardContent>
           </Card>
+
+          <p className="text-xs text-muted-foreground">{t('eligibility.summaryNote')}</p>
 
           {totalPeople === 0 ? (
             <EmptyState title={t('eligibility.empty.title')} description={t('eligibility.empty.description')} />
@@ -469,12 +483,26 @@ export default function TeamsPage() {
 }
 
 /**
- * One employee. `warnings` is rendered in full rather than as a single headline:
- * the whole point of the read model is that an administrator sees every
- * outstanding problem at once instead of fixing one and coming back.
+ * One employee, in one of three states.
+ *
+ * `assignment_eligible` and the warning list answer different questions - can
+ * they be assigned BY HAND, and can ROUTING ever reach them - so the screen
+ * says both rather than collapsing them into one verdict.
+ *
+ * "Ready" means the displayed conditions are met. It does not promise an
+ * automatic conversation: eligibility is necessary, not sufficient.
  */
 function PersonRow({ person }: { person: EffectivePermission }) {
   const t = useTranslations('teams');
+  const state = eligibilityState(person);
+
+  const badge =
+    state === 'ready'
+      ? { variant: 'success' as const, icon: <CheckCircle2 className="size-3.5" />, label: t('eligibility.ready') }
+      : state === 'manual_only'
+        ? { variant: 'warning' as const, icon: <AlertTriangle className="size-3.5" />, label: t('eligibility.manualOnly') }
+        : { variant: 'destructive' as const, icon: <Ban className="size-3.5" />, label: t('eligibility.notReady') };
+
   return (
     <TableRow>
       <TableCell>
@@ -493,13 +521,9 @@ function PersonRow({ person }: { person: EffectivePermission }) {
             : t('eligibility.noBrands')}
       </TableCell>
       <TableCell>
-        <div className="flex items-center gap-2">
-          {person.assignment_eligible ? (
-            <Badge><CheckCircle2 className="size-3.5" /> {t('eligibility.eligible')}</Badge>
-          ) : (
-            <Badge variant="destructive"><Ban className="size-3.5" /> {t('eligibility.notEligible')}</Badge>
-          )}
-        </div>
+        <Badge variant={badge.variant} title={t(`eligibility.hint.${state}`)}>
+          {badge.icon} {badge.label}
+        </Badge>
         {person.warnings.length > 0 && (
           <ul className="mt-1 space-y-0.5">
             {person.warnings.map((w: EligibilityWarning) => (

@@ -47,6 +47,11 @@ export type PersonTeamRef = {
   role_in_team: string | null;
 };
 
+/**
+ * The caller may take work by hand: active, holds a handling role, and can
+ * reach the brand in question. It deliberately does NOT require department
+ * membership, because assigning by hand never did.
+ */
 export type EffectivePermission = {
   id: string;
   name: string | null;
@@ -60,6 +65,48 @@ export type EffectivePermission = {
   assignment_eligible: boolean;
   warnings: EligibilityWarning[];
 };
+
+/**
+ * Three states, not two - because `assignment_eligible` and `warnings` answer
+ * DIFFERENT questions and the UI used to collapse them into one badge:
+ *
+ *   assignment_eligible  -> may this person be assigned BY HAND?
+ *   NO_TEAM warning      -> may AI routing ever reach them? (rules target a
+ *                           team, so without one, never)
+ *
+ * A person with a handling role and brand access but no department is
+ * therefore genuinely assignable and genuinely unroutable at the same time.
+ * Showing a green "Ready" beside a "Not in any department" warning is not a
+ * styling nit - it tells an administrator the opposite of the truth.
+ *
+ * A note on what "ready" does NOT promise: it means the displayed conditions
+ * are met. It does not guarantee the person will be handed an automatic
+ * conversation - eligibility is necessary, not sufficient, and load balancing,
+ * brand scope on the conversation, and the queue all still apply.
+ */
+export type EligibilityState = 'ready' | 'manual_only' | 'not_ready';
+
+export function eligibilityState(p: {
+  assignment_eligible: boolean;
+  warnings: readonly string[];
+}): EligibilityState {
+  if (!p.assignment_eligible) return 'not_ready';
+  // "Ready" requires an EMPTY warning list, not merely the absence of NO_TEAM.
+  // The server's own rule makes any other warning alongside eligibility
+  // impossible today, but keying the green badge off one specific code would
+  // mean a future server change could paint it green beside a warning - the
+  // exact thing this function exists to prevent. Checking emptiness cannot lie.
+  if (p.warnings.length === 0) return 'ready';
+  // Eligible by hand, but routing targets a department: with none, routing can
+  // never select them.
+  return 'manual_only';
+}
+
+/** How many people are in at least one department - routing's real pool. */
+export function inAnyDepartment(people: readonly EffectivePermission[]): number {
+  return people.filter((p) => p.teams.length > 0).length;
+}
+
 
 export type BrandOption = {
   id: string;

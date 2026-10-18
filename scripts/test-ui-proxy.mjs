@@ -59,6 +59,51 @@ const srv2 = await new Promise((r) => { const s = app2.listen(0, '127.0.0.1', ()
 const fb = await fetch(`http://127.0.0.1:${srv2.address().port}/knowledge`).then((r) => r.text());
 check('no WEB_UPSTREAM → legacy fallback unchanged', fb === 'LEGACY_FALLBACK');
 
+/* ------------------------------------------------------------------------
+   The /teams 404 regression.
+
+   `/teams` shipped, built and passed every other suite, and still returned 404
+   in production: UI_ROUTES had `/team` but not `/teams`, and `startsWith('/team/')`
+   does not match '/teams'. The request fell through to Express, which has no
+   such route.
+
+   The lesson is not "remember to add /teams". It is that the proxy allowlist and
+   the sidebar are two hand-maintained lists that must agree. So the test below
+   derives one from the other: EVERY href in NAV_ITEMS must be proxied. A new
+   page in the sidebar that nobody adds to the proxy now fails here, in CI,
+   instead of 404ing for customers.
+   ---------------------------------------------------------------------- */
+console.log('\n== the sidebar and the proxy allowlist must agree ==\n');
+
+const { readFileSync } = await import('node:fs');
+const { fileURLToPath } = await import('node:url');
+const { dirname, join } = await import('node:path');
+
+const navSrc = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), '..', 'apps', 'web', 'lib', 'navigation.ts'),
+  'utf8'
+);
+const hrefs = [...navSrc.matchAll(/href:\s*'([^']+)'/g)].map((m) => m[1]);
+
+check('the navigation file was actually parsed', hrefs.length >= 10, `found ${hrefs.length}`);
+for (const h of hrefs) {
+  const r = await get(h);
+  check(`every sidebar page is proxied: ${h}`, r.s === 200 && r.t === 'NEXTJS_UI',
+    `status ${r.s}`);
+}
+
+// Sub-paths, because the allowlist matches with startsWith(`${r}/`) and a page
+// that ever grows a nested route must keep working.
+for (const sub of ['/teams/anything', '/teams/deep/nested']) {
+  const r = await get(sub);
+  check(`sub-paths still proxy: ${sub}`, r.s === 200 && r.t === 'NEXTJS_UI', `status ${r.s}`);
+}
+
+// The specific shape that broke, stated explicitly so it cannot be "fixed" by
+// accident later.
+check('/teams is proxied, and /team is still proxied',
+  (await get('/teams')).t === 'NEXTJS_UI' && (await get('/team')).t === 'NEXTJS_UI');
+
 console.log(`\n${failed === 0 ? '🎉' : '💥'} ${passed} passed, ${failed} failed\n`);
 upstream.close(); srv.close(); srv2.close();
 process.exit(failed === 0 ? 0 : 1);

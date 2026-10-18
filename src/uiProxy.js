@@ -25,6 +25,10 @@ const UI_ROUTES = [
   '/channels',
   '/ai',
   '/team',
+  // Departments. Must be its own entry: `startsWith('/team/')` does NOT match
+  // '/teams'. Without this the page builds, ships and then 404s through
+  // Express - which is exactly what the first P0.5 deploy did.
+  '/teams',
   '/integrations',
   '/audit',
   '/settings',

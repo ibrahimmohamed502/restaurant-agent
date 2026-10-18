@@ -297,16 +297,93 @@ try {
   check('and NO_BRAND_ACCESS', inertRow.warnings.includes('NO_BRAND_ACCESS'), inertRow.warnings.join(','));
   eq('and is not eligible', inertRow.assignment_eligible, false);
 
+  // The relationship the UI is built on, asserted against REAL server output.
+  //
+  // A previous version of the frontend test asserted
+  //     assignment_eligible === (warnings.length === 0)
+  // using fixtures I had written myself, with the two sides always paired - so it
+  // proved only that my assumption was self-consistent. It is false: the server
+  // computes `assignment_eligible` WITHOUT department membership, because hand
+  // assignment has never required one, while NO_TEAM is still raised because
+  // routing targets a team. Both are correct; they answer different questions.
+  //
+  // The real rule, checked here against actual rows:
+  //
+  // A dedicated fixture, because the existing ones cannot produce the case: the
+  // agent and the admin are both members of `marketing` by this point, and
+  // `other` is a Supervisor with no brand. Without this person every assertion
+  // below would pass vacuously.
+  const solo = await mkUser(t1.id, 'solo');
+  await giveRole(solo, 'Agent');
+  await q(`INSERT INTO user_brand_grants (tenant_id,user_id,brand_id) VALUES ($1,$2,$3)`,
+    [t1.id, solo, b1.id]);
+
+  const allPeople = await listEffectivePermissions({ tenantId: t1.id, brandId: b1.id, db: client });
+  const soloRow = allPeople.find((p) => p.id === solo);
+  check('the fixture is the case under test: eligible, and in no department',
+    soloRow?.assignment_eligible === true && soloRow?.warnings.includes('NO_TEAM'),
+    JSON.stringify({ e: soloRow?.assignment_eligible, w: soloRow?.warnings }));
+
+  const eligibleWithWarnings = allPeople.filter((p) => p.assignment_eligible && p.warnings.length > 0);
+  check('an eligible employee may still carry warnings - and they are only NO_TEAM',
+    eligibleWithWarnings.every((p) => p.warnings.length === 1 && p.warnings[0] === 'NO_TEAM'),
+    JSON.stringify(eligibleWithWarnings.map((p) => ({ e: p.email, w: p.warnings }))));
+  const eligibleWithOther = allPeople.filter((p) =>
+    p.assignment_eligible && p.warnings.some((w) => w !== 'NO_TEAM'));
+  eq('eligibility never disagrees with anything but department membership', eligibleWithOther.length, 0);
+  check('and the case really exists, so this is a live rule and not a vacuous one',
+    allPeople.some((p) => p.assignment_eligible && p.warnings.includes('NO_TEAM')));
+  const notEligibleWithNone = allPeople.filter((p) => !p.assignment_eligible && p.warnings.length === 0);
+  eq('nobody is ineligible with an empty warning list', notEligibleWithNone.length, 0);
+
+  // The three frontend states must be a partition of the real data - every row
+  // lands in exactly one, and 'ready' implies no warnings.
+  const states = allPeople.map((p) =>
+    !p.assignment_eligible ? 'not_ready'
+      : p.warnings.length === 0 ? 'ready' : 'manual_only');
+  check('every real row maps to exactly one state', states.length === allPeople.length && states.length > 0);
+  eq('and "ready" never coexists with a warning',
+    allPeople.filter((p, i) => states[i] === 'ready' && p.warnings.length > 0).length, 0);
+  check('and the new state is actually exercised by real data',
+    states.includes('manual_only') && states.includes('ready') && states.includes('not_ready'),
+    `states seen: ${[...new Set(states)].join(', ')}`);
+
   eq('other companies are never listed', (await listEffectivePermissions({ tenantId: t2.id, db: client })).map((p) => p.email), ['outsider@t.local']);
 
-  // The contract P0.5-B's UI will render against: an employee is eligible
-  // exactly when nothing is outstanding. Asserted across BOTH brand contexts,
-  // because "no brand chosen" is the case a priority ladder got wrong.
+  // The contract P0.5-B's UI renders against, asserted across BOTH brand
+  // contexts.
+  //
+  // This used to assert `assignment_eligible === (warnings.length === 0)`. That
+  // was wrong, and it PASSED for weeks - not because it was right, but because
+  // no fixture produced an employee who was eligible yet carried a warning. Once
+  // one did, it failed immediately and took the UI's green "Ready" badge with
+  // it. A rule only ever checked against data that cannot exercise it is not a
+  // rule; it is decoration.
+  //
+  // The real contract, checked against real rows:
   for (const ctx of [{ brandId: b1.id, label: 'a chosen brand' }, { brandId: undefined, label: 'no brand context' }]) {
     const rows = await listEffectivePermissions({ tenantId: t1.id, brandId: ctx.brandId, db: client });
-    const broken = rows.filter((p) => p.assignment_eligible !== (p.warnings.length === 0));
-    check(`eligibility never disagrees with the warning list (${ctx.label})`,
-      broken.length === 0, broken.map((p) => `${p.email}: eligible=${p.assignment_eligible} warnings=${p.warnings}`).join(' '));
+
+    // Nobody is ineligible without being told why.
+    const silent = rows.filter((p) => !p.assignment_eligible && p.warnings.length === 0);
+    check(`nobody is ineligible with an empty warning list (${ctx.label})`,
+      silent.length === 0, silent.map((p) => p.email).join(' '));
+
+    // Eligibility and warnings agree about everything except department
+    // membership - which hand assignment has never required.
+    const drifted = rows.filter((p) => {
+      const expected = p.status === 'active'
+        && p.has_handling_role
+        && (p.all_brands || (ctx.brandId ? p.brand_ids.includes(ctx.brandId) : p.brand_ids.length > 0));
+      return p.assignment_eligible !== expected;
+    });
+    check(`eligibility matches the documented formula (${ctx.label})`,
+      drifted.length === 0,
+      drifted.map((p) => `${p.email}: eligible=${p.assignment_eligible} warnings=${p.warnings}`).join(' '));
+
+    // And the case that broke the badge is still exercised here.
+    check(`an eligible employee with no department is present (${ctx.label})`,
+      rows.some((p) => p.assignment_eligible && p.warnings.includes('NO_TEAM')));
   }
 
   /* ------------------------------------------- eligibility under race */

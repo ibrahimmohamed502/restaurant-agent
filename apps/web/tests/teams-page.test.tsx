@@ -5,6 +5,8 @@ import en from '@/messages/en.json';
 import ar from '@/messages/ar.json';
 import {
   ELIGIBILITY_WARNINGS,
+  eligibilityState,
+  inAnyDepartment,
   type EffectivePermission
 } from '@/lib/teams-api';
 
@@ -19,6 +21,8 @@ const arTeams = (ar as unknown as { teams: Record<string, unknown> }).teams;
 const pageSrc = readFileSync(new URL('../app/(app)/teams/page.tsx', import.meta.url), 'utf8');
 const apiSrc = readFileSync(new URL('../lib/teams-api.ts', import.meta.url), 'utf8');
 const navSrc = readFileSync(new URL('../lib/navigation.ts', import.meta.url), 'utf8');
+// apps/web/tests -> apps/web -> apps -> repo root
+const doc = readFileSync(new URL('../../../docs/p0-5-b-api-contract.md', import.meta.url), 'utf8');
 
 /**
  * Source text with comments removed.
@@ -141,6 +145,78 @@ describe('removing a member', () => {
   });
 });
 
+describe('the three eligibility states', () => {
+  const person = (over: Partial<EffectivePermission> = {}): EffectivePermission => ({
+    id: 'p1', name: 'Dana', email: 'dana@t.local', status: 'active',
+    roles: ['Agent'], teams: [{ id: 'tm1', name: 'Marketing', role_in_team: 'agent' }],
+    all_brands: false, brand_ids: ['b1'], has_handling_role: true,
+    assignment_eligible: true, warnings: [], ...over
+  });
+
+  it('green means eligible AND nothing outstanding', () => {
+    expect(eligibilityState(person())).toBe('ready');
+  });
+
+  it('eligible with no department is MANUAL ONLY, not green', () => {
+    // The real case from production: a Company Admin with brand access and no
+    // department. Collapsing this into "ready" showed a green badge next to
+    // "Not in any department", which told the administrator the opposite of
+    // the truth.
+    const p = person({ teams: [], warnings: ['NO_TEAM'] });
+    expect(p.assignment_eligible).toBe(true);
+    expect(eligibilityState(p)).toBe('manual_only');
+  });
+
+  it('not eligible is never anything but not_ready', () => {
+    expect(eligibilityState(person({ assignment_eligible: false, warnings: ['NO_HANDLING_ROLE'] })))
+      .toBe('not_ready');
+    expect(eligibilityState(person({ assignment_eligible: false, warnings: ['INACTIVE'] })))
+      .toBe('not_ready');
+    expect(eligibilityState(person({ assignment_eligible: false, warnings: [] })))
+      .toBe('not_ready');
+  });
+
+  it('no state is ever green while a warning is shown', () => {
+    // The invariant the old badge broke: a green badge beside a warning.
+    for (const warnings of [[], ['NO_TEAM'], ['NO_HANDLING_ROLE'], ['NO_BRAND_ACCESS'],
+      ['NO_HANDLING_ROLE', 'NO_BRAND_ACCESS', 'NO_TEAM'], ['INACTIVE']]) {
+      for (const eligible of [true, false]) {
+        const s = eligibilityState(person({ warnings: warnings as never, assignment_eligible: eligible }));
+        if (warnings.length > 0) {
+          expect(s).not.toBe('ready');
+        }
+      }
+    }
+  });
+
+  it('counts the people routing could ever consider', () => {
+    const people = [
+      person({ id: 'a', teams: [{ id: 't', name: 'M', role_in_team: null }] }),
+      person({ id: 'b', teams: [] }),
+      person({ id: 'c', teams: [{ id: 't', name: 'M', role_in_team: null }] })
+    ];
+    expect(inAnyDepartment(people)).toBe(2);
+  });
+
+  it('the summary shows TWO numbers, never one merged verdict', () => {
+    const e = enTeams.eligibility as Record<string, unknown>;
+    expect(e).toHaveProperty('summaryManual');
+    expect(e).toHaveProperty('summaryRouting');
+    expect(pageCode).toContain('summaryManual');
+    expect(pageCode).toContain('summaryRouting');
+  });
+
+  it('does not claim department membership guarantees automatic assignment', () => {
+    // "Eligibility is necessary, not sufficient" has to be said somewhere, or an
+    // administrator reads a green badge as a promise.
+    expect((enTeams.eligibility as Record<string, unknown>).summaryNote).toMatch(/not sufficient/i);
+    expect((arTeams.eligibility as Record<string, unknown>).summaryNote).toBeTruthy();
+    const hints = (enTeams.eligibility as Record<string, Record<string, string>>).hint;
+    expect(Object.keys(hints)).toContain('ready');
+    expect(hints.ready).toMatch(/automatic/i);
+  });
+});
+
 describe('the page keeps /team and /teams apart', () => {
   it('registers /teams separately from /team in the sidebar', () => {
     expect(navSrc).toContain("href: '/team'");
@@ -163,8 +239,11 @@ describe('the page keeps /team and /teams apart', () => {
 });
 
 describe('the page renders the server verdict, it does not recompute it', () => {
-  it('reads assignment_eligible rather than deriving it from warnings', () => {
-    expect(pageCode).toContain('person.assignment_eligible');
+  it('delegates the verdict to the tested helper rather than deciding inline', () => {
+    expect(pageCode).toContain('eligibilityState(person)');
+    // The page must not branch on the raw fields itself - that is the drift
+    // this feature exists to prevent.
+    expect(pageCode).not.toMatch(/person\.assignment_eligible\s*\?/);
     // A local derivation is exactly the drift this feature exists to prevent.
     expect(pageCode).not.toMatch(/warnings\s*\.\s*length\s*===\s*0/);
   });
@@ -225,23 +304,17 @@ describe('the client stays thin', () => {
 });
 
 describe('the invariant the screen is built on', () => {
-  it('holds for every combination the server can produce', () => {
-    // Mirrors the property asserted against the real API: eligible exactly when
-    // nothing is outstanding. If the server ever breaks it, this is where it
-    // should be noticed before it becomes a UI that lies.
-    const cases: EffectivePermission[] = [
-      person(),
-      person({ assignment_eligible: false, warnings: ['NO_TEAM'] }),
-      person({ assignment_eligible: false, warnings: ['NO_BRAND_ACCESS'] }),
-      person({ assignment_eligible: false, warnings: ['NO_HANDLING_ROLE'] }),
-      person({ assignment_eligible: false, warnings: ['INACTIVE'] }),
-      person({
-        assignment_eligible: false,
-        warnings: ['NO_HANDLING_ROLE', 'NO_BRAND_ACCESS', 'NO_TEAM']
-      })
-    ];
-    for (const p of cases) {
-      expect(p.assignment_eligible).toBe(p.warnings.length === 0);
-    }
+  it('no longer asserts the invented "eligible iff no warnings" rule', () => {
+    // That rule was written from an assumption, then "proved" with fixtures I
+    // wrote myself, and was wrong: the server does NOT require a department for
+    // hand assignment. It is pinned against real server output in
+    // test-team-access-pg.mjs instead.
+    expect(pageCode).not.toMatch(/warnings\s*\.\s*length\s*===\s*0/);
+    expect(doc).not.toMatch(/assignment_eligible\s*===\s*\(warnings\.length === 0\)/);
+  });
+
+  it('the contract documents the REAL relationship', () => {
+    expect(doc).toMatch(/NO_TEAM/);
+    expect(doc).toMatch(/hand/i);
   });
 });
