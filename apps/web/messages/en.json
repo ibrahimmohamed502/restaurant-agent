@@ -720,6 +720,22 @@
       "alreadyMember": "That person is already in this department.",
       "selfRemoval": "You can't remove yourself from a department.",
       "generic": "Something went wrong. Try again."
+    },
+    "brandAccess": {
+      "title": "Brand access",
+      "description": "Which brands each person can see and act on. Granting requires already holding the same scope yourself.",
+      "choosePerson": "Choose a person",
+      "granted": "Granted",
+      "notGranted": "Not granted",
+      "grant": "Grant",
+      "revoke": "Revoke",
+      "grantAll": "Grant all brands",
+      "revokeAll": "Revoke all brands",
+      "confirmRevokeAllTitle": "Revoke all brand access?",
+      "confirmRevokeAllBody": "This person will lose access to every brand in this company.",
+      "errors": {
+        "selfRevoke": "You cannot revoke your own brand access."
+      }
     }
   },
   "command": {

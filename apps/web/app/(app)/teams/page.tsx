@@ -41,8 +41,10 @@ import {
   teamsApi, describeError, eligibilityState, inAnyDepartment,
   type Team, type EffectivePermission, type BrandOption, type EligibilityWarning
 } from '@/lib/teams-api';
+import { brandGrantsApi, describeGrantError, type GrantRow } from '@/lib/brand-grants-api';
+import { BrandAccessTab } from './brand-access-tab';
 
-type Tab = 'departments' | 'eligibility';
+type Tab = 'departments' | 'eligibility' | 'brandAccess';
 type LoadState = 'loading' | 'ready' | 'unauthorized' | 'forbidden' | 'noScope' | 'error';
 type TeamAbility = 'team.read' | 'team.create' | 'team.update' | 'team.disable' | 'team.assign';
 
@@ -57,6 +59,15 @@ export default function TeamsPage() {
   const [people, setPeople] = React.useState<EffectivePermission[] | null>(null);
   const [brands, setBrands] = React.useState<BrandOption[]>([]);
   const [brandFilter, setBrandFilter] = React.useState<string>('');
+  // Brand access tab state. Grants are per-employee and edited one person at a
+  // time, so the page loads them lazily when a person is selected rather than
+  // for everyone up front (a company can have hundreds of employees and 10
+  // brands each).
+  const [grantPerson, setGrantPerson] = React.useState<EffectivePermission | null>(null);
+  const [grants, setGrants] = React.useState<GrantRow[] | null>(null);
+  const [grantLoading, setGrantLoading] = React.useState(false);
+  const [grantAllPending, setGrantAllPending] = React.useState(false);
+  const [confirmRevokeAll, setConfirmRevokeAll] = React.useState(false);
   /**
    * What this person may actually do. Empty until the answer arrives, and the
    * write controls stay disabled until then - flashing an enabled button that
@@ -115,7 +126,7 @@ export default function TeamsPage() {
   }, []);
 
   const allowed = React.useCallback(
-    (a: TeamAbility) => can.includes(a),
+    (a: string) => can.includes(a as TeamAbility),
     [can]
   );
 
@@ -192,7 +203,7 @@ export default function TeamsPage() {
       />
 
       <div className="flex gap-1 border-b" role="tablist">
-        {(['departments', 'eligibility'] as Tab[]).map((k) => (
+        {(['departments', 'eligibility', 'brandAccess'] as Tab[]).map((k) => (
           <button
             key={k}
             role="tab"
@@ -292,6 +303,21 @@ export default function TeamsPage() {
             </>
           )}
         </>
+      )}
+
+      {tab === 'brandAccess' && (
+        <BrandAccessTab
+          people={people ?? []}
+          brands={brands}
+          canGrant={allowed('brand.grant')}
+          canRevoke={allowed('brand.revoke')}
+          canGrantAll={allowed('brand.grant_all')}
+          canRevokeAll={allowed('brand.revoke_all')}
+          busy={busy}
+          run={run}
+          setActionError={setActionError}
+          reloadPeople={() => void loadPeople(brandFilter)}
+        />
       )}
 
       {tab === 'eligibility' && (

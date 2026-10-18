@@ -720,6 +720,22 @@
       "alreadyMember": "الشخص ده بالفعل في الإدارة دي.",
       "selfRemoval": "مش قادر تشيل نفسك من إدارة.",
       "generic": "حصل خطأ. حاول تاني."
+    },
+    "brandAccess": {
+      "title": "صلاحية البراندات",
+      "description": "أي براندات يقدر كل شخص يشوف ويتعامل معها. Grant يتطلب أن تملك نفس الصلاحية أنت.",
+      "choosePerson": "اختر شخص",
+      "granted": "ممنوح",
+      "notGranted": "غير ممنوح",
+      "grant": "منح",
+      "revoke": "سحب",
+      "grantAll": "منح كل البراندات",
+      "revokeAll": "سحب كل البراندات",
+      "confirmRevokeAllTitle": "سحب كل صلاحيات البراند؟",
+      "confirmRevokeAllBody": "هذا الشخص سيفقد الوصول لجميع براندات الشركة.",
+      "errors": {
+        "selfRevoke": "لا يمكنك سحب صلاحية براندك الخاصة."
+      }
     }
   },
   "command": {

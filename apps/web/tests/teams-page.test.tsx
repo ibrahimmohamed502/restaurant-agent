@@ -228,13 +228,20 @@ describe('the page keeps /team and /teams apart', () => {
     expect(enTeams.title).not.toBe((en as unknown as { team: Record<string, string> }).team.nav);
   });
 
-  it('does not call the users or brand-grants API', () => {
-    // Accounts and brand access have their own screens and their own abilities.
-    // This screen borrowing them would put two places that disagree about who can
-    // see what. Asserted against code, not prose - see `code()` above.
+  it('does not manage user accounts - that stays on /team', () => {
+    // Accounts, roles and passwords belong to /team. This page may link to them
+    // but never edits them; otherwise two screens would disagree about who can
+    // see what. Brand access is the opposite: it IS edited here, deliberately,
+    // through /brand-grants - see the brandAccess tab.
     expect(pageCode).not.toContain('usersApi');
-    expect(pageCode).not.toContain('brand-grants');
-    expect(pageCode).not.toContain('brandGrants');
+  });
+
+  it('edits brand access only through the brand-grants client', () => {
+    // No direct brand-grants fetch outside that client - one typed wrapper, so
+    // the CSRF and envelope handling cannot drift between call sites.
+    expect(pageCode).toContain("from './brand-access-tab'");
+    const brandGrantCallSites = pageCode.match(/brandGrantsApi\./g) ?? [];
+    expect(brandGrantCallSites.length).toBe(0); // calls live in the tab, not here
   });
 });
 
