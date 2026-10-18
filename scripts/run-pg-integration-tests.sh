@@ -22,12 +22,18 @@ PG_USER="${PG_USER:-lwc}"
 PG_PASSWORD="${PG_PASSWORD:-}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KEEP_TEST_DB="${KEEP_TEST_DB:-0}"
-EXPECTED_COMMIT="${EXPECTED_COMMIT:-e93550c3d28f1024f3e38a90730c03f8c30d203f}"
+EXPECTED_COMMIT="${EXPECTED_COMMIT:-dde00ed42c7bfcbbabcf1d7fcaacf6b148bfa150}"
 
 # Track databases this run created (for safe cleanup)
 declare -a CREATED_DBS=()
 CLEANUP_ERRORS=()
 RESULTS=()
+
+# Full per-suite logs. `tail -5` hid the real failure behind a stack trace
+# footer, so every suite writes its complete stdout+stderr here and the tail is
+# only for the happy path.
+LOG_DIR="${LOG_DIR:-/tmp/p03-pg-test-logs}"
+mkdir -p "$LOG_DIR"
 
 # Never print passwords or connection strings
 if [[ -n "$PG_PASSWORD" ]]; then
@@ -40,6 +46,17 @@ cleanup() {
   echo "=== Cleanup (exit code: $exit_code) ==="
 
   for db_name in "${CREATED_DBS[@]}"; do
+    # Guard: never issue a DROP against a blank name, and never against a
+    # non-_test name. An empty entry is a bug, not a database.
+    if [[ -z "$db_name" ]]; then
+      echo "  [cleanup] SKIPPED empty database name (internal list entry)" >&2
+      continue
+    fi
+    if ! validate_db_name "$db_name"; then
+      echo "  [cleanup] REFUSED to drop non-test database '$db_name'" >&2
+      CLEANUP_ERRORS+=("$db_name")
+      continue
+    fi
     if docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -c "DROP DATABASE IF EXISTS \"$db_name\"" >/dev/null 2>&1; then
       echo "  [cleanup] Dropped $db_name"
     else
@@ -90,11 +107,18 @@ if ! docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -tAc "SELECT 1" 
   exit 1
 fi
 
+# Resolve PostgreSQL container IP (for host connectivity)
+PG_HOST=$(docker inspect "$PG_CONTAINER" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
+if [[ -z "$PG_HOST" || "$PG_HOST" == "<no value>" ]]; then
+  PG_HOST="$PG_CONTAINER"
+fi
+export TEST_CONN_STRING="postgresql://${PG_USER}:${PG_PASSWORD}@${PG_HOST}:5432/postgres"
+
 # === SAFETY CHECK 5: Verify Node.js connectivity to PostgreSQL ===
 echo "=== Verifying Node.js PostgreSQL connectivity ==="
 if ! node -e "
 const pg = require('pg');
-const client = new pg.Client({ connectionString: 'postgresql://${PG_USER}:${PG_PASSWORD}@localhost:5432/postgres' });
+const client = new pg.Client({ connectionString: process.env.TEST_CONN_STRING });
 client.connect()
   .then(() => client.query('SELECT 1'))
   .then(() => { console.log('  [PASS] Node.js can connect to PostgreSQL'); client.end(); })
@@ -166,18 +190,22 @@ run_suite() {
   # Install pgvector if available
   docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$db_name" -c "CREATE EXTENSION IF NOT EXISTS vector" >/dev/null 2>&1 || true
 
-  # Run the test suite (password passed via PGPASSWORD env var, not in URL)
+  # Run the test suite (password passed via PGPASSWORD env var and in URL for reliability)
+  local log_file="${LOG_DIR}/${suite_name}.log"
   local output
-  output=$(cd "$REPO" && PGPASSWORD="$PG_PASSWORD" TEST_DATABASE_URL="postgresql://${PG_USER}@localhost:5432/${db_name}" ENCRYPTION_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" node "$script_path" 2>&1)
+  output=$(cd "$REPO" && PGPASSWORD="$PG_PASSWORD" TEST_DATABASE_URL="postgresql://${PG_USER}:${PG_PASSWORD}@${PG_HOST}:5432/${db_name}" ENCRYPTION_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" node "$script_path" 2>&1)
   local exit_code=$?
-
-  echo "$output" | tail -5
+  printf '%s\n' "$output" > "$log_file"
 
   if [[ $exit_code -eq 0 ]]; then
+    echo "$output" | tail -5
     echo "  [PASS] $suite_name"
     RESULTS+=("PASS:$suite_name")
   else
-    echo "  [FAIL] $suite_name (exit code: $exit_code)" >&2
+    # On failure the tail is worthless - it is all stack frames. Show the
+    # assertions that actually failed instead.
+    echo "$output" | grep -E '\[FAIL\]|FAILURES|Error|error:' | head -20
+    echo "  [FAIL] $suite_name (exit code: $exit_code) - full log: $log_file" >&2
     RESULTS+=("FAIL:$suite_name")
   fi
 
@@ -185,8 +213,16 @@ run_suite() {
   if [[ "$KEEP_TEST_DB" != "1" ]]; then
     if docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -c "DROP DATABASE IF EXISTS \"$db_name\"" >/dev/null 2>&1; then
       echo "  [cleanup] Dropped $db_name"
-      # Remove from created list after successful drop
-      CREATED_DBS=("${CREATED_DBS[@]/$db_name}")
+      # Remove from the created list after a successful drop. Rebuild the array
+      # with exact matches only: "${CREATED_DBS[@]/$db_name}" is a substring
+      # substitution that leaves an empty element behind, which the EXIT trap
+      # then tries (and fails) to drop as a blank database name.
+      local -a still_created=()
+      local existing
+      for existing in "${CREATED_DBS[@]}"; do
+        [[ -n "$existing" && "$existing" != "$db_name" ]] && still_created+=("$existing")
+      done
+      CREATED_DBS=("${still_created[@]}")
     else
       echo "  [cleanup] FAILED to drop $db_name" >&2
       CLEANUP_ERRORS+=("$db_name")

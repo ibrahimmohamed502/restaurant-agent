@@ -23,10 +23,35 @@ if (!url) {
   process.exit(0);
 }
 
-const dbName = new URL(url).pathname.replace(/^\//, '');
+const dbName = (() => {
+  try { return decodeURIComponent(new URL(url).pathname.replace(/^\//, '')); }
+  catch { return ''; }
+})();
 if (!dbName.endsWith('_test')) {
   console.error(`Refusing: "${dbName}" does not end in _test`);
   process.exit(1);
+}
+
+// SAFETY: `src/db/pg.js` builds its shared pool from DATABASE_URL, and the
+// service functions exercised below (claimFailedOutboundForRetry,
+// finishMessageDelivery, ...) query through that shared pool. If DATABASE_URL
+// were left unset the pool is null and every call throws; if it were left
+// pointing at the deployment database the suite would write to production.
+// Repoint it at the throwaway database and refuse to continue if that fails.
+{
+  const current = (() => {
+    try { return decodeURIComponent(new URL(process.env.DATABASE_URL ?? '').pathname.replace(/^\//, '')); }
+    catch { return ''; }
+  })();
+  if (current && !current.endsWith('_test')) {
+    console.log(`  note  DATABASE_URL pointed at "${current}" - repointing it at "${dbName}"`);
+  }
+  process.env.DATABASE_URL = url;
+  const now = decodeURIComponent(new URL(process.env.DATABASE_URL).pathname.replace(/^\//, ''));
+  if (!now.endsWith('_test')) {
+    console.error(`  refusing to run: DATABASE_URL still resolves to "${now}"`);
+    process.exit(1);
+  }
 }
 
 console.log(`\nreal PostgreSQL integration - database ${dbName}\n`);
