@@ -385,11 +385,18 @@ export async function listEffectivePermissions({ tenantId, brandId = null, db = 
   const { rows } = await db.query(
     `SELECT u.id, u.name, u.email, u.status,
             COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles,
+            -- Objects, not bare names. The previous query returned
+            -- array_agg(t.name), a list of strings, while the published contract
+            -- and the UI both expect { id, name, role_in_team }. The UI filters
+            -- each team's roster with p.teams.some(x => x.id === teamId), which
+            -- is undefined === id for a string, so every department card showed
+            -- 0 memberships no matter who was actually in it.
             COALESCE((
-              SELECT array_agg(t.name) FROM team_members tm
+              SELECT json_agg(json_build_object('id', t.id, 'name', t.name, 'role_in_team', tm.role_in_team))
+                FROM team_members tm
                 JOIN teams t ON t.id = tm.team_id
                WHERE tm.user_id = u.id AND tm.tenant_id = u.tenant_id AND tm.revoked_at IS NULL
-            ), '{}') AS teams,
+            ), '[]'::json) AS teams,
             EXISTS (SELECT 1 FROM user_brand_scope_all s
                      WHERE s.user_id = u.id AND s.tenant_id = u.tenant_id AND s.revoked_at IS NULL) AS all_brands,
             COALESCE((
@@ -421,10 +428,14 @@ export async function listEffectivePermissions({ tenantId, brandId = null, db = 
     // EVERY outstanding reason, not just the first. This list exists so an
     // administrator can see at a glance what is missing about an employee and fix
     // it in one pass; a priority ladder made them fix one problem, come back, and
-    // discover the next. It also kept this list disagreeing with
-    // `assignment_eligible` above, which is computed as the AND of every
-    // condition - so an employee could be ineligible with an empty warning list.
-    // Now: active and eligible <=> no warnings. The UI can rely on that.
+    // discover the next.
+    //
+    // `assignment_eligible` and this list answer DIFFERENT questions and
+    // deliberately do not agree: eligibility is about hand assignment (which
+    // never required a department), while NO_TEAM is about routing (which does).
+    // See docs/p0-5-b-api-contract.md. Do not "fix" the mismatch by folding
+    // team membership into eligibility - that would forbid hand-assigning anyone
+    // who is not in a department, which has always been allowed.
     if (r.status === 'active' && !hasHandlingRole) warnings.push('NO_HANDLING_ROLE');
     if (r.status === 'active' && !brandReachable) warnings.push('NO_BRAND_ACCESS');
     if (r.status === 'active' && (r.teams ?? []).length === 0) warnings.push('NO_TEAM');
