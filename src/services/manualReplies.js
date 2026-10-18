@@ -522,9 +522,16 @@ export async function confirmReplyStillOwned({ authority, conversationId, idempo
   const { rows } = await db.query(
     `SELECT c.state, c.assigned_user_id, ch.brand_id, ch.provider, ch.status, c.channel_id,
             c.external_key,
+            -- ::int is REQUIRED, not cosmetic. count() returns bigint, which
+            -- node-postgres parses as a STRING to avoid precision loss, so an
+            -- uncast count reaches JS as '1'. Comparing that to the number 1
+            -- with !== is true even when the row is genuinely ours, which
+            -- aborted EVERY manual reply as 'state_changed' before it reached
+            -- the provider. Every other count in this codebase is cast; this
+            -- one was the exception.
             (SELECT count(*) FROM messages m
               WHERE m.tenant_id = c.tenant_id AND m.conversation_id = c.id
-                AND m.direction = 'outbound' AND m.idempotency_key = $3) AS still_mine
+                AND m.direction = 'outbound' AND m.idempotency_key = $3)::int AS still_mine
        FROM conversations c
        LEFT JOIN channels ch ON ch.id = c.channel_id
       WHERE c.id = $2 AND c.tenant_id = $1

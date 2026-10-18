@@ -455,7 +455,83 @@ try {
   check('so an employee reply can never be re-sent by it',
     !/sender_type = ANY/.test(retryFn.slice(0, retryFn.indexOf('RETURNING'))));
 
-  section('15 rollback');
+  section('15 confirmReplyStillOwned must not abort a genuinely owned reply');
+  // REGRESSION. count() returns bigint, which node-postgres hands to JS as a
+  // STRING. An uncast count compared with `!== 1` is therefore ALWAYS true, so
+  // every manual reply was closed as 'state_changed' -> 'aborted_before_send'
+  // before it ever reached the provider. Production symptom: the employee typed
+  // a reply, the UI accepted it, and the customer never received it.
+  const { confirmReplyStillOwned } = await import('../src/services/manualReplies.js');
+  const AUTH = {
+    tenantId: t1.id, userId: admin.id, tenantWide: true, brandIds: [],
+    canReplyAny: true, canReplyOwn: true
+  };
+  const ownConv = (await q(
+    `INSERT INTO conversations (tenant_id, channel_id, external_key, state, assigned_user_id)
+     VALUES ($1,$2,'psid-owned','ASSIGNED',$3) RETURNING id`, [t1.id, ch1.id, admin.id])).rows[0];
+
+  // THE MECHANISM: what the raw query actually puts on the JS side.
+  const raw = await q(
+    `SELECT (SELECT count(*) FROM messages m
+              WHERE m.tenant_id=$1 AND m.conversation_id=$2
+                AND m.direction='outbound' AND m.idempotency_key=$3) AS still_mine`,
+    [t1.id, ownConv.id, 'idem-owned-1']);
+  check('an uncast count() reaches JS as a STRING (why !== 1 always failed)',
+    typeof raw.rows[0].still_mine === 'string', `typeof=${typeof raw.rows[0].still_mine}`);
+
+  // Before the row exists the recheck must still refuse.
+  const tooEarly = await confirmReplyStillOwned({
+    authority: AUTH, conversationId: ownConv.id, idempotencyKey: 'idem-owned-1', db: { query: q }
+  });
+  eq('with no matching row the recheck refuses', tooEarly.ok, false);
+
+  await q(`INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, text,
+                                   provider_message_id, idempotency_key, delivery_status)
+           VALUES ($1,$2,'outbound','employee','hi','idem:owned-1','idem-owned-1','pending')`,
+    [t1.id, ownConv.id]);
+
+  // THE REGRESSION: our own, freshly claimed reply must pass.
+  const mine = await confirmReplyStillOwned({
+    authority: AUTH, conversationId: ownConv.id, idempotencyKey: 'idem-owned-1', db: { query: q }
+  });
+  eq('a genuinely owned reply PASSES the recheck', mine.ok, true);
+  check('and reports the real reason instead of a blanket state change',
+    mine.ok === true || mine.reason !== 'state_changed', `reason=${mine.reason}`);
+
+  // The guard must still actually guard.
+  const staleKey = await confirmReplyStillOwned({
+    authority: AUTH, conversationId: ownConv.id, idempotencyKey: 'idem-someone-else', db: { query: q }
+  });
+  eq('a key we do not own is still refused', staleKey.ok, false);
+  eq('and still reports state_changed', staleKey.reason, 'state_changed');
+
+  const otherTenant = await confirmReplyStillOwned({
+    authority: { ...AUTH, tenantId: t2.id }, conversationId: ownConv.id,
+    idempotencyKey: 'idem-owned-1', db: { query: q }
+  });
+  eq("another company's row is still refused", otherTenant.ok, false);
+
+  // Repo-wide guard so this class of bug cannot come back anywhere in src/.
+  const srcDir = join(REPO, 'src');
+  const offenders = [];
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!e.name.endsWith('.js')) continue;
+      const text = readFileSync(p, 'utf8');
+      for (const m of text.matchAll(/count\(\*\)[^;]{0,240}?\)\s*AS\s+(\w+)/gi)) {
+        if (!/::\s*(int|int4|integer)/i.test(m[0])) {
+          offenders.push(`${p.replace(REPO, '')} -> ${m[1]}`);
+        }
+      }
+    }
+  };
+  walk(srcDir);
+  eq('no uncast count(*) alias exists anywhere in src/', offenders.length, 0);
+  if (offenders.length) console.log('    offenders:', offenders.join(', '));
+
+  section('16 rollback');
   await q(`DROP INDEX IF EXISTS idx_messages_reply_idempotency`);
   await q(`ALTER TABLE messages DROP COLUMN IF EXISTS idempotency_key`);
   const after = await q(`SELECT count(*)::int n FROM information_schema.columns

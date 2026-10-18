@@ -61,7 +61,7 @@ export function createConversationsRouter({ pool, auditFn, deps = {} }) {
               c.assigned_user_id, c.priority, c.resolved_at,
               cu.display_name AS customer_name,
               ch.provider, ch.status AS channel_status,
-              (SELECT count(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+              (SELECT count(*) FROM messages m WHERE m.conversation_id = c.id)::int AS message_count,
               (SELECT text FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_text,
               (SELECT created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message_at_ts
          FROM conversations c

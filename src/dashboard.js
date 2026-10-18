@@ -214,7 +214,7 @@ dashboardRouter.get('/dashboard/api/conversations', requireAuth, async (req, res
   const { rows } = await pool.query(
     `SELECT c.id, c.state, c.last_message_at, c.language, c.priority,
             cu.display_name AS customer_name, ch.provider,
-            (SELECT count(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+            (SELECT count(*) FROM messages m WHERE m.conversation_id = c.id)::int AS message_count,
             (SELECT text FROM messages m WHERE m.conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_text
      FROM conversations c
      LEFT JOIN customers cu ON cu.id = c.customer_id
