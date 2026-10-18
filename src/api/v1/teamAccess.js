@@ -10,6 +10,10 @@
  * Nothing here grants a role, a brand or a privilege. Brand access keeps its
  * existing, separately-ability-gated routes; this file only adds departments
  * and the read model that explains effective access.
+ *
+ * Responses are wrapped in `{ data: ... }` like every other /api/v1 router.
+ * Returning bare `{ teams }` would make `api.get('/teams')` resolve to
+ * `undefined` in the web client, because that helper reads `payload.data`.
  */
 
 import express from 'express';
@@ -99,7 +103,7 @@ export function createTeamAccessRouter() {
     const { tenantId } = ctx;
     try {
       const teams = await listTeams({ tenantId, db: req.db });
-      return res.json({ teams });
+      return res.json({ data: { teams } });
     } catch (e) { return fail(res, e); }
   });
 
@@ -116,7 +120,7 @@ export function createTeamAccessRouter() {
     try {
       const people = await listEffectivePermissions({ tenantId, brandId, db: req.db });
       const warnings = people.filter((p) => p.warnings.length > 0);
-      return res.json({ people, warning_count: warnings.length });
+      return res.json({ data: { people, warning_count: warnings.length } });
     } catch (e) { return fail(res, e); }
   });
 
@@ -127,7 +131,7 @@ export function createTeamAccessRouter() {
     try {
       uuidOr404(req.params.teamId);
       const members = await listTeamMembers({ tenantId, teamId: req.params.teamId, db: req.db });
-      return res.json({ members });
+      return res.json({ data: { members } });
     } catch (e) { return fail(res, e); }
   });
 
@@ -144,7 +148,7 @@ export function createTeamAccessRouter() {
         brandId: req.body?.brandId ?? null,
         db: req.db
       });
-      return res.status(201).json({ team });
+      return res.status(201).json({ data: { team } });
     } catch (e) { return fail(res, e); }
   });
 
@@ -161,7 +165,7 @@ export function createTeamAccessRouter() {
         name: req.body?.name, status: req.body?.status, brandId: req.body?.brandId,
         db: req.db
       });
-      return res.json({ team });
+      return res.json({ data: { team } });
     } catch (e) { return fail(res, e); }
   });
 
@@ -179,7 +183,7 @@ export function createTeamAccessRouter() {
         roleInTeam: typeof req.body?.roleInTeam === 'string' ? req.body.roleInTeam : 'agent',
         db: req.db
       });
-      return res.status(201).json({ member });
+      return res.status(201).json({ data: { member } });
     } catch (e) { return fail(res, e); }
   });
 
@@ -193,7 +197,7 @@ export function createTeamAccessRouter() {
       const member = await removeTeamMember({
         tenantId, actorUserId, teamId: req.params.teamId, userId: req.params.userId, db: req.db
       });
-      return res.json({ member });
+      return res.json({ data: { member } });
     } catch (e) { return fail(res, e); }
   });
 

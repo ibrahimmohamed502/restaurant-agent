@@ -19,6 +19,7 @@ import {
   Shield,
   Tags,
   Users,
+  UsersRound,
   X
 } from 'lucide-react';
 import { NAV_ITEMS } from '@/lib/navigation';
@@ -29,6 +30,7 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   'layout-dashboard': LayoutDashboard,
   inbox: Inbox,
   users: Users,
+  'users-round': UsersRound,
   'building-2': Building2,
   tags: Tags,
   radio: Radio,

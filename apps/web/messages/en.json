@@ -32,7 +32,8 @@
     "team": "Team & Access",
     "integrations": "Integrations",
     "audit": "Audit Logs",
-    "settings": "Settings"
+    "settings": "Settings",
+    "teams": "Departments"
   },
   "navGroups": {
     "overview": "Overview",
@@ -615,6 +616,102 @@
     },
     "delete": "Delete",
     "confirmDelete": "Permanently delete \"{name}\" ({email})? This removes the account and all their sessions. This cannot be undone."
+  },
+  "teams": {
+    "nav": "Departments",
+    "title": "Departments & eligibility",
+    "description": "Group people into departments, then see who can actually take a conversation.",
+    "tabs": {
+      "departments": "Departments",
+      "eligibility": "Who can take work"
+    },
+    "team": {
+      "members": "Members",
+      "noMembers": "No members yet",
+      "addMember": "Add someone",
+      "removeMember": "Remove from department",
+      "confirmRemove": "Remove {name} from {team}?",
+      "confirmRemoveBody": "They keep their account, their roles and their brand access. Removing them only changes which department they belong to.",
+      "roleInTeam": "Role in department",
+      "roleInTeamHint": "Only used to break ties when several people are equally free. It grants nothing.",
+      "chooseDepartment": "Choose a department",
+      "choosePerson": "Choose a person",
+      "noCandidates": "Everyone in this company is already in that department.",
+      "teamFull": "This department is disabled. Enable it before adding people.",
+      "membership": "memberships",
+      "emptyRoster": "This department has nobody in it yet. Nobody can be assigned its conversations until it does."
+    },
+    "create": {
+      "title": "New department",
+      "name": "Name",
+      "nameHint": "Letters, digits and spaces. \"Marketing\" and \"marketing\" are the same department.",
+      "brand": "Limit to a brand",
+      "brandAny": "Any brand",
+      "brandHint": "Optional. Restricts this department to one brand's conversations.",
+      "submit": "Create"
+    },
+    "rename": {
+      "title": "Rename department"
+    },
+    "status": {
+      "active": "Active",
+      "disabled": "Disabled",
+      "disable": "Disable",
+      "enable": "Enable",
+      "confirmDisable": "Disable {name}?",
+      "confirmDisableBody": "Nobody new can be assigned to it. Existing assignments are left alone.",
+      "confirmEnable": "Re-enable {name}?"
+    },
+    "eligibility": {
+      "title": "Who can take work",
+      "description": "An employee is eligible when they are active, hold a role that can handle conversations, can reach the selected brand, and belong to a department.",
+      "filterBrand": "Evaluate for brand",
+      "filterAny": "All brands",
+      "filterHint": "Changing this only changes who counts as eligible. Everyone is still listed.",
+      "summary": "{eligible} of {total} can take work",
+      "summaryNone": "Nobody can take work yet",
+      "colPerson": "Person",
+      "colRoles": "Roles",
+      "colDepartments": "Departments",
+      "colBrandAccess": "Brand access",
+      "colStatus": "Status",
+      "eligible": "Ready",
+      "notEligible": "Not ready",
+      "allBrands": "All brands",
+      "noBrands": "No brands",
+      "brandCount": "{count} brands",
+      "empty": {
+        "title": "No employees yet",
+        "description": "Once your company has employees they will appear here with what is missing for each of them."
+      },
+      "warnings": {
+        "NO_HANDLING_ROLE": "No role that can handle conversations",
+        "NO_BRAND_ACCESS": "Cannot reach the selected brand",
+        "NO_TEAM": "Not in any department",
+        "INACTIVE": "Account is not active"
+      }
+    },
+    "empty": {
+      "title": "No departments yet",
+      "description": "Create your first department to group people and route their conversations.",
+      "unassigned": "Departments with nobody in them",
+      "unassignedBody": "These exist but are empty, so no conversation can be routed to them. Add someone to each."
+    },
+    "errors": {
+      "title": "Couldn't load departments",
+      "description": "Something went wrong while fetching your departments.",
+      "unauthorizedTitle": "Please sign in",
+      "unauthorizedDescription": "Your session has expired. Sign in again to continue.",
+      "forbiddenTitle": "You don't have access",
+      "forbiddenDescription": "Your role doesn't include permission to view departments. Ask a company administrator.",
+      "noScopeTitle": "No company selected",
+      "noScopeDescription": "Your session isn't attached to a company, so there are no departments to show.",
+      "nameTaken": "A department with that name already exists in this company.",
+      "nameInvalid": "That name can't be used. Use letters, digits and spaces.",
+      "alreadyMember": "That person is already in this department.",
+      "selfRemoval": "You can't remove yourself from a department.",
+      "generic": "Something went wrong. Try again."
+    }
   },
   "command": {
     "title": "Quick navigation",

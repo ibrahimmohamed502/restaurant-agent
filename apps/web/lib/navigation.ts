@@ -17,6 +17,10 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'ai', href: '/ai', icon: 'sparkles', group: 'configuration' },
   { key: 'knowledge', href: '/knowledge', icon: 'book-open', group: 'configuration' },
   { key: 'team', href: '/team', icon: 'shield', group: 'configuration' },
+  // Departments. Deliberately adjacent to /team so the relationship is obvious,
+  // and deliberately distinct: /team manages ACCOUNTS and roles, /teams manages
+  // DEPARTMENT MEMBERSHIP and eligibility. Different jobs, different abilities.
+  { key: 'teams', href: '/teams', icon: 'users-round', group: 'configuration' },
   { key: 'integrations', href: '/integrations', icon: 'plug', group: 'configuration' },
   { key: 'audit', href: '/audit', icon: 'scroll-text', group: 'configuration', superAdminOnly: true },
   { key: 'settings', href: '/settings', icon: 'settings', group: 'configuration' }

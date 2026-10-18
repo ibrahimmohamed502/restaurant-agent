@@ -8,6 +8,9 @@ CSRF pair** — cookie `csrf_token` echoed in header `x-csrf-token`. Mutations a
 `POST`, `PATCH`, `DELETE`. `GET` needs no token.
 
 Errors are always `{ "error": { "code": "...", "message": "..." } }`.
+Success is always `{ "data": ... }` — the same envelope every other `/api/v1`
+router uses. `apps/web/lib/api.ts` reads `payload.data`, so an unwrapped body
+resolves to `undefined` on the client. Use `api.get()` / `api.post()` normally.
 The `code` is stable and is what the UI should branch on. **The `message` is
 English-only and deliberately non-specific** — it must not be used to build
 "why did this fail" copy for an administrator, because several distinct
@@ -32,7 +35,7 @@ enumerate what exists.
 
 ### GET /teams
 ```json
-{ "teams": [ { "id": "uuid", "name": "Marketing", "status": "active", "brand_id": null } ] }
+{ "data": { "teams": [ { "id": "uuid", "name": "Marketing", "status": "active", "brand_id": null } ] } }
 ```
 `status` is `active` | `disabled`. `brand_id` is null when the team is not
 pinned to one brand.
@@ -44,18 +47,20 @@ the existence of people.
 
 ```json
 {
-  "people": [{
-    "id": "uuid",
-    "name": "...", "email": "...", "status": "active",
-    "roles": ["Agent"],
-    "teams": [{ "id": "uuid", "name": "Marketing", "role_in_team": "agent" }],
-    "all_brands": false,
-    "brand_ids": ["uuid"],
-    "has_handling_role": true,
-    "assignment_eligible": false,
-    "warnings": ["NO_BRAND_ACCESS"]
-  }],
-  "warning_count": 3
+  "data": {
+    "people": [{
+      "id": "uuid",
+      "name": "...", "email": "...", "status": "active",
+      "roles": ["Agent"],
+      "teams": [{ "id": "uuid", "name": "Marketing", "role_in_team": "agent" }],
+      "all_brands": false,
+      "brand_ids": ["uuid"],
+      "has_handling_role": true,
+      "assignment_eligible": false,
+      "warnings": ["NO_BRAND_ACCESS"]
+    }],
+    "warning_count": 3
+  }
 }
 ```
 
@@ -73,20 +78,20 @@ Suggested copy (ar / en) — this is the UI's job, the server will not do it:
 - `INACTIVE` — account is not active
 
 ### POST /teams
-Body `{ "name": "Marketing", "brandId": null }` → 201 `{ "team": {...} }`.
+Body `{ "name": "Marketing", "brandId": null }` → 201 `{ "data": { "team": {...} } }`.
 Names are trimmed, internal whitespace collapsed, original casing preserved.
 **Case-insensitively unique within the company** — `marketing` is refused with
 409 when `Marketing` exists, and the stored name keeps its original casing. The
 same name in a *different* company is fine.
 
 ### POST /teams/:teamId/members
-Body `{ "userId": "uuid", "roleInTeam": "agent" }` → 201 `{ "member": {...} }`.
+Body `{ "userId": "uuid", "roleInTeam": "agent" }` → 201 `{ "data": { "member": {...} } }`.
 `roleInTeam` is free text, defaults to `"agent"`. It is **display metadata for
 load-balancing tie-breaks only** — it grants nothing. A team may not be
 disabled.
 
 ### DELETE /teams/:teamId/members/:userId
-Returns `{ "member": {...} }`. This is a **soft revoke**: the row is preserved
+Returns `{ "data": { "member": {...} } }`. This is a **soft revoke**: the row is preserved
 with `revoked_at` set, so re-adding the same person revives the original row
 and its `role_in_team`. Nothing is deleted, so team history stays intact.
 

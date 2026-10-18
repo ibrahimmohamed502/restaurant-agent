@@ -568,6 +568,26 @@ try {
     eq('but may not create one',
       (await send(reader.base, a3, 'POST', '/teams', { name: 'Nope' })).status, 403);
 
+    // The envelope. Every other /api/v1 router returns `{ data: ... }` and the
+    // web client's request() reads `payload.data`. These routes returned bare
+    // `{ teams }` at first, so the UI resolved every call to `undefined` - and
+    // because the service layer was green throughout, no backend test saw it.
+    const list = await send(reader.base, a3, 'GET', '/teams');
+    check('success bodies are wrapped in { data }', Array.isArray(list.body?.data?.teams),
+      JSON.stringify(Object.keys(list.body ?? {})));
+    check('and nothing leaks outside it', list.body?.teams === undefined,
+      JSON.stringify(Object.keys(list.body ?? {})));
+    const perms = await send(reader.base, a3, 'GET', '/teams/permissions');
+    check('the permissions read model is wrapped too', Array.isArray(perms.body?.data?.people),
+      JSON.stringify(Object.keys(perms.body ?? {})));
+    check('and carries warning_count', typeof perms.body?.data?.warning_count === 'number');
+    const roster = await send(reader.base, a3, 'GET', `/teams/${teamId}/members`);
+    check('the roster is wrapped', Array.isArray(roster.body?.data?.members),
+      JSON.stringify(Object.keys(roster.body ?? {})));
+    const err = await send(reader.base, a3, 'POST', '/teams', { name: '   ' });
+    check('errors are NOT wrapped - they keep { error }', !!err.body?.error?.code,
+      JSON.stringify(err.body));
+
     for (const s of [updater, disabler, reader]) s.s.close();
     await pool.end();
   }
