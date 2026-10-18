@@ -276,6 +276,17 @@ try {
   check('an agent in a team with brand access is ELIGIBLE',
     byEmail['agent@t.local'].assignment_eligible === true, JSON.stringify(byEmail['agent@t.local'].warnings));
   eq('and is not warned', byEmail['agent@t.local'].warnings, []);
+  // The read model must hand the UI the team's id, not just its name. The UI
+  // filters each department's roster with `p.teams.some(x => x.id === teamId)`;
+  // if teams[] held names, that filter is `undefined === id` and every card
+  // shows zero members - which is exactly what happened on the first deploy.
+  eq('and the team reference carries its id, not just its name',
+    byEmail['agent@t.local'].teams[0]?.id, marketing.id);
+  // The team was renamed to "Growth Marketing" in section 3, so the read model
+  // must reflect the rename - not the original name - or the card would show a
+  // stale label after a rename.
+  eq('and its name reflects the rename', byEmail['agent@t.local'].teams[0]?.name, 'Growth Marketing');
+  eq('and the role in it', byEmail['agent@t.local'].teams[0]?.role_in_team, 'agent');
 
   // `other` holds Supervisor, which IS a handling role, so the only thing wrong
   // with them is brand access. Asserting they lacked a handling role was simply
