@@ -653,7 +653,11 @@ console.log('\n--- 3g. REPLY_IN_FLIGHT guard and provider_ts dispatch timestamp 
       tenantId: tenant.id, messageId: id, deliveryStatus: 'failed', errorCategory: 'meta_rate_limit'
     });
     const { rows: [after] } = await pool.query(`SELECT provider_ts FROM messages WHERE id = $1`, [id]);
-    check('provider_ts is preserved on subsequent update', before?.provider_ts === after?.provider_ts,
+    // Compare by VALUE: node-postgres returns timestamptz as a fresh Date per
+    // query, so two Date objects are never === even when identical.
+    const beforeMs = before?.provider_ts === null ? null : before?.provider_ts?.getTime();
+    const afterMs = after?.provider_ts === null ? null : after?.provider_ts?.getTime();
+    check('provider_ts is preserved on subsequent update', beforeMs !== null && beforeMs === afterMs,
       `before=${before?.provider_ts} after=${after?.provider_ts}`);
   }
 
