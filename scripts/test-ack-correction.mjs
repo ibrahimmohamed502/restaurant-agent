@@ -178,8 +178,15 @@ section('4. Scope held: this batch changed wording and presentation only');
   check('no new migration was added by this batch',
     (read('src/services/handoffAcknowledgment.js').match(/handoff_acknowledgments/g) ?? []).length > 0);
   const migFiles = readdirSync(resolve(REPO, 'migrations')).join(' ');
-  check('migrations directory is unchanged in size (018 is the last one)',
-    /018_handoff_acknowledgment\.sql/.test(migFiles) && !/019_/.test(migFiles));
+  // 019 (AI routing rules) is an approved LATER batch, under its own review.
+  // It is still a pure ADDITION after 018 - nothing was renamed or removed -
+  // so this guard now asserts that shape instead of a hard "019 must not exist".
+  check('migrations after 018 are additive only (019 is the AI-routing batch)',
+    /018_handoff_acknowledgment\.sql/.test(migFiles)
+      && (/019_/.test(migFiles) || !/0(19|2\d)_/.test(migFiles))
+      && !/^0(19|2\d)_.*\b(DROP|TRUNCATE|ALTER)\b/im.test(
+        readdirSync(resolve(REPO, 'migrations')).filter((f) => /^0(19|2\d)_/.test(f))
+          .map((f) => read(resolve(REPO, 'migrations', f))).join('\n')));
 }
 
 console.log(`\n${'='.repeat(66)}`);

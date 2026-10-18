@@ -284,10 +284,14 @@ section('9. P0.3-A/B behaviour is preserved');
     migFiles.includes('016_manual_reply_idempotency.sql'));
   // 014 is intentionally absent from this repository (taken on an unreleased
   // branch), so the count is not a simple index. Assert the set, not the number.
-  check('no migration was added other than 017 (this batch) and 018 (P0.3-C)',
+  // 019 (AI routing rules) is an approved LATER batch, added under its own
+  // review. It is still an additive table-only migration and is listed here so
+  // this guard keeps refusing anything that was never approved.
+  check('no migration was added other than 017 (this batch), 018 (P0.3-C) and 019 (AI routing)',
     migFiles.filter((f) => /^01[4-9]_/.test(f)).join(',')
       === '015_brand_access_grants.sql,016_manual_reply_idempotency.sql,'
-        + '017_escalation_resolve_ability.sql,018_handoff_acknowledgment.sql',
+        + '017_escalation_resolve_ability.sql,018_handoff_acknowledgment.sql,'
+        + '019_ai_routing_rules.sql',
     migFiles.filter((f) => /^01[4-9]_/.test(f)).join(','));
   check('the new migration is additive: it creates a table reference only through roles',
     !/CREATE TABLE/i.test(MIG17_EXEC));
