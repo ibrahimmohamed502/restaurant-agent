@@ -39,11 +39,12 @@ import { Table, TableHeader, TableBody, TableRow, TableCell, TableHead } from '@
 import { ErrorState, EmptyState, PageLoading } from '@/components/ui/states';
 import {
   teamsApi, describeError,
-  type Team, type TeamMember, type EffectivePermission, type BrandOption, type EligibilityWarning
+  type Team, type EffectivePermission, type BrandOption, type EligibilityWarning
 } from '@/lib/teams-api';
 
 type Tab = 'departments' | 'eligibility';
 type LoadState = 'loading' | 'ready' | 'unauthorized' | 'forbidden' | 'noScope' | 'error';
+type TeamAbility = 'team.read' | 'team.create' | 'team.update' | 'team.disable' | 'team.assign';
 
 export default function TeamsPage() {
   const t = useTranslations('teams');
@@ -56,9 +57,14 @@ export default function TeamsPage() {
   const [people, setPeople] = React.useState<EffectivePermission[] | null>(null);
   const [brands, setBrands] = React.useState<BrandOption[]>([]);
   const [brandFilter, setBrandFilter] = React.useState<string>('');
+  /**
+   * What this person may actually do. Empty until the answer arrives, and the
+   * write controls stay disabled until then - flashing an enabled button that
+   * the server will refuse is worse than a brief disabled state.
+   */
+  const [can, setCan] = React.useState<TeamAbility[]>([]);
 
   const [state, setState] = React.useState<LoadState>('loading');
-  const [roster, setRoster] = React.useState<Record<string, TeamMember[]>>({});
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
@@ -71,6 +77,7 @@ export default function TeamsPage() {
   const [roleInTeam, setRoleInTeam] = React.useState('agent');
   const [renaming, setRenaming] = React.useState<Team | null>(null);
   const [renameValue, setRenameValue] = React.useState('');
+  const [removing, setRemoving] = React.useState<{ team: Team; person: EffectivePermission } | null>(null);
 
   const loadTeams = React.useCallback(async () => {
     try {
@@ -99,17 +106,31 @@ export default function TeamsPage() {
   React.useEffect(() => {
     teamsApi.brands().then(setBrands).catch(() => setBrands([]));
   }, []);
-
-  const loadRoster = React.useCallback(async (teamId: string) => {
-    // The await must be OUTSIDE the state updater: updaters run during render
-    // and must be pure, so an await inside one is both a type error and a bug.
-    try {
-      const members = await teamsApi.members(teamId);
-      setRoster((r) => ({ ...r, [teamId]: members }));
-    } catch {
-      setRoster((r) => ({ ...r, [teamId]: [] }));
-    }
+  React.useEffect(() => {
+    // A failure here must NOT flip the page into its error state: the list may
+    // still be perfectly readable, we would simply have to show every control
+    // and let the server refuse. Losing the whole screen over a missing hint
+    // would be the wrong trade.
+    teamsApi.capabilities().then(setCan).catch(() => setCan([]));
   }, []);
+
+  const allowed = React.useCallback(
+    (a: TeamAbility) => can.includes(a),
+    [can]
+  );
+
+  /**
+   * Who is in a team, derived from the permissions read model.
+   *
+   * That endpoint already lists every employee together with the departments
+   * they belong to, so a separate roster request per team would be N extra
+   * round trips to learn something already in hand - and two sources that could
+   * disagree. One request, one truth.
+   */
+  const membersOf = React.useCallback(
+    (teamId: string) => (people ?? []).filter((p) => p.teams.some((x) => x.id === teamId)),
+    [people]
+  );
 
   /** Runs a mutation, surfacing the server's refusal instead of hiding it. */
   const run = async (fn: () => Promise<unknown>) => {
@@ -160,7 +181,7 @@ export default function TeamsPage() {
         title={t('title')}
         description={t('description')}
         actions={
-          tab === 'departments' ? (
+          tab === 'departments' && allowed('team.create') ? (
             <Button onClick={() => { setName(''); setNewBrand(''); setCreateOpen(true); }} disabled={busy}>
               <Plus className="size-4" /> {t('create.submit')}
             </Button>
@@ -199,16 +220,15 @@ export default function TeamsPage() {
             <>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {teams?.map((team) => {
-                  const members = roster[team.id];
-                  const loaded = members !== undefined;
-                  const isEmpty = loaded && members.length === 0;
+                  const members = membersOf(team.id);
+                  const isEmpty = members.length === 0;
                   return (
                     <Card key={team.id}>
                       <CardHeader className="flex-row items-start justify-between space-y-0">
                         <div className="min-w-0">
                           <CardTitle className="truncate">{team.name}</CardTitle>
                           <p className="mt-1 text-xs text-muted-foreground">
-                            {loaded ? `${members.length} ${t('team.membership')}` : tc('loading')}
+                            {people ? `${members.length} ${t('team.membership')}` : tc('loading')}
                           </p>
                         </div>
                         <Badge variant={team.status === 'active' ? 'success' : 'neutral'}>
@@ -221,23 +241,44 @@ export default function TeamsPage() {
                             {t('team.emptyRoster')}
                           </p>
                         )}
+                        {/* The roster. Members are removed from here so the
+                            person is always visible before the confirmation -
+                            never a hidden id. */}
+                        {members.length > 0 && (
+                          <ul className="space-y-1.5">
+                            {members.map((m) => (
+                              <li key={m.id}
+                                className="flex items-center justify-between gap-2 rounded-md border border-border px-2 py-1.5">
+                                <span className="min-w-0 truncate text-sm">{m.name ?? m.email}</span>
+                                <Button size="sm" variant="ghost"
+                                  aria-label={t('team.removeMember')}
+                                  onClick={() => setRemoving({ team, person: m })}
+                                  disabled={busy || !allowed('team.assign')}>
+                                  <Trash2 className="size-3.5" />
+                                </Button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
                         <div className="flex flex-wrap gap-2">
                           <Button size="sm" variant="secondary"
                             onClick={() => { setRenaming(team); setRenameValue(team.name); }}
-                            disabled={busy}>
+                            disabled={busy || !allowed('team.update')}>
                             <Edit2 className="size-3.5" /> {tc('edit')}
                           </Button>
                           <Button size="sm" variant="secondary"
-                            onClick={() => { setMemberFor(team); setCandidate(''); void loadRoster(team.id); }}
-                            disabled={busy || team.status !== 'active'}>
+                            onClick={() => { setMemberFor(team); setCandidate(''); }}
+                            disabled={busy || team.status !== 'active' || !allowed('team.assign')}>
                             <Users className="size-3.5" /> {t('team.addMember')}
                           </Button>
+                          {/* Separate abilities: someone who may rename a team
+                              does not thereby gain the power to disable it. */}
                           <Button size="sm" variant="ghost"
                             onClick={() => void run(async () => {
                               await teamsApi.setStatus(team.id, team.status === 'active' ? 'disabled' : 'active');
                               await loadTeams();
                             })}
-                            disabled={busy}>
+                            disabled={busy || !allowed('team.disable')}>
                             {team.status === 'active' ? t('status.disable') : t('status.enable')}
                           </Button>
                         </div>
@@ -246,20 +287,6 @@ export default function TeamsPage() {
                   );
                 })}
               </div>
-
-              {/* The state production is actually in: teams that exist but hold nobody. */}
-              {teams && teams.length > 0 && Object.keys(roster).length === 0 && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2 text-sm">
-                      <Building2 className="size-4" /> {t('empty.unassigned')}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-sm text-muted-foreground">{t('empty.unassignedBody')}</p>
-                  </CardContent>
-                </Card>
-              )}
             </>
           )}
         </>
@@ -380,13 +407,17 @@ export default function TeamsPage() {
                   .filter((p) => !p.teams.some((x) => x.id === memberFor?.id))
                   .map((p) => <option key={p.id} value={p.id}>{p.name ?? p.email}</option>)}
               </select>
-              {memberFor && roster[memberFor.id]?.length === 0 && (
+              {memberFor && membersOf(memberFor.id).length === 0 && (
                 <p className="text-xs text-muted-foreground">{t('team.emptyRoster')}</p>
+              )}
+              {memberFor && (people ?? []).every((p) => p.teams.some((x) => x.id === memberFor.id)) && (
+                <p className="text-xs text-muted-foreground">{t('team.noCandidates')}</p>
               )}
             </div>
             <div className="space-y-1">
               <Label htmlFor="role-in-team">{t('team.roleInTeam')}</Label>
               <Input id="role-in-team" value={roleInTeam} onChange={(e) => setRoleInTeam(e.target.value)} />
+              <p className="text-xs text-muted-foreground">{t('team.roleInTeamHint')}</p>
             </div>
           </div>
           <DialogFooter>
@@ -394,11 +425,42 @@ export default function TeamsPage() {
             <Button disabled={busy || !candidate} onClick={() => void run(async () => {
               if (memberFor) {
                 await teamsApi.addMember(memberFor.id, candidate, roleInTeam);
-                await loadRoster(memberFor.id);
                 await loadPeople(brandFilter);
               }
               setMemberFor(null);
             })}>{tc('confirm')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Removal is confirmed, names and all. A destructive action reached by a
+          hidden id is how the wrong person gets removed. */}
+      <Dialog open={!!removing} onOpenChange={(o) => !o && setRemoving(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {t('team.confirmRemove', {
+                name: removing?.person.name ?? removing?.person.email ?? '',
+                team: removing?.team.name ?? ''
+              })}
+            </DialogTitle>
+            <DialogDescription>{t('team.confirmRemoveBody')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setRemoving(null)}>{tc('cancel')}</Button>
+            <Button variant="destructive" disabled={busy}
+              onClick={() => void run(async () => {
+                if (removing) {
+                  await teamsApi.removeMember(removing.team.id, removing.person.id);
+                  // Membership and eligibility are the same decision, so both
+                  // are refreshed: removing somebody who was the last eligible
+                  // member must visibly change their readiness.
+                  await loadPeople(brandFilter);
+                }
+                setRemoving(null);
+              })}>
+              {busy && <Loader2 className="size-4 animate-spin" />} {t('team.removeMember')}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

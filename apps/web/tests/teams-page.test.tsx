@@ -77,6 +77,70 @@ describe('teams i18n (EN/AR)', () => {
   });
 });
 
+describe('capabilities drive the controls, the server still enforces them', () => {
+  it('asks the server what the caller may do', () => {
+    expect(pageCode).toContain('teamsApi.capabilities()');
+    expect(apiCode).toContain("'/teams/capabilities'");
+  });
+
+  it('gates each write control on its OWN ability', () => {
+    // Renaming and disabling are separate abilities. One combined check would
+    // hide the disable button from someone entitled to it - the UI mirror of the
+    // backend bug that let update-only callers disable a team.
+    expect(pageCode).toContain("allowed('team.create')");
+    expect(pageCode).toContain("allowed('team.update')");
+    expect(pageCode).toContain("allowed('team.disable')");
+    expect(pageCode).toContain("allowed('team.assign')");
+  });
+
+  it('never treats having capabilities as being allowed to skip the server', () => {
+    // The list is presentation only. Every mutation must still go through the
+    // API, and there must be no branch that mutates local state on the strength
+    // of `can` alone.
+    expect(pageCode).not.toMatch(/if\s*\(\s*can\.length\s*\)\s*\{?\s*(set|await)/);
+    expect(pageCode).toContain('teamsApi.rename(');
+    expect(pageCode).toContain('teamsApi.setStatus(');
+    expect(pageCode).toContain('teamsApi.addMember(');
+    expect(pageCode).toContain('teamsApi.removeMember(');
+  });
+
+  it('degrades to showing everything when capabilities cannot be read', () => {
+    // A failed hint must not blank the screen: the catch sets an empty list,
+    // which disables the buttons and still leaves the page readable.
+    expect(pageCode).toMatch(/capabilities\(\)[\s\S]{0,80}\.catch\(\(\)\s*=>\s*setCan\(\[\]\)\)/);
+  });
+});
+
+describe('removing a member', () => {
+  it('shows who is in the team before offering to remove them', () => {
+    expect(pageCode).toContain('membersOf');
+    expect(pageCode).toContain('t(\'team.removeMember\')');
+  });
+
+  it('confirms, naming both the person and the team', () => {
+    expect(pageCode).toContain("t('team.confirmRemove'");
+    expect(pageCode).toContain('removing?.person.name');
+    expect(pageCode).toContain('removing?.team.name');
+  });
+
+  it('refreshes eligibility afterwards, not just the roster', () => {
+    // Removing the last eligible member must visibly change their readiness.
+    // Refreshing only the roster would leave the answer stale.
+    const after = pageCode.slice(pageCode.indexOf('removeMember('));
+    expect(after).toContain('loadPeople(');
+  });
+
+  it('uses the destructive style so the action reads as destructive', () => {
+    expect(pageCode).toMatch(/Button variant="destructive"[\s\S]{0,200}removeMember/);
+  });
+
+  it('derives the roster instead of asking once per team', () => {
+    // N extra round trips to learn something the permissions read model already
+    // returned - and a second source that could disagree with the first.
+    expect(pageCode).not.toContain('teamsApi.members(');
+  });
+});
+
 describe('the page keeps /team and /teams apart', () => {
   it('registers /teams separately from /team in the sidebar', () => {
     expect(navSrc).toContain("href: '/team'");

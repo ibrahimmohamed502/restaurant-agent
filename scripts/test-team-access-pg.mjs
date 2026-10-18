@@ -503,12 +503,12 @@ try {
     // adding them to ROLE_ABILITIES would put fake permissions into production.
     // A session carrying `customAbilities` is the supported way to express
     // "this person holds exactly this and nothing more".
-    const appFor = (roles, customAbilities = []) => {
+    const appFor = (roles, customAbilities = [], tenantId = t1.id) => {
       const app = express();
       const router = createApiV1Router({
         pool,
         validateSessionFn: async () => ({
-          tenantId: t1.id, user: { id: admin, email: 'admin@t.local', name: 'A' },
+          tenantId, user: { id: admin, email: 'admin@t.local', name: 'A' },
           roles, customAbilities
         }),
         verifyPasswordFn: async () => false,
@@ -590,6 +590,227 @@ try {
 
     for (const s of [updater, disabler, reader]) s.s.close();
     await pool.end();
+  }
+
+  section('15 capabilities tell the caller what it may do, and nothing more');
+  {
+    const express = (await import('express')).default;
+    const { createApiV1Router } = await import('../src/api/v1/index.js');
+    const pool = new pg.Pool({ connectionString: url, max: 4 });
+
+    const appFor = (roles, customAbilities = [], tenantId = t1.id) => {
+      const app = express();
+      const router = createApiV1Router({
+        pool,
+        validateSessionFn: async () => ({
+          tenantId, user: { id: admin, email: 'admin@t.local', name: 'A' },
+          roles, customAbilities
+        }),
+        verifyPasswordFn: async () => false,
+        createSessionFn: async () => ({ token: 'x', expiresAt: new Date(Date.now() + 60000) }),
+        revokeSessionFn: async () => {},
+        lockedSecondsFn: async () => 0,
+        recordFailedLoginFn: async () => {},
+        resetLoginAttemptsFn: async () => {}
+      });
+      app.use(express.json());
+      app.use('/api/v1', router);
+      return new Promise((r) => {
+        const s = app.listen(0, '127.0.0.1', () =>
+          r({ s, base: `http://127.0.0.1:${s.address().port}/api/v1` }));
+      });
+    };
+    const authFor = async (base) => {
+      const r = await fetch(`${base}/_health`);
+      const c = (r.headers.get('set-cookie') || '').match(/csrf_token=[^;]*/)?.[0];
+      return { cookie: `lwc_session=x; ${c}`, csrf: c?.split('=')[1] };
+    };
+    const caps = async (base, auth) => {
+      const r = await fetch(`${base}/teams/capabilities`, { headers: { Cookie: auth.cookie } });
+      return { status: r.status, body: await r.json().catch(() => ({})) };
+    };
+
+    // A Company Admin holds all five.
+    const ca = await appFor(['Company Admin']);
+    const caAuth = await authFor(ca.base);
+    const caCaps = await caps(ca.base, caAuth);
+    eq('a Company Admin is told all five abilities',
+      [...(caCaps.body?.data?.abilities ?? [])].sort(),
+      ['team.assign', 'team.create', 'team.disable', 'team.read', 'team.update']);
+
+    // A Supervisor reads and does nothing else.
+    const sup = await appFor(['Supervisor']);
+    const supAuth = await authFor(sup.base);
+    eq('a Supervisor is told exactly team.read',
+      (await caps(sup.base, supAuth)).body?.data?.abilities, ['team.read']);
+
+    // An Agent holds none - and gets an accurate empty answer, not a 403.
+    const ag = await appFor(['Agent']);
+    const agAuth = await authFor(ag.base);
+    const agCaps = await caps(ag.base, agAuth);
+    eq('an Agent is told nothing rather than refused', agCaps.status, 200);
+    eq('and the answer is empty', agCaps.body?.data?.abilities, []);
+
+    // Custom abilities are honoured, because that is how a real custom role
+    // resolves.
+    const custom = await appFor([], ['team.read', 'team.update']);
+    eq('a custom role carrying two abilities reports exactly those two',
+      (await caps(custom.base, await authFor(custom.base))).body?.data?.abilities,
+      ['team.read', 'team.update']);
+
+    // LEAKAGE. The endpoint must not become a way to read anything else.
+    const leak = await appFor(['Company Admin', 'Platform Super Admin'], ['platform.everything'], t2.id);
+    const leakBody = (await caps(leak.base, await authFor(leak.base))).body?.data;
+    const serialized = JSON.stringify(leakBody ?? {});
+    check('nothing outside the team.* namespace is ever reported',
+      Object.values(leakBody?.abilities ?? {}).every((a) => String(a).startsWith('team.')),
+      serialized);
+    check('a platform-level ability is NOT echoed back',
+      !serialized.includes('platform.everything'), serialized);
+    check('no tenant, brand or user identifier is present',
+      !serialized.includes(t1.id) && !serialized.includes(t2.id)
+      && !serialized.includes(b1.id) && !serialized.includes(admin), serialized);
+    check('role names are not returned either',
+      !('roles' in (leakBody ?? {})) && !serialized.includes('Company Admin'), serialized);
+    check('the ONLY keys returned are abilities', Object.keys(leakBody ?? {}).join(',') === 'abilities',
+      Object.keys(leakBody ?? {}).join(','));
+
+    // The reported capabilities must agree with what the routes actually allow.
+    // A screen that hides a button the server would have permitted is as wrong
+    // as one that shows a button the server will refuse.
+    const half = await appFor([], ['team.update']);
+    const halfAuth = await authFor(half.base);
+    const halfCaps = (await caps(half.base, halfAuth)).body?.data?.abilities ?? [];
+    eq('a half-privileged caller is told only what it has', halfCaps, ['team.update']);
+    const teamId2 = (await q(
+      `INSERT INTO teams (tenant_id,name) VALUES ($1,$2) RETURNING id`, [t1.id, 'Cap Check'])).rows[0].id;
+    const hdr = (auth) => ({ 'Content-Type': 'application/json', Cookie: auth.cookie, 'x-csrf-token': auth.csrf });
+    const renameOk = await fetch(`${half.base}/teams/${teamId2}`, {
+      method: 'PATCH', headers: hdr(halfAuth), body: JSON.stringify({ name: 'Cap Renamed' })
+    });
+    eq('and renaming really is permitted', renameOk.status, 200);
+    const disableDenied = await fetch(`${half.base}/teams/${teamId2}`, {
+      method: 'PATCH', headers: hdr(halfAuth), body: JSON.stringify({ status: 'disabled' })
+    });
+    eq('while disabling really is not', disableDenied.status, 403);
+
+    for (const s of [ca, sup, ag, custom, leak, half]) s.s.close();
+    await pool.end();
+  }
+
+  section('16 removing a member: the three paths that matter');
+  {
+    const express = (await import('express')).default;
+    const { createApiV1Router } = await import('../src/api/v1/index.js');
+    const pool = new pg.Pool({ connectionString: url, max: 4 });
+
+    const appFor = (roles, customAbilities = []) => {
+      const app = express();
+      const router = createApiV1Router({
+        pool,
+        validateSessionFn: async () => ({
+          tenantId: t1.id, user: { id: admin, email: 'admin@t.local', name: 'A' },
+          roles, customAbilities
+        }),
+        verifyPasswordFn: async () => false,
+        createSessionFn: async () => ({ token: 'x', expiresAt: new Date(Date.now() + 60000) }),
+        revokeSessionFn: async () => {},
+        lockedSecondsFn: async () => 0,
+        recordFailedLoginFn: async () => {},
+        resetLoginAttemptsFn: async () => {}
+      });
+      app.use(express.json());
+      app.use('/api/v1', router);
+      return new Promise((r) => {
+        const s = app.listen(0, '127.0.0.1', () =>
+          r({ s, base: `http://127.0.0.1:${s.address().port}/api/v1` }));
+      });
+    };
+    const authFor = async (base) => {
+      const r = await fetch(`${base}/_health`);
+      const c = (r.headers.get('set-cookie') || '').match(/csrf_token=[^;]*/)?.[0];
+      return { cookie: `lwc_session=x; ${c}`, csrf: c?.split('=')[1] };
+    };
+
+    const teamId = (await q(
+      `INSERT INTO teams (tenant_id,name) VALUES ($1,$2) RETURNING id`, [t1.id, 'Removal Check'])).rows[0].id;
+    // tenant_id is stated explicitly: migration 020 requires it on every live
+    // membership, and the service layer always sets it. Bypassing the service is
+    // fine for a fixture, bypassing the constraint is not.
+    await q(`INSERT INTO team_members (team_id,user_id,tenant_id,role_in_team) VALUES ($1,$2,$3,'agent')`,
+      [teamId, agent, t1.id]);
+
+    // 1. SUCCESS - and it is a soft revoke, not a delete.
+    const assigner = await appFor([], ['team.assign']);
+    const a = await authFor(assigner.base);
+    const del = await fetch(`${assigner.base}/teams/${teamId}/members/${agent}`, {
+      method: 'DELETE', headers: { Cookie: a.cookie, 'x-csrf-token': a.csrf }
+    });
+    eq('a holder of team.assign can remove someone', del.status, 200);
+    eq('the response says who', (await del.json())?.data?.member?.user_id, agent);
+    const stillThere = (await q(
+      `SELECT revoked_at FROM team_members WHERE team_id=$1 AND user_id=$2`, [teamId, agent])).rows[0];
+    check('but the ROW is preserved with revoked_at set',
+      Boolean(stillThere) && stillThere.revoked_at !== null, JSON.stringify(stillThere));
+
+    // 2. FORBIDDEN - the caller may read but not assign.
+    const reader = await appFor([], ['team.read']);
+    const r2 = await authFor(reader.base);
+    const denied = await fetch(`${reader.base}/teams/${teamId}/members/${agent}`, {
+      method: 'DELETE', headers: { Cookie: r2.cookie, 'x-csrf-token': r2.csrf }
+    });
+    eq('a read-only caller is REFUSED', denied.status, 403);
+    eq('and the membership is untouched',
+      (await q(`SELECT revoked_at FROM team_members WHERE team_id=$1 AND user_id=$2`,
+        [teamId, agent])).rows[0].revoked_at !== null, true);
+
+    // 3. FAILURE - not a member, and never existed. Both must read the same way,
+    //    so the endpoint cannot be used to discover who is in which team.
+    const notAMember = await fetch(`${assigner.base}/teams/${teamId}/members/${outsider}`, {
+      method: 'DELETE', headers: { Cookie: a.cookie, 'x-csrf-token': a.csrf }
+    });
+    const neverExisted = await fetch(`${assigner.base}/teams/${teamId}/members/${await newId()}`, {
+      method: 'DELETE', headers: { Cookie: a.cookie, 'x-csrf-token': a.csrf }
+    });
+    eq('removing someone who is not a member fails', notAMember.status, 404);
+    eq('removing a user who does not exist fails identically', neverExisted.status, notAMember.status);
+    const cA = (await notAMember.clone().json())?.error?.code;
+    const cB = (await neverExisted.clone().json())?.error?.code;
+    eq('  and with the same code, so membership cannot be probed', cB, cA);
+    eq('  and that code does not distinguish them', cA, 'TEAM_NOT_A_MEMBER');
+
+    // 4. An admin still cannot remove THEMSELVES - even over HTTP.
+    const selfTeam = (await q(
+      `INSERT INTO teams (tenant_id,name) VALUES ($1,$2) RETURNING id`, [t1.id, 'Self Removal'])).rows[0].id;
+    await q(`INSERT INTO team_members (team_id,user_id,tenant_id,role_in_team) VALUES ($1,$2,$3,'agent')`,
+      [selfTeam, admin, t1.id]);
+    const self = await fetch(`${assigner.base}/teams/${selfTeam}/members/${admin}`, {
+      method: 'DELETE', headers: { Cookie: a.cookie, 'x-csrf-token': a.csrf }
+    });
+    eq('an admin cannot remove THEMSELVES', self.status, 409);
+    check('and is told why, specifically',
+      (await self.json())?.error?.code === 'TEAM_SELF_ESCALATION');
+
+    // 5. Another company's team is invisible, not merely refused.
+    const foreign = (await q(
+      `INSERT INTO teams (tenant_id,name) VALUES ($1,$2) RETURNING id`, [t2.id, 'Foreign Team'])).rows[0].id;
+    const cross = await fetch(`${assigner.base}/teams/${foreign}/members/${outsider}`, {
+      method: 'DELETE', headers: { Cookie: a.cookie, 'x-csrf-token': a.csrf }
+    });
+    eq('another company\'s team is not found', cross.status, 404);
+    eq('  and its membership is untouched',
+      (await q(`SELECT count(*)::int n FROM team_members WHERE team_id=$1 AND revoked_at IS NULL`,
+        [foreign])).rows[0].n, 0);
+
+    for (const s of [assigner, reader]) s.s.close();
+    await pool.end();
+
+    async function newId() {
+      const { rows: [u] } = await q(
+        `INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,$2,$3,'x') RETURNING id`,
+        [t1.id, `ghost-${Date.now()}@t.local`, 'Ghost']);
+      return u.id;
+    }
   }
 } catch (e) {
   failures.push(`fatal: ${e?.code ?? ''} ${e?.message}`);

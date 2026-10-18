@@ -28,6 +28,17 @@ import {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * The complete set of team abilities, and nothing else.
+ *
+ * An allowlist rather than a filter over everything the caller holds: a new
+ * ability added elsewhere must be named here before it can ever be reported,
+ * so this endpoint cannot start answering questions it was never asked.
+ */
+const TEAM_ABILITIES = Object.freeze([
+  'team.read', 'team.create', 'team.update', 'team.disable', 'team.assign'
+]);
+
 /** The same shim users.js uses, so `req.auth` means the same thing everywhere. */
 function adaptAuth(req, _res, next) {
   if (req.v1) {
@@ -94,6 +105,38 @@ export function createTeamAccessRouter() {
   };
 
   router.use(requireV1Auth, adaptAuth);
+
+  /**
+   * What THIS caller may do with teams.
+   *
+   * Answers the question the screen cannot work out for itself: renaming and
+   * disabling are separate abilities, and without this the UI has to either show
+   * a button that 403s or hide one the person is entitled to use.
+   *
+   * Deliberately narrow:
+   *  - it returns the ABILITIES, not role names, so nothing about the account's
+   *    composition travels;
+   *  - it is derived entirely from the caller's own session - no query runs, so
+   *    there is no path by which another company's or brand's grants could be
+   *    read through it;
+   *  - it enumerates a fixed list of `team.*` abilities and ignores anything
+   *    else, so a platform-level ability held by the same account is never
+   *    echoed back here;
+   *  - it requires a COMPANY scope but NOT any team ability, because someone who
+   *    holds none still deserves an accurate answer and a clear screen rather
+   *    than a bare 403.
+   *
+   * This is presentation only. Every route below still enforces the same `can()`
+   * decision on the server; hiding a button is a courtesy, not a control.
+   */
+  router.get('/capabilities', async (req, res) => {
+    const ctx = scope(req, res);
+    if (!ctx) return;
+    const roles = req.v1?.roles ?? [];
+    const custom = req.v1?.customAbilities ?? [];
+    const abilities = TEAM_ABILITIES.filter((a) => can(roles, a, custom));
+    return res.json({ data: { abilities } });
+  });
 
   // ---- read ---------------------------------------------------------------
 

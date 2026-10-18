@@ -68,7 +68,26 @@ export type BrandOption = {
   status?: string;
 };
 
+/**
+ * The team abilities this caller holds.
+ *
+ * Presentation only. The server re-checks every one of them on every route; the
+ * screen uses this to avoid offering a button that will only be refused. A
+ * stale answer costs an error message, never access.
+ */
+export type TeamAbilities = {
+  abilities: Array<'team.read' | 'team.create' | 'team.update' | 'team.disable' | 'team.assign'>;
+};
+
 export const teamsApi = {
+  /**
+   * Read before rendering write controls. Resolves to an empty list rather than
+   * throwing when the caller holds nothing - an accurate "you cannot do any of
+   * this" is more useful to a screen than a 403 it cannot explain.
+   */
+  capabilities: () =>
+    api.get<TeamAbilities>('/teams/capabilities').then((d) => d.abilities ?? []),
+
   list: () => api.get<{ teams: Team[] }>('/teams').then((d) => d.teams),
 
   /** `brandId` narrows only the eligibility maths; it never changes who is listed. */

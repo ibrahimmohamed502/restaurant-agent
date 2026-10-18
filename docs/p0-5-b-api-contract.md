@@ -21,6 +21,7 @@ enumerate what exists.
 
 | Method | Path | Ability | Purpose |
 |---|---|---|---|
+| GET | `/teams/capabilities` | none (needs a company) | What THIS caller may do |
 | GET | `/teams` | `team.read` | List this company's teams |
 | GET | `/teams/permissions?brandId=` | `team.read` | Who can take work, and why not |
 | GET | `/teams/:teamId/members` | `team.read` | Roster of one team |
@@ -32,6 +33,28 @@ enumerate what exists.
 
 **Two gates on one PATCH.** `{status}` needs `team.disable` on top of
 `team.update`. Holding only one does not grant the other — in either direction.
+
+### GET /teams/capabilities
+```json
+{ "data": { "abilities": ["team.read", "team.create", "team.update", "team.disable", "team.assign"] } }
+```
+
+The abilities the **calling session** holds, and nothing else. The screen uses
+it to avoid offering a button that would only be refused.
+
+Deliberately narrow, and worth preserving in any future change:
+- it returns **abilities, not role names** — nothing about the account's
+  composition travels;
+- it is computed from the session alone; **no query runs**, so there is no path
+  by which another company's or brand's grants could be read through it;
+- it iterates a **fixed allowlist** of `team.*`, so a platform-level ability
+  held by the same account is never echoed back;
+- it requires a **company scope but no team ability** — someone who holds none
+  still gets an accurate empty list, which is more useful to a screen than a
+  bare 403.
+
+**This is presentation only.** Every other route re-derives the same decision
+with the same `can()`; hiding a button is a courtesy, never a control.
 
 ### GET /teams
 ```json
@@ -105,8 +128,8 @@ and its `role_in_team`. Nothing is deleted, so team history stays intact.
 | `TEAM_MEMBER_NOT_FOUND` | 404 | No such user **in this company** |
 | `TEAM_BRAND_NOT_FOUND` | 404 | Brand belongs to another company |
 | `TEAM_ALREADY_MEMBER` | 409 | Already on the roster |
-| `TEAM_NOT_A_MEMBER` | 409 / 422 | Not on the roster |
-| `TEAM_SELF_ESCALATION` | 422 | An admin cannot remove themselves |
+| `TEAM_NOT_A_MEMBER` | **404** | Not on the roster — **identical to a user who does not exist**, so membership cannot be probed |
+| `TEAM_SELF_ESCALATION` | **409** | An admin cannot remove themselves |
 | `TEAM_FORBIDDEN` | 403 | No company scope on the session |
 | `FORBIDDEN` | 403 | Lacks the ability for this specific act |
 | `CSRF_INVALID` | 403 | Missing or mismatched CSRF pair |
