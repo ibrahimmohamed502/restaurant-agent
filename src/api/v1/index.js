@@ -21,6 +21,7 @@ import { createKnowledgeRouter } from './knowledge.js';
 import { createUsersRouter } from './users.js';
 import { createAiRouter } from './ai.js';
 import { createBrandGrantsRouter } from './brandGrants.js';
+import { createTeamAccessRouter } from './teamAccess.js';
 import { getMetaEventQueue } from '../../queues/metaEvents.js';
 import { createDashboardRouter } from './dashboard.js';
 import { createConversationsRouter } from './conversations.js';
@@ -349,6 +350,14 @@ export function createApiV1Router(deps = {}) {
   /* --------------------- Stage 6: AI config + reply sources --------------------- */
   router.use('/ai', createAiRouter());
   router.use('/brand-grants', createBrandGrantsRouter());
+
+  // P0.5-A: departments and the effective-permission read model.
+  //
+  // Owns TEAMS ONLY. Roles stay behind /users and brand access stays behind
+  // /brand-grants, each behind its own ability, so this route can never become a
+  // back door to either. Every handler re-checks the caller's company after the
+  // ability gate.
+  router.use('/teams', createTeamAccessRouter());
 
   // error envelope for anything unexpected
   router.use((err, _req, res, _next) => {

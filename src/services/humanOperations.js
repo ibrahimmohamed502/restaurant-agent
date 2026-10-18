@@ -59,6 +59,7 @@
  * or the AI pipeline, both of which re-check state for themselves.
  */
 import { pool } from '../db/pg.js';
+import { assertBrandEligibility, ELIGIBILITY_ERRORS } from './assignmentEligibility.js';
 import { can, ESCALATION_RESOLVE_ABILITY } from '../auth/abilities.js';
 import { getHandoffAcknowledgment } from './handoffAcknowledgment.js';
 import { brandScopeSql } from '../api/v1/brandAccess.js';
@@ -564,54 +565,17 @@ export async function assignConversationOperation({ session, conversationId, bod
  * all four are the same 422, so this endpoint cannot be used to enumerate users.
  */
 export async function assertAssigneeBrandAccess(client, { tenantId, userId, brandId }) {
-  const { rows: [member] } = await client.query(
-    `SELECT u.id
-       FROM users u
-      WHERE u.id = $1 AND u.tenant_id = $2 AND u.status = 'active'`,
-    [userId, tenantId]
-  );
-  if (!member) {
-    throw new OpsError(422, OPS_ERRORS.ASSIGNEE_NOT_ELIGIBLE,
-      'the target user cannot be assigned this conversation');
+  try {
+    return await assertBrandEligibility(client, { tenantId, userId, brandId });
+  } catch (e) {
+    // The shared implementation throws its own error type; translate it into the
+    // OpsError this module's callers already handle, keeping the uniform,
+    // non-enumerable message identical to before.
+    const code = e?.code === ELIGIBILITY_ERRORS.NOT_ELIGIBLE
+      ? OPS_ERRORS.ASSIGNEE_NOT_ELIGIBLE
+      : OPS_ERRORS.ASSIGNEE_NO_BRAND_ACCESS;
+    throw new OpsError(422, code, 'the target user cannot be assigned this conversation');
   }
-
-  // Company-wide channel: only an all-brands delegation can see it.
-  if (!brandId) {
-    const { rows } = await client.query(
-      `SELECT 1 FROM user_brand_scope_all
-        WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL
-        FOR UPDATE`,
-      [userId, tenantId]
-    );
-    if (!rows[0]) {
-      throw new OpsError(422, OPS_ERRORS.ASSIGNEE_NO_BRAND_ACCESS,
-        'the target user cannot be assigned this conversation');
-    }
-    return true;
-  }
-
-  // Two top-level locking reads. `FOR UPDATE` is not permitted inside an EXISTS
-  // sub-select, and doing it as two plain statements is also easier to read.
-  // Each locks the live grant row, so a concurrent revoke of THAT row blocks
-  // until this transaction finishes.
-  const { rows: allBrands } = await client.query(
-    `SELECT 1 FROM user_brand_scope_all
-      WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL
-      FOR UPDATE`,
-    [userId, tenantId]
-  );
-  if (allBrands[0]) return true;
-
-  const { rows: perBrand } = await client.query(
-    `SELECT 1 FROM user_brand_grants
-      WHERE user_id = $1 AND tenant_id = $2 AND brand_id = $3 AND revoked_at IS NULL
-      FOR UPDATE`,
-    [userId, tenantId, brandId]
-  );
-  if (perBrand[0]) return true;
-
-  throw new OpsError(422, OPS_ERRORS.ASSIGNEE_NO_BRAND_ACCESS,
-    'the target user cannot be assigned this conversation');
 }
 
 /* ============================================================= unassign === */

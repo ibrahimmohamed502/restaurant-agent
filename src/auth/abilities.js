@@ -87,6 +87,12 @@ export const ROLE_ABILITIES = {
     'brand.grant', 'brand.revoke', 'brand.grant_all', 'brand.revoke_all',
     'brand.integration.connect', 'brand.integration.disconnect',
     'brand.integration.reconnect', 'brand.integration.status',
+    // P0.5-A: team administration. None of these confers any user or brand
+    // ability, so holding them can never widen what somebody ELSE may be
+    // granted: a team manager can organise people, not promote them. Granting
+    // roles and brand access stay behind user.update / brand.grant, which are
+    // separate abilities on this same role.
+    'team.read', 'team.create', 'team.update', 'team.disable', 'team.assign',
     'company.read', 'company.update',
     'conversation.read', 'conversation.handoff', 'conversation.assign',
     'conversation.reassign', 'conversation.unassign', 'conversation.resolve',
@@ -108,7 +114,11 @@ export const ROLE_ABILITIES = {
     'brand.grant', 'brand.revoke',
     'brand.integration.connect',
     'brand.integration.disconnect', 'brand.integration.reconnect',
-    'brand.integration.status', 'user.read', 'user.update'
+    'brand.integration.status', 'user.read', 'user.update',
+    // P0.5-A: Supervisors may SEE the org chart, but not reshape it. Read-only
+    // is the useful half (routing visibility) without granting anyone the
+    // ability to restructure who reports where.
+    'team.read'
   ],
   Agent: [
     'conversation.read', 'conversation.handoff', 'conversation.assign_self',

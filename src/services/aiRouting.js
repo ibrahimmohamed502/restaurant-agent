@@ -33,12 +33,11 @@
 
 import { pool } from '../db/pg.js';
 import { assignConversation, HANDLING_ROLES, CONVERSATION_STATES } from './handoff.js';
-// `assignConversation` proves only tenant + active + handling role. The brand
-// half of eligibility is asserted separately by `assertAssigneeBrandAccess`,
-// which humanOperations exposes for exactly this reuse. Imported from there
-// rather than reimplemented: one definition, one set of lock semantics, and no
-// chance of the two drifting apart.
-import { assertAssigneeBrandAccess, withTransaction } from './humanOperations.js';
+// ONE eligibility contract for every path that assigns. Locks the user, their
+// role rows and their brand-grant rows in a fixed global order, and proves
+// handling + brand + team eligibility at the moment of the write. Imported
+// rather than reimplemented so this path cannot drift from the human one.
+import { assertAssignmentEligible, withEligibilityTransaction } from './assignmentEligibility.js';
 
 /** Ordered so a numeric compare is never required. */
 export const ROUTING_MODES = Object.freeze({
@@ -148,14 +147,18 @@ export async function resolveRoutingRule({ tenantId, brandId = null, detection, 
  * is caught there - a grant revoked in the meantime is refused, and a concurrent
  * revoke blocks on that lock until the assignment commits.
  *
- * WHAT IS *NOT* LOCKED, stated honestly: `users.status`, `user_roles` and
- * `team_members` are re-read inside the write transaction but without a row
- * lock. `isEligibleAssignee` re-checks active + handling role as its own
- * statement, so a deactivation or role removal committed BEFORE that statement
- * is caught; one committed after it is not, and the assignment lands. Closing
- * that window means locking those rows too, or running the check at a stronger
- * isolation level - tracked before AI_ROUTING_MODE can be set to live. It does
- * not affect off or dry_run.
+ * WHAT IS LOCKED NOW (changed in P0.5-A): the write path calls
+ * `assertAssignmentEligible`, which takes `FOR UPDATE` row locks on the user,
+ * their role rows, their brand-grant rows AND their `team_members` rows - all in
+ * one fixed global order - inside the same transaction that performs the
+ * assignment. A revoke, deactivation or removal committed before those locks is
+ * refused; one that arrives afterwards blocks on the lock until this transaction
+ * commits. So the three rows listed above are no longer the soft spot this
+ * comment used to describe.
+ *
+ * STILL NOT LOCKED, stated honestly: `users.status` can change between the
+ * selection query and the write transaction, but the write transaction re-reads
+ * it under lock, so the window is closed rather than merely narrowed.
  *
  * LOAD BALANCING is best-effort and deterministic: fewest open assignments
  * first, then role_in_team (a team lead is preferred over a newcomer), then
@@ -173,7 +176,7 @@ export async function selectEligibleAssignee({ tenantId, brandId = null, teamId,
                  WHERE c.assigned_user_id = u.id
                    AND c.state = ANY($4::text[])) AS open_load
           FROM teams t
-          JOIN team_members tm ON tm.team_id = t.id
+          JOIN team_members tm ON tm.team_id = t.id AND tm.revoked_at IS NULL
           JOIN users u ON u.id = tm.user_id
           -- Same handling-role requirement the real assignment path enforces,
           -- so routing never nominates somebody it would then have to refuse.
@@ -260,8 +263,13 @@ export async function planAutoAssignment({ tenantId, conversationId, detection, 
     return { applied: false, reason: ruleReason, rule: null, userId: null, brandId };
   }
 
+  // Revoked memberships are soft deletes (revoked_at), so the count must
+  // exclude them exactly as the selection does. Counting them made a team
+  // whose members had all been removed look populated, and routing then
+  // "succeeded" with nobody left to assign.
   const { rows: [teamSize] } = await executor.query(
-    `SELECT count(*)::int AS n FROM team_members WHERE team_id = $1`, [rule.target_team_id]
+    `SELECT count(*)::int AS n FROM team_members WHERE team_id = $1 AND revoked_at IS NULL`,
+    [rule.target_team_id]
   );
   if (!teamSize?.n) {
     return { applied: false, reason: ROUTING_REASONS.NO_TEAM_MEMBERS, rule, userId: null, brandId };
@@ -326,11 +334,16 @@ export async function maybeAutoRoute({ tenantId, conversationId, detection, env 
     // first, or the revoke won and this read sees `revoked_at` and refuses.
     // Whichever way the race lands, a conversation is never assigned to
     // somebody who lacks brand access at the moment of the commit.
-    const result = await withTransaction(db ?? pool, async (client) => {
-      await assertAssigneeBrandAccess(client, {
+    const result = await withEligibilityTransaction(db ?? pool, async (client) => {
+      // Handles ALL THREE races, not just brand: a role removed from this
+      // employee, this employee deactivated, and this employee removed from the
+      // team are each ordered against this decision by the lock, so none of them
+      // can slip through after the check.
+      await assertAssignmentEligible(client, {
         tenantId,
         userId: plan.userId,
-        brandId: plan.brandId
+        brandId: plan.brandId,
+        teamId: plan.rule?.target_team_id ?? null
       });
       return assignConversation(
         {

@@ -381,29 +381,52 @@ section('10. Assignee brand access is enforced, not reported');
     && OPS_ERRORS.ASSIGNEE_NOT_ELIGIBLE === 'OPS_ASSIGNEE_NOT_ELIGIBLE');
 
   // Active membership of the SAME tenant.
+  // The brand half of eligibility MOVED to src/services/assignmentEligibility.js
+  // so the AI routing path and this path share one implementation and one lock
+  // order. These assertions therefore now read the module that actually holds
+  // the SQL, while still proving this module delegates to it rather than
+  // keeping a second, drifting copy.
+  const ELIG_SRC = readFileSync(resolve(process.cwd(), 'src/services/assignmentEligibility.js'), 'utf8');
+  check('humanOperations delegates to the shared eligibility module',
+    /from '\.\/assignmentEligibility\.js'/.test(OPS)
+    && /assertBrandEligibility/.test(OPS));
+  check('and holds no second copy of the brand SQL',
+    !/FROM user_brand_grants/.test(OPS) && !/FROM user_brand_scope_all/.test(OPS));
+
   check('it requires an ACTIVE member of the same tenant',
-    /u\.id = \$1 AND u\.tenant_id = \$2 AND u\.status = 'active'/.test(OPS));
+    /WHERE id = \$1 AND tenant_id = \$2 AND status = 'active'/.test(ELIG_SRC));
   // Live brand delegation, either form.
   check('it accepts a live all-brands delegation',
-    /FROM user_brand_scope_all[\s\S]{0,120}revoked_at IS NULL/.test(OPS));
+    /FROM user_brand_scope_all[\s\S]{0,200}revoked_at IS NULL/.test(ELIG_SRC));
   check('it accepts a live per-brand grant',
-    /FROM user_brand_grants[\s\S]{0,160}brand_id = \$3 AND g\.revoked_at IS NULL|brand_id = \$3 AND revoked_at IS NULL/.test(OPS));
+    /brand_id = \$3 AND revoked_at IS NULL/.test(ELIG_SRC));
   check('a REVOKED grant never counts',
-    /revoked_at IS NULL/.test(OPS) && !/revoked_at IS NOT NULL/.test(OPS));
+    /revoked_at IS NULL/.test(ELIG_SRC) && !/revoked_at IS NOT NULL/.test(ELIG_SRC));
   // NULL brand (company-wide channel) requires all-brands.
   check('a company-wide channel (brand_id NULL) requires the all-brands delegation',
-    /if \(!brandId\)[\s\S]{0,200}user_brand_scope_all/.test(OPS));
+    /if \(!brandId\)[\s\S]{0,200}user_brand_scope_all/.test(ELIG_SRC));
   // Concurrency: the grant rows are locked.
   check('the grant rows are locked FOR UPDATE to close the revoke window',
-    /user_brand_scope_all[\s\S]{0,160}FOR UPDATE/.test(OPS)
-    && /user_brand_grants[\s\S]{0,200}FOR UPDATE/.test(OPS));
+    /user_brand_scope_all[\s\S]{0,200}FOR UPDATE/.test(ELIG_SRC)
+    && /user_brand_grants[\s\S]{0,200}FOR UPDATE/.test(ELIG_SRC));
+  // NEW in P0.5-A: the handling half is locked too, which is what closes the
+  // role-removal and deactivation races the review found.
+  check('the user row is locked, not merely read (deactivation cannot slip past)',
+    /FROM users WHERE id = \$1 AND tenant_id = \$2 FOR UPDATE/.test(ELIG_SRC));
+  check('the role rows are locked (a role removal is ordered against the decision)',
+    /FOR UPDATE OF ur, r/.test(ELIG_SRC));
   check('no locking clause sits inside an EXISTS sub-select (invalid SQL)',
-    !/EXISTS\s*\([^)]*FOR UPDATE/.test(OPS));
-  // Uniform error, so the endpoint cannot enumerate users.
-  const refusals = [...OPS.matchAll(/OpsError\(422,\s*OPS_ERRORS\.ASSIGNEE_\w+,\s*\n?\s*'([^']+)'/g)].map((m) => m[1]);
+    !/EXISTS\s*\([^)]*FOR UPDATE/.test(ELIG_SRC));
+  // Uniform error, so the endpoint cannot enumerate users. Scoped to the two
+  // USER-facing refusals (not eligible / no brand access) - a missing-context
+  // message is a programmer error, and the team one is about team membership,
+  // neither of which discloses whether a particular user exists.
+  const userRefusals = [...ELIG_SRC.matchAll(
+    /EligibilityError\(ELIGIBILITY_ERRORS\.(NOT_ELIGIBLE|NO_BRAND_ACCESS),\s*\n?\s*'([^']+)'/g)]
+    .map((m) => m[2]);
   check('the refusal message never names the reason (no user enumeration)',
-    refusals.length >= 2 && refusals.every((m) => m === 'the target user cannot be assigned this conversation'),
-    refusals.join(' | '));
+    userRefusals.length >= 2 && userRefusals.every((m) => m === 'the target user cannot be assigned this conversation'),
+    userRefusals.join(' | '));
 }
 
 /* ==================================== 11. escalation closure is narrow ==== */
