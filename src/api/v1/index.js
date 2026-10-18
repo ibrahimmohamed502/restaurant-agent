@@ -22,6 +22,7 @@ import { createUsersRouter } from './users.js';
 import { createAiRouter } from './ai.js';
 import { createBrandGrantsRouter } from './brandGrants.js';
 import { createTeamAccessRouter } from './teamAccess.js';
+import { createRolesRouter } from './roles.js';
 import { getMetaEventQueue } from '../../queues/metaEvents.js';
 import { createDashboardRouter } from './dashboard.js';
 import { createConversationsRouter } from './conversations.js';
@@ -358,6 +359,7 @@ export function createApiV1Router(deps = {}) {
   // back door to either. Every handler re-checks the caller's company after the
   // ability gate.
   router.use('/teams', createTeamAccessRouter());
+  router.use('/roles', createRolesRouter());
 
   // error envelope for anything unexpected
   router.use((err, _req, res, _next) => {

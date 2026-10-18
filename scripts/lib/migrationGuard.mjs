@@ -48,7 +48,8 @@ export const APPROVED_SHA256 = Object.freeze({
   '017_escalation_resolve_ability.sql': '093f4df44821ef1a221c543275722581629235328f1117bab4169eb27acb2732',
   '018_handoff_acknowledgment.sql': '5fd7f915a3f8f1ce5b37c6dcfceb96e2ffa5e003353a8b5035ef5420eef0912f',
   '019_ai_routing_rules.sql': '2aa946d57d9cadde2b8d2fc5b5fdf017e5796062796a40e3f39719cbcbfcc356',
-  '020_team_lifecycle.sql': '851ac18263dc04752367b490315176ca3552d49e0aa01e8fbfe9506eea3f0db6'
+  '020_team_lifecycle.sql': '851ac18263dc04752367b490315176ca3552d49e0aa01e8fbfe9506eea3f0db6',
+  '021_custom_roles_lifecycle.sql': 'd3b6287e3c8a1d3b79e1d8fa8f686ca7ca0ff842881befb1f2fd171b386e72f5'
 });
 
 export function sha256(text) {

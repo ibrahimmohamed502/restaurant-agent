@@ -54,6 +54,10 @@ const BRAND_ABILITIES = Object.freeze([
   'brand.read', 'brand.grant', 'brand.revoke', 'brand.grant_all', 'brand.revoke_all'
 ]);
 
+const ROLE_ABILITIES_LIST = Object.freeze([
+  'role.read', 'role.create', 'role.update', 'role.disable', 'role.delete'
+]);
+
 /** The same shim users.js uses, so `req.auth` means the same thing everywhere. */
 function adaptAuth(req, _res, next) {
   if (req.v1) {
@@ -152,7 +156,7 @@ export function createTeamAccessRouter() {
     // The screen needs BOTH sets to decide which buttons to render. Reporting
     // them together is safe: the caller only learns about its own abilities, and
     // only from the fixed allowlists - never a free-form enumeration.
-    const abilities = [...TEAM_ABILITIES, ...BRAND_ABILITIES]
+    const abilities = [...TEAM_ABILITIES, ...BRAND_ABILITIES, ...ROLE_ABILITIES_LIST]
       .filter((a) => can(roles, a, custom));
     return res.json({ data: { abilities } });
   });

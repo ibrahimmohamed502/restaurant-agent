@@ -93,6 +93,10 @@ export const ROLE_ABILITIES = {
     // roles and brand access stay behind user.update / brand.grant, which are
     // separate abilities on this same role.
     'team.read', 'team.create', 'team.update', 'team.disable', 'team.assign',
+      // A1: custom role management. These confer nothing else - a manager of
+      // roles can organise people, not promote them. Granting roles stays behind
+      // user.update / role.assign, which are separate abilities.
+      'role.read', 'role.create', 'role.update', 'role.disable', 'role.delete',
     'company.read', 'company.update',
     'conversation.read', 'conversation.handoff', 'conversation.assign',
     'conversation.reassign', 'conversation.unassign', 'conversation.resolve',
@@ -118,7 +122,10 @@ export const ROLE_ABILITIES = {
     // P0.5-A: Supervisors may SEE the org chart, but not reshape it. Read-only
     // is the useful half (routing visibility) without granting anyone the
     // ability to restructure who reports where.
-    'team.read'
+    'team.read',
+    // A1: Supervisors may read roles, so they can see the org chart. They may
+    // not create, edit, disable or delete them.
+    'role.read'
   ],
   Agent: [
     'conversation.read', 'conversation.handoff', 'conversation.assign_self',

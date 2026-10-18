@@ -61,7 +61,7 @@ export async function validateSession(token) {
   const { rows: roles } = await pool.query(
     `SELECT r.name, r.permissions
        FROM user_roles ur JOIN roles r ON r.id = ur.role_id
-      WHERE ur.user_id = $1`,
+      WHERE ur.user_id = $1 AND r.status = 'active'`,
     [row.user_id]
   );
 

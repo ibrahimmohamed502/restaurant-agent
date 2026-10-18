@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import * as React from 'react';
 import { useTranslations } from 'next-intl';
@@ -11,6 +11,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorState, PageLoading } from '@/components/ui/states';
 import { BackButton } from '@/components/shell/back-button';
 import { usersApi, type TeamUser } from '@/lib/api';
+import { rolesApi, describeRoleError, type Role } from '@/lib/roles-api';
+import { RolesTab } from './roles-tab';
 
 const ROLES = ['Company Admin', 'Supervisor', 'Agent'];
 
@@ -18,6 +20,7 @@ export default function TeamPage() {
   const t = useTranslations('team');
   const tc = useTranslations('common');
 
+  const [tab, setTab] = React.useState<'users' | 'roles'>('users');
   const [users, setUsers] = React.useState<TeamUser[] | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<'forbidden' | 'failed' | null>(null);
@@ -25,6 +28,7 @@ export default function TeamPage() {
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<TeamUser | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [actionError, setActionError] = React.useState<string | null>(null);
 
   // create-user form
   const [name, setName] = React.useState('');
@@ -138,13 +142,33 @@ export default function TeamPage() {
         description={t('description')}
         breadcrumb={<BackButton />}
         actions={
-          <Button size="sm" className="gap-1.5" onClick={openCreate}>
-            <UserPlus className="h-3.5 w-3.5" aria-hidden /> {t('addUser')}
-          </Button>
+          tab === 'users' ? (
+            <Button size="sm" className="gap-1.5" onClick={openCreate}>
+              <UserPlus className="h-3.5 w-3.5" aria-hidden /> {t('addUser')}
+            </Button>
+          ) : undefined
         }
       />
 
-      {(users ?? []).length === 0 ? (
+      <div className="flex gap-1 border-b" role="tablist">
+        {(['users', 'roles'] as const).map((k) => (
+          <button
+            key={k}
+            role="tab"
+            aria-selected={tab === k}
+            onClick={() => setTab(k)}
+            className={`px-3 py-2 text-sm font-medium -mb-px border-b-2 ${
+              tab === k ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground'
+            }`}
+          >
+            {t(`tabs.${k}`)}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'roles' && <RolesTab busy={busy} setBusy={setBusy} setActionError={setActionError} />}
+
+      {tab === 'users' && ((users ?? []).length === 0 ? (
         <div className="rounded-lg border border-dashed border-border px-6 py-14 text-center">
           <Users className="mx-auto h-8 w-8 text-muted-foreground" aria-hidden />
           <p className="mt-2 text-sm font-medium text-foreground">{t('empty.title')}</p>
@@ -208,8 +232,8 @@ export default function TeamPage() {
             </tbody>
           </table>
         </div>
-      )}
-
+      ))}
+  
       {dialogOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={editing ? t('editTitle') : t('addUser')}>
           <div className="absolute inset-0 bg-black/40" onClick={() => setDialogOpen(false)} aria-hidden />

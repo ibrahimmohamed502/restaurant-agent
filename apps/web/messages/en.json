@@ -953,5 +953,62 @@
     "loadFailedTitle": "Could not load integrations",
     "loadFailedDescription": "Something went wrong while loading integrations.",
     "readOnlyNotice": "Connection management (connect, disconnect and token rotation) is not available yet — this view is read-only."
+  },
+  "roles": {
+    "nav": "Roles & Permissions",
+    "title": "Roles & Permissions",
+    "description": "Define custom roles and what they may do. Built-in roles cannot be changed.",
+    "create": "New role",
+    "createTitle": "Create role",
+    "editTitle": "Edit role",
+    "name": "Name",
+    "nameHint": "Letters, digits, spaces and hyphens only.",
+    "permissions": "Permissions",
+    "permHint": "A role can only carry abilities you hold yourself. Granting a role stays behind user.update.",
+    "modules": {
+      "conversation": "Conversations",
+      "team": "Departments",
+      "role": "Roles",
+      "brand": "Brands",
+      "user": "Users",
+      "company": "Company",
+      "note": "Notes",
+      "notification": "Notifications",
+      "knowledge": "Knowledge Base",
+      "ai": "AI",
+      "audit": "Audit",
+      "escalation": "Escalations"
+    },
+    "table": {
+      "name": "Name",
+      "permissions": "Permissions",
+      "status": "Status",
+      "actions": "Actions"
+    },
+    "system": "System",
+    "status": {
+      "active": "Active",
+      "disabled": "Disabled"
+    },
+    "disable": "Disable",
+    "enable": "Enable",
+    "delete": "Delete",
+    "confirmDeleteTitle": "Delete role?",
+    "confirmDeleteBody": "Delete \"{name}\"? It must have no members first.",
+    "rbacNote": "Permissions are enforced on the server. A role can only carry abilities you hold yourself.",
+    "empty": {
+      "title": "No custom roles yet",
+      "description": "Create your first custom role to grant a specific set of permissions."
+    },
+    "errors": {
+      "title": "Couldn't load roles",
+      "description": "Something went wrong while fetching roles.",
+      "nameRequired": "Name is required",
+      "nameTaken": "A role with that name already exists in this company.",
+      "systemRole": "Built-in roles cannot be edited or deleted.",
+      "notDelegable": "You cannot grant abilities you do not hold.",
+      "invalid": "Invalid role data.",
+      "generic": "Something went wrong. Try again."
+    }
   }
 }
