@@ -109,6 +109,36 @@ section('7 a semantic change inside an approved file is still caught');
   check('inverting a CHECK constraint inside an approved file is REJECTED', audit.ok === false);
 }
 
+section('6b CRLF vs LF is NOT tampering');
+{
+  // The failure this exists to prevent: with core.autocrlf=true and no
+  // .gitattributes, a Windows checkout holds CRLF while the allowlist hash was
+  // recorded from LF. The guard called a byte-identical migration "modified".
+  // That trains people to ignore the guard, which is worse than not having one.
+  const lf = realFiles['019_ai_routing_rules.sql'];
+  const crlf = lf.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+  check('the fixture actually is CRLF (or has no newline at all)', crlf.includes('\r\n') || !lf.includes('\n'));
+  check('sha256 of the LF form equals sha256 of the CRLF form',
+    sha256(lf) === sha256(crlf));
+
+  const files = clone();
+  files['019_ai_routing_rules.sql'] = crlf;
+  const audit = auditMigrations(REPO, { files });
+  check('a CRLF checkout of an approved migration PASSES the guard', audit.ok === true,
+    audit.problems.join(' '));
+
+  // The point of normalising: it must not become a blind spot. Changing real
+  // content while ALSO changing line endings is still a change.
+  const sneaky = crlf.replace('NOT NULL', 'NULL');
+  const files2 = clone();
+  files2['019_ai_routing_rules.sql'] = sneaky;
+  const audit2 = auditMigrations(REPO, { files: files2 });
+  check('but a real edit disguised with CRLF is still REJECTED', audit2.ok === false);
+  check('  and reported as modified',
+    audit2.problems.some((p) => p.includes('approved migration modified: 019_ai_routing_rules.sql')),
+    JSON.stringify(audit2.problems));
+}
+
 section('8 the guard is not fooled by casing or look-alike names');
 {
   for (const name of ['019_ai_routing_rules.SQL', '019_ai_routing_rules.sql.bak', '019_ai_routing_rules.sqlx']) {

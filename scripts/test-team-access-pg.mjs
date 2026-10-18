@@ -486,6 +486,91 @@ try {
       `SELECT count(*)::int n FROM information_schema.tables WHERE table_name='teams'`);
     check('the test database does have teams (migration ran here only)', rows[0].n === 1);
   }
+
+  /* ------------------------------------------------- HTTP-layer authorisation */
+  section('14 the ROUTES enforce what the abilities promise');
+  {
+    // Everything above exercises the SERVICE layer. That is exactly why a dead
+    // `requireAbility('team.disable')` call survived a 78-test suite: the
+    // services never see it. The gate only exists here, so it has to be tested
+    // over real HTTP against the mounted router.
+    const express = (await import('express')).default;
+    const { createApiV1Router } = await import('../src/api/v1/index.js');
+    const pool = new pg.Pool({ connectionString: url, max: 4 });
+
+    // One app per role set - the router reads roles AND customAbilities from
+    // the session. Fictional role names would carry no abilities at all, and
+    // adding them to ROLE_ABILITIES would put fake permissions into production.
+    // A session carrying `customAbilities` is the supported way to express
+    // "this person holds exactly this and nothing more".
+    const appFor = (roles, customAbilities = []) => {
+      const app = express();
+      const router = createApiV1Router({
+        pool,
+        validateSessionFn: async () => ({
+          tenantId: t1.id, user: { id: admin, email: 'admin@t.local', name: 'A' },
+          roles, customAbilities
+        }),
+        verifyPasswordFn: async () => false,
+        createSessionFn: async () => ({ token: 'x', expiresAt: new Date(Date.now() + 60000) }),
+        revokeSessionFn: async () => {},
+        lockedSecondsFn: async () => 0,
+        recordFailedLoginFn: async () => {},
+        resetLoginAttemptsFn: async () => {}
+      });
+      app.use(express.json());
+      app.use('/api/v1', router);
+      return new Promise((r) => {
+        const s = app.listen(0, '127.0.0.1', () =>
+          r({ s, base: `http://127.0.0.1:${s.address().port}/api/v1` }));
+      });
+    };
+
+    const authFor = async (base) => {
+      const r = await fetch(`${base}/_health`);
+      const c = (r.headers.get('set-cookie') || '').match(/csrf_token=[^;]*/)?.[0];
+      return { cookie: `lwc_session=x; ${c}`, csrf: c?.split('=')[1] };
+    };
+    const send = (base, auth, method, path, body) => fetch(`${base}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: auth.cookie,
+        ...(method === 'GET' ? {} : { 'x-csrf-token': auth.csrf })
+      },
+      body: body ? JSON.stringify(body) : undefined
+    }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+
+    const teamId = (await q(
+      `INSERT INTO teams (tenant_id,name) VALUES ($1,$2) RETURNING id`, [t1.id, 'Gate Check'])).rows[0].id;
+
+    const updater = await appFor([], ['team.update']);
+    const a1 = await authFor(updater.base);
+    eq('a role holding team.update may rename',
+      (await send(updater.base, a1, 'PATCH', `/teams/${teamId}`, { name: 'Gate Check Renamed' })).status, 200);
+    eq('but is REFUSED the power to take it out of service',
+      (await send(updater.base, a1, 'PATCH', `/teams/${teamId}`, { status: 'disabled' })).status, 403);
+    eq('and the team is still active',
+      (await q(`SELECT status FROM teams WHERE id=$1`, [teamId])).rows[0].status, 'active');
+
+    const disabler = await appFor([], ['team.disable']);
+    const a2 = await authFor(disabler.base);
+    eq('a role holding team.disable alone may disable',
+      (await send(disabler.base, a2, 'PATCH', `/teams/${teamId}`, { status: 'disabled' })).status, 200);
+    eq('but is REFUSED a rename',
+      (await send(disabler.base, a2, 'PATCH', `/teams/${teamId}`, { name: 'Hijacked' })).status, 403);
+    eq('and the name is untouched',
+      (await q(`SELECT name FROM teams WHERE id=$1`, [teamId])).rows[0].name, 'Gate Check Renamed');
+
+    const reader = await appFor([], ['team.read']);
+    const a3 = await authFor(reader.base);
+    eq('a read-only role may list teams', (await send(reader.base, a3, 'GET', '/teams')).status, 200);
+    eq('but may not create one',
+      (await send(reader.base, a3, 'POST', '/teams', { name: 'Nope' })).status, 403);
+
+    for (const s of [updater, disabler, reader]) s.s.close();
+    await pool.end();
+  }
 } catch (e) {
   failures.push(`fatal: ${e?.code ?? ''} ${e?.message}`);
   console.error('\nfatal:', e?.code, e?.message);

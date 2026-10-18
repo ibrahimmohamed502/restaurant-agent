@@ -13,8 +13,9 @@
  */
 
 import express from 'express';
-import { requireV1Auth } from './index.js';
+import { requireV1Auth, apiError } from './index.js';
 import { requireAbility } from './stage7-rbac.js';
+import { can } from '../../auth/abilities.js';
 import {
   listTeams, listTeamMembers, listEffectivePermissions,
   createTeam, updateTeam, addTeamMember, removeTeamMember,
@@ -57,6 +58,35 @@ export function createTeamAccessRouter() {
       return null;
     }
     return { tenantId, actorUserId };
+  };
+
+  /**
+   * One PATCH, two different permissions.
+   *
+   * Taking a team out of service is a separate decision from renaming it, so
+   * each needs its own ability and neither implies the other. An administrator
+   * who may rename a team does not thereby gain the power to disable it, and a
+   * person trusted only to disable one cannot rename it.
+   *
+   * Two bugs lived here, both invisible to a service-level test:
+   *   1. the handler CALLED `requireAbility('team.disable')` and discarded the
+   *      middleware it returns - `requireAbility` builds the check, it does not
+   *      run it - so the gate never happened;
+   *   2. `requireAbility('team.update', 'team.disable')` means EITHER, which
+   *      let a disable-only holder rename and an update-only holder disable.
+   * Gating per-act rather than per-route is what closes both.
+   *
+   * `can` is the same primitive `requireAbility` uses internally, applied to the
+   * act the body actually requests. Express.json() runs ahead of this router,
+   * so req.body is populated here; matching the two explicit status values
+   * (rather than "any status field") means a missing or unparseable body cannot
+   * be used to slip into a status change.
+   */
+  const patchGate = (req, res, next) => {
+    const touchesStatus = req.body?.status === 'disabled' || req.body?.status === 'active';
+    const needed = touchesStatus ? 'team.disable' : 'team.update';
+    if (can(req.v1?.roles, needed, req.v1?.customAbilities)) return next();
+    return apiError(res, 403, 'FORBIDDEN', 'insufficient permissions');
   };
 
   router.use(requireV1Auth, adaptAuth);
@@ -118,16 +148,14 @@ export function createTeamAccessRouter() {
     } catch (e) { return fail(res, e); }
   });
 
-  router.patch('/:teamId', requireAbility('team.update', 'team.disable'), async (req, res) => {
+  // Gated per-act by patchGate, not per-route: one PATCH covers renaming AND
+  // enabling/disabling, and those are two different permissions.
+  router.patch('/:teamId', patchGate, async (req, res) => {
     const ctx = scope(req, res);
     if (!ctx) return;
     const { tenantId, actorUserId } = ctx;
     try {
       uuidOr404(req.params.teamId);
-      // Disabling is its own ability: an administrator who may rename a team
-      // does not thereby gain the power to take it out of service.
-      const disabling = req.body?.status === 'disabled' || req.body?.status === 'active';
-      if (disabling) requireAbility('team.disable');
       const team = await updateTeam({
         tenantId, actorUserId, teamId: req.params.teamId,
         name: req.body?.name, status: req.body?.status, brandId: req.body?.brandId,

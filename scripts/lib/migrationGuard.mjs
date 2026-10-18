@@ -30,20 +30,20 @@ import { join } from 'node:path';
  * the next machine.
  */
 export const APPROVED_SHA256 = Object.freeze({
-  '001_init.sql': '4cee08edd3e1390bb95663d3947af8e222b3c9d228d655034e85c2b4f0782788',
-  '002_auth.sql': '86b00a33e9590fe9d4573e80bef02f90d17cd458815dbf0247c4c6e535f582df',
-  '003_meta_channel_unique.sql': '698f9c0e0aaeaadf80606c2e06e61b8f6fed82c9f7c6e296df9c95e8a9e641e3',
-  '004_message_delivery_status.sql': '87b057114ca04d217c96e7fbf538e99ea3e7666384164e3f2e0ffc7b79ab5ad7',
-  '005_message_retry_metadata.sql': 'b72af8373f92b25eedc0a8e0d58a2201b06618a5413067b6964ca997efe94c3e',
-  '006_knowledge_drafts_versions.sql': '4f016fa8f6869721cc49d3f33a9252fe90e86eb2cc30b07335dab1151d574778',
-  '007_knowledge_vector_index.sql': 'e7d3014d87dd02a598c11904c0c48fda3b82a128ee692eea974a9b2c5861f1e2',
-  '008_reply_sources.sql': '0929812d5c8e5e87c3c42806b281778a08178f78d599829bc49860e57c6e081c',
+  '001_init.sql': '5c6dd3226d077ebb0ca7848b5c558d7d2c8e82008bc83dd996000e056e3e303d',
+  '002_auth.sql': '5a817074f1b9b336108531f3b05a6446d6cc745f4134b23149d70da0fc2fc73a',
+  '003_meta_channel_unique.sql': '68a6259d805f297689bfbd293430055dc6c6a915b1c2d336e70a9d09e90e128e',
+  '004_message_delivery_status.sql': 'abe54b9071a150a4d111d552de05d1cf9fc26a161feac1aff09b6e844527574b',
+  '005_message_retry_metadata.sql': '55b5997525ab7f398c3db9c11df36f7d7d129632e24d21d45bb8b85ce1dc3783',
+  '006_knowledge_drafts_versions.sql': '2d80010271cc48a4dbec07b1b1c4ce53b5354cd3686404b4d915e64c95f6289b',
+  '007_knowledge_vector_index.sql': 'ce8d434ddd31abdd978706ea65ea1045a32f1164d94232d7cc53dfdb2bdf7359',
+  '008_reply_sources.sql': '03bc531ef0509ef59ef0fc2306d720d5eecd674d25882f3782fd85ee6b471f8a',
   '009_handoff.sql': '2fbc13e70fa8290b6caf1b3d236923cb5e10e3c7bec2280b348128ba5a486ede',
-  '010_platform_super_admin.sql': 'fdcb8a1da520d4d7cdc90e9c6a453d4efeba82e536a33f6c2866f40f096af5de',
-  '011_fix_company_admin_wildcard.sql': '66e6a5a6daeb1a42fa471e61d32ac56e6091de9c3d2d1301ad402ce52dfd610a',
+  '010_platform_super_admin.sql': '050e0ad7ce18c044643487165b86d7616219f4c21efe767d46559d5f26814aad',
+  '011_fix_company_admin_wildcard.sql': '800111dd3aabf68a413051541a09a892bef119be4b65b96731ade41ca5c72d0b',
   '012_add_brand_default_language.sql': '952527d3fb344ac9859f7d2c180a0a20c7c7a3543caf7b842955e805fbdcc238',
   '013_backfill_knowledge_sources.sql': '722dc8d3939e8b4cd7ff6ada94a90fb0655053e5467eba08f47b7b9e81b8ffb1',
-  '015_brand_access_grants.sql': '508159c37a2b0754c6aecf0af2c1f880f7e720ab466a01b55259c6ec77746815',
+  '015_brand_access_grants.sql': '07bb8942643894f01aecf4562dadb49c1d304ea8532b5704c91958b08a5e113b',
   '016_manual_reply_idempotency.sql': 'ca280ffb799ab0a555670fffbedcd5272035abbe65da7854a3c2b9cc95ef1c5b',
   '017_escalation_resolve_ability.sql': '093f4df44821ef1a221c543275722581629235328f1117bab4169eb27acb2732',
   '018_handoff_acknowledgment.sql': '5fd7f915a3f8f1ce5b37c6dcfceb96e2ffa5e003353a8b5035ef5420eef0912f',
@@ -52,7 +52,22 @@ export const APPROVED_SHA256 = Object.freeze({
 });
 
 export function sha256(text) {
-  return createHash('sha256').update(text, 'utf8').digest('hex');
+  // Line endings are normalised before hashing, and this is load-bearing rather
+  // than cosmetic.
+  //
+  // A checksum that covers CRLF-vs-LF will report tampering when nothing was
+  // tampered with: with `core.autocrlf=true` and no .gitattributes pinning
+  // `eol`, a checkout on Windows holds CRLF while the hash recorded from a
+  // Linux checkout holds LF. That is not hypothetical - it happened here, on
+  // 020_team_lifecycle.sql, whose content was byte-identical after
+  // normalisation and which the guard still called "modified".
+  //
+  // A guard that cries wolf on one developer's platform gets disabled, and a
+  // disabled guard is worse than none. Normalising keeps the property that
+  // matters: any real change to the SQL still fails the hash.
+  return createHash('sha256')
+    .update(String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n'), 'utf8')
+    .digest('hex');
 }
 
 /**
