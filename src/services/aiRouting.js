@@ -33,6 +33,12 @@
 
 import { pool } from '../db/pg.js';
 import { assignConversation, HANDLING_ROLES, CONVERSATION_STATES } from './handoff.js';
+// `assignConversation` proves only tenant + active + handling role. The brand
+// half of eligibility is asserted separately by `assertAssigneeBrandAccess`,
+// which humanOperations exposes for exactly this reuse. Imported from there
+// rather than reimplemented: one definition, one set of lock semantics, and no
+// chance of the two drifting apart.
+import { assertAssigneeBrandAccess, withTransaction } from './humanOperations.js';
 
 /** Ordered so a numeric compare is never required. */
 export const ROUTING_MODES = Object.freeze({
@@ -294,16 +300,35 @@ export async function maybeAutoRoute({ tenantId, conversationId, detection, env 
   }
 
   try {
-    const result = await assignConversation(
-      {
+    // SELECTION AND ASSIGNMENT ARE ONE TRANSACTION.
+    //
+    // Selecting on one connection and assigning on another left a window in
+    // which a brand grant could be revoked in between: the selection had already
+    // seen it, and `assignConversation` does not check brand access at all, so
+    // the assignment still went through. Inside a transaction that window is
+    // closed, because `assertAssigneeBrandAccess` reads both grant tables
+    // `FOR UPDATE`. A concurrent revocation is an UPDATE of exactly those rows,
+    // so it now blocks until this commits: either we saw the grant and lock it
+    // first, or the revoke won and this read sees `revoked_at` and refuses.
+    // Whichever way the race lands, a conversation is never assigned to
+    // somebody who lacks brand access at the moment of the commit.
+    const result = await withTransaction(db ?? pool, async (client) => {
+      await assertAssigneeBrandAccess(client, {
         tenantId,
-        conversationId,
         userId: plan.userId,
-        teamId: plan.rule.target_team_id,
-        reason: `ai_routing:${plan.rule.rule_key}`
-      },
-      { db: db ?? pool, actorUserId: null }
-    );
+        brandId: plan.brandId
+      });
+      return assignConversation(
+        {
+          tenantId,
+          conversationId,
+          userId: plan.userId,
+          teamId: plan.rule.target_team_id,
+          reason: `ai_routing:${plan.rule.rule_key}`
+        },
+        { db: client, actorUserId: null }
+      );
+    });
     return { mode, ...plan, applied: true, state: result.state, action: result.action };
   } catch (e) {
     // A refused assignment must NEVER be retried silently and must never be

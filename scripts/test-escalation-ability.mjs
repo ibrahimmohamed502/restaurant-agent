@@ -284,15 +284,18 @@ section('9. P0.3-A/B behaviour is preserved');
     migFiles.includes('016_manual_reply_idempotency.sql'));
   // 014 is intentionally absent from this repository (taken on an unreleased
   // branch), so the count is not a simple index. Assert the set, not the number.
-  // 019 (AI routing rules) is an approved LATER batch, added under its own
-  // review. It is still an additive table-only migration and is listed here so
-  // this guard keeps refusing anything that was never approved.
-  check('no migration was added other than 017 (this batch), 018 (P0.3-C) and 019 (AI routing)',
-    migFiles.filter((f) => /^01[4-9]_/.test(f)).join(',')
-      === '015_brand_access_grants.sql,016_manual_reply_idempotency.sql,'
-        + '017_escalation_resolve_ability.sql,018_handoff_acknowledgment.sql,'
-        + '019_ai_routing_rules.sql',
-    migFiles.filter((f) => /^01[4-9]_/.test(f)).join(','));
+  // Delegates to the shared fail-closed migration guard: an explicit allowlist
+  // over the WHOLE directory, so 020 and later are caught too. The previous
+  // range check (/^01[4-9]_/) was blind to anything numbered 020 or higher.
+  {
+    const { auditRepoMigrations } = await import('./lib/migrationGuard.mjs');
+    const audit = auditRepoMigrations(REPO);
+    check('no unapproved migration exists anywhere in migrations/',
+      audit.ok, audit.problems.join(' | '));
+    check('017 is present', audit.files.includes('017_escalation_resolve_ability.sql'));
+    check('016 (the P0.2 migration) is still present and untouched by this batch',
+      audit.files.includes('016_manual_reply_idempotency.sql'));
+  }
   check('the new migration is additive: it creates a table reference only through roles',
     !/CREATE TABLE/i.test(MIG17_EXEC));
 }

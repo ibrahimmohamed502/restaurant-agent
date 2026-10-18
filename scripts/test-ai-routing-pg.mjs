@@ -410,7 +410,134 @@ try {
   eq('exactly one assignee is set', raceRow.assigned_user_id, carol);
   eq('the state is ASSIGNED once', raceRow.state, 'ASSIGNED');
 
-  section('20 provider neutrality - the engine names no provider at all');
+  section('20 TOCTOU - revocation between SELECTION and ASSIGNMENT');
+  // The finding this fixes: `assignConversation` proves tenant + active +
+  // handling role but NOT brand access, so a selection made before a revoke
+  // used to still land the assignment afterwards.
+  {
+    const victim = await mkUser(t1.id, 'toctou');
+    const tt = await mkTeam(t1.id, 'ToctouTeam');
+    await q(`INSERT INTO team_members (team_id,user_id) VALUES ($1,$2)`, [tt, victim]);
+    await giveRole(victim, 'Agent');
+    await q(`INSERT INTO user_brand_grants (tenant_id,user_id,brand_id) VALUES ($1,$2,$3)`, [t1.id, victim, b1.id]);
+
+    await q(`DELETE FROM ai_routing_rules`);
+    await q(`INSERT INTO ai_routing_rules (tenant_id,rule_key,detection_kind,detection_value,target_team_id)
+             VALUES ($1,'toctou','auto_escalation_pattern','supplier',$2)`, [t1.id, tt]);
+
+    // 1. Selection genuinely succeeds.
+    const planned = await planAutoAssignment({
+      tenantId: t1.id, conversationId: await mkConv('QUEUED'), detection: det
+    });
+    eq('selection picks the employee while access is live', planned.userId, victim);
+
+    // 2. The grant is revoked AFTER selection but BEFORE assignment - the exact
+    //    window that used to leak.
+    await q(`UPDATE user_brand_grants SET revoked_at=now() WHERE user_id=$1`, [victim]);
+
+    const afterRevoke = await mkConv('QUEUED');
+    const outcome = await maybeAutoRoute({ tenantId: t1.id, conversationId: afterRevoke, detection: det, env: M.live });
+    eq('routing refuses once access is gone', outcome.applied, false);
+    eq('with no_eligible_employee, not a silent success',
+      outcome.reason, ROUTING_REASONS.NO_ELIGIBLE_EMPLOYEE);
+    const { rows: [rowAfter] } = await q(`SELECT assigned_user_id FROM conversations WHERE id=$1`, [afterRevoke]);
+    eq('and the conversation was NOT assigned', rowAfter.assigned_user_id, null);
+
+    // 3. Restoring access makes it work again - the block is not a latch.
+    await q(`UPDATE user_brand_grants SET revoked_at=NULL WHERE user_id=$1`, [victim]);
+    const restored = await mkConv('QUEUED');
+    const okOut = await maybeAutoRoute({ tenantId: t1.id, conversationId: restored, detection: det, env: M.live });
+    eq('routing works again once access is restored', okOut.applied, true);
+    const { rows: [rowOk] } = await q(`SELECT assigned_user_id FROM conversations WHERE id=$1`, [restored]);
+    eq('assigned to the eligible employee', rowOk.assigned_user_id, victim);
+  }
+
+  section('21 the brand check really runs INSIDE the write transaction');
+  {
+    // A second connection revoking the grant while the assignment transaction is
+    // open must be BLOCKED by the FOR UPDATE lock, not raced past it. If the
+    // lock were missing, the revoke would commit first and the assignment would
+    // still succeed on stale data.
+    const racer = await mkUser(t1.id, 'racer');
+    const rt = await mkTeam(t1.id, 'RacerTeam');
+    await q(`INSERT INTO team_members (team_id,user_id) VALUES ($1,$2)`, [rt, racer]);
+    await giveRole(racer, 'Agent');
+    await q(`INSERT INTO user_brand_grants (tenant_id,user_id,brand_id) VALUES ($1,$2,$3)`, [t1.id, racer, b1.id]);
+    await q(`DELETE FROM ai_routing_rules`);
+    await q(`INSERT INTO ai_routing_rules (tenant_id,rule_key,detection_kind,detection_value,target_team_id)
+             VALUES ($1,'racer','auto_escalation_pattern','supplier',$2)`, [t1.id, rt]);
+
+    const lockClient = new pg.Client({ connectionString: url });
+    await lockClient.connect();
+    await lockClient.query('BEGIN');
+    // Take the same lock assertAssigneeBrandAccess takes.
+    await lockClient.query(
+      `SELECT 1 FROM user_brand_grants WHERE user_id=$1 AND tenant_id=$2 AND brand_id=$3 AND revoked_at IS NULL FOR UPDATE`,
+      [racer, t1.id, b1.id]);
+
+    // A competing revoke on ANOTHER connection must not be able to complete.
+    const rival = new pg.Client({ connectionString: url });
+    await rival.connect();
+    let revokeFinished = false;
+    const revoke = rival.query(`UPDATE user_brand_grants SET revoked_at=now() WHERE user_id=$1`, [racer])
+      .then(() => { revokeFinished = true; });
+    await new Promise((r) => setTimeout(r, 250));
+    eq('a concurrent revoke is BLOCKED while the lock is held', revokeFinished, false);
+
+    await lockClient.query('COMMIT');
+    await revoke;
+    eq('and completes once the lock is released', revokeFinished, true);
+    await lockClient.end();
+    await rival.end();
+
+    const { rows: [still] } = await q(`SELECT revoked_at IS NOT NULL AS revoked FROM user_brand_grants WHERE user_id=$1`, [racer]);
+    eq('the revoke ultimately took effect', still.revoked, true);
+  }
+
+  section('22 concurrent routing racing a revocation preserves the invariant');
+  {
+    const subj = await mkUser(t1.id, 'raced');
+    const ct = await mkTeam(t1.id, 'RacedTeam');
+    await q(`INSERT INTO team_members (team_id,user_id) VALUES ($1,$2)`, [ct, subj]);
+    await giveRole(subj, 'Agent');
+    await q(`INSERT INTO user_brand_grants (tenant_id,user_id,brand_id) VALUES ($1,$2,$3)`, [t1.id, subj, b1.id]);
+    await q(`DELETE FROM ai_routing_rules`);
+    await q(`INSERT INTO ai_routing_rules (tenant_id,rule_key,detection_kind,detection_value,target_team_id)
+             VALUES ($1,'raced','auto_escalation_pattern','supplier',$2)`, [t1.id, ct]);
+
+    // Run many assignments concurrently while access is being revoked underneath.
+    const revokerClient = new pg.Client({ connectionString: url });
+    await revokerClient.connect();
+    const convs = await Promise.all(Array.from({ length: 6 }, () => mkConv('QUEUED')));
+    const revoker = (async () => {
+      for (let i = 0; i < 6; i++) {
+        await revokerClient.query(`UPDATE user_brand_grants SET revoked_at=now() WHERE user_id=$1`, [subj]);
+        await new Promise((r) => setTimeout(r, 15));
+      }
+    })();
+    const routed = await Promise.all(convs.map((id) =>
+      maybeAutoRoute({ tenantId: t1.id, conversationId: id, detection: det, env: M.live })));
+    await revoker;
+    await revokerClient.end();
+
+    // THE INVARIANT: any conversation the system claims it assigned must have an
+    // assignee with a LIVE brand grant. Anything else is the vulnerability.
+    const { rows } = await q(
+      `SELECT c.id, c.assigned_user_id,
+              EXISTS (SELECT 1 FROM user_brand_grants g
+                       WHERE g.user_id=c.assigned_user_id AND g.brand_id=$1 AND g.revoked_at IS NULL) AS has_live_grant
+         FROM conversations c WHERE c.id = ANY($2::uuid[])`,
+      [b1.id, convs]);
+    const assigned = rows.filter((r) => r.assigned_user_id);
+    check('every assignment the system reported has a live brand grant',
+      assigned.every((r) => r.has_live_grant),
+      JSON.stringify(assigned.filter((r) => !r.has_live_grant)));
+    eq('the number of assigned conversations equals the number of reported successes',
+      assigned.length, routed.filter((r) => r.applied).length);
+    check('the race did not corrupt any row', rows.length === convs.length);
+  }
+
+  section('23 provider neutrality - the engine names no provider at all');
   const src = readFileSync(join(REPO, 'src/services/aiRouting.js'), 'utf8');
   // Word-bounded so ordinary business vocabulary ("a complaint") is not a hit.
   // Any real provider leak (meta / messenger / comment / instagram / graph)

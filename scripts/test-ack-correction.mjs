@@ -178,15 +178,18 @@ section('4. Scope held: this batch changed wording and presentation only');
   check('no new migration was added by this batch',
     (read('src/services/handoffAcknowledgment.js').match(/handoff_acknowledgments/g) ?? []).length > 0);
   const migFiles = readdirSync(resolve(REPO, 'migrations')).join(' ');
-  // 019 (AI routing rules) is an approved LATER batch, under its own review.
-  // It is still a pure ADDITION after 018 - nothing was renamed or removed -
-  // so this guard now asserts that shape instead of a hard "019 must not exist".
-  check('migrations after 018 are additive only (019 is the AI-routing batch)',
-    /018_handoff_acknowledgment\.sql/.test(migFiles)
-      && (/019_/.test(migFiles) || !/0(19|2\d)_/.test(migFiles))
-      && !/^0(19|2\d)_.*\b(DROP|TRUNCATE|ALTER)\b/im.test(
-        readdirSync(resolve(REPO, 'migrations')).filter((f) => /^0(19|2\d)_/.test(f))
-          .map((f) => read(resolve(REPO, 'migrations', f))).join('\n')));
+  // Delegates to the shared fail-closed migration guard. The previous check here
+  // used a regex requiring a destructive keyword to share a LINE with the
+  // migration filename, which never happens in a real file, so it could not
+  // fire. The replacement checks the whole directory against an explicit
+  // allowlist with content hashes, so an added, renamed or edited migration is
+  // all caught.
+  {
+    const { auditRepoMigrations } = await import('./lib/migrationGuard.mjs');
+    const audit = auditRepoMigrations(REPO);
+    check('migrations/ matches the approved allowlist exactly (added, renamed or edited all rejected)',
+      audit.ok, audit.problems.join(' | '));
+  }
 }
 
 console.log(`\n${'='.repeat(66)}`);

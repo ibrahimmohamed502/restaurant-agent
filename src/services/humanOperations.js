@@ -191,7 +191,7 @@ const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
  * whole thing back, which is what makes "the state can never move without its
  * history row" true rather than merely intended.
  */
-async function withTransaction(db, fn) {
+export async function withTransaction(db, fn) {
   const client = await db.connect();
   let committed = false;
   try {
@@ -563,7 +563,7 @@ export async function assignConversationOperation({ session, conversationId, bod
  * exists, is inactive, belongs to another company, or merely lacks this brand -
  * all four are the same 422, so this endpoint cannot be used to enumerate users.
  */
-async function assertAssigneeBrandAccess(client, { tenantId, userId, brandId }) {
+export async function assertAssigneeBrandAccess(client, { tenantId, userId, brandId }) {
   const { rows: [member] } = await client.query(
     `SELECT u.id
        FROM users u
