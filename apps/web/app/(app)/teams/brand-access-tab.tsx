@@ -174,12 +174,26 @@ export function BrandAccessTab(props: Props) {
                 </div>
               </div>
 
+              {/*
+                Company Admins and anyone with an all-brands delegation hold
+                company-wide scope, so per-brand grants are redundant for them.
+                Showing "Not granted" beside "All brands" in the eligibility
+                screen looked like a contradiction; this explains why.
+              */}
+              {selected.all_brands && (
+                <div className="flex items-start gap-2 rounded-md border border-info/30 bg-info/10 p-3 text-sm">
+                  <ShieldCheck className="size-4 shrink-0 mt-0.5 text-info" />
+                  <span>{t('brandAccess.allBrandsNote')}</span>
+                </div>
+              )}
+
               {loading && <PageLoading />}
 
               {!loading && grants && (
                 <ul className="space-y-1.5">
                   {brands.map((b) => {
                     const live = liveGrant(b.id);
+                    const disabled = hasAll; // individual grants are redundant
                     return (
                       <li key={b.id}
                         className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
@@ -187,18 +201,22 @@ export function BrandAccessTab(props: Props) {
                         <div className="flex items-center gap-2">
                           {live ? (
                             <Badge variant="success">{t('brandAccess.granted')}</Badge>
+                          ) : hasAll ? (
+                            <Badge variant="neutral">{t('brandAccess.coveredByAll')}</Badge>
                           ) : (
                             <Badge variant="neutral">{t('brandAccess.notGranted')}</Badge>
                           )}
                           {live ? (
                             <Button size="sm" variant="ghost"
-                              disabled={busy || !canRevoke}
+                              disabled={busy || !canRevoke || hasAll}
+                              title={hasAll ? t('brandAccess.redundantHint') : undefined}
                               onClick={() => void handleRevoke(b.id)}>
                               <ShieldOff className="size-3.5" /> {t('brandAccess.revoke')}
                             </Button>
                           ) : (
                             <Button size="sm" variant="ghost"
-                              disabled={busy || !canGrant}
+                              disabled={busy || !canGrant || hasAll}
+                              title={hasAll ? t('brandAccess.redundantHint') : undefined}
                               onClick={() => void handleGrant(b.id)}>
                               <ShieldCheck className="size-3.5" /> {t('brandAccess.grant')}
                             </Button>

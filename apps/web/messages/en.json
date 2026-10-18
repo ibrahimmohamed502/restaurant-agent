@@ -736,7 +736,10 @@
       "confirmRevokeAllBody": "This person will lose access to every brand in this company.",
       "errors": {
         "selfRevoke": "You cannot revoke your own brand access."
-      }
+      },
+      "allBrandsNote": "This person has company-wide brand access, so individual brand grants are not needed. They can already reach every brand in this company.",
+      "coveredByAll": "All brands",
+      "redundantHint": "Redundant: this person already has access to every brand in the company."
     }
   },
   "command": {
