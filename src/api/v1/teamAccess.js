@@ -39,6 +39,21 @@ const TEAM_ABILITIES = Object.freeze([
   'team.read', 'team.create', 'team.update', 'team.disable', 'team.assign'
 ]);
 
+/**
+ * Brand abilities the /teams screen needs in order to show and edit brand
+ * access. A separate list rather than merging into TEAM_ABILITIES, so the
+ * contract stays readable: team abilities administer departments, brand
+ * abilities administer access, and the endpoint reports which of each the
+ * caller holds.
+ *
+ * Both lists are allowlists. A new ability added anywhere else must be named
+ * here before it can be reported, so this endpoint cannot start answering
+ * questions it was never asked.
+ */
+const BRAND_ABILITIES = Object.freeze([
+  'brand.read', 'brand.grant', 'brand.revoke', 'brand.grant_all', 'brand.revoke_all'
+]);
+
 /** The same shim users.js uses, so `req.auth` means the same thing everywhere. */
 function adaptAuth(req, _res, next) {
   if (req.v1) {
@@ -134,7 +149,11 @@ export function createTeamAccessRouter() {
     if (!ctx) return;
     const roles = req.v1?.roles ?? [];
     const custom = req.v1?.customAbilities ?? [];
-    const abilities = TEAM_ABILITIES.filter((a) => can(roles, a, custom));
+    // The screen needs BOTH sets to decide which buttons to render. Reporting
+    // them together is safe: the caller only learns about its own abilities, and
+    // only from the fixed allowlists - never a free-form enumeration.
+    const abilities = [...TEAM_ABILITIES, ...BRAND_ABILITIES]
+      .filter((a) => can(roles, a, custom));
     return res.json({ data: { abilities } });
   });
 

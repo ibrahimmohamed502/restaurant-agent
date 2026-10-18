@@ -623,7 +623,8 @@
     "description": "Group people into departments, then see who can actually take a conversation.",
     "tabs": {
       "departments": "Departments",
-      "eligibility": "Who can take work"
+      "eligibility": "Who can take work",
+      "brandAccess": "Brand Access"
     },
     "team": {
       "members": "Members",
