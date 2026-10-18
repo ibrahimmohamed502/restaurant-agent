@@ -698,6 +698,123 @@ try {
     await pool.end();
   }
 
+  section('17 capabilities and the routes can never disagree');
+  {
+    // The question this exists to answer: is /teams/capabilities reporting the
+    // caller's REAL permissions, or just whatever happened to be on the session?
+    //
+    // Spot checks answer that weakly. This asserts the PROPERTY instead - for
+    // every ability the endpoint reports, the matching route must actually let
+    // the action through, and for every ability it withholds, the route must
+    // actually refuse. Across seven different role sets and all five abilities.
+    // One disagreement is a failure, so the screen cannot offer a button that
+    // 403s or hide one that would have worked.
+    const express = (await import('express')).default;
+    const { createApiV1Router } = await import('../src/api/v1/index.js');
+    const pool = new pg.Pool({ connectionString: url, max: 4 });
+
+    const appFor = (roles, customAbilities = []) => {
+      const app = express();
+      const router = createApiV1Router({
+        pool,
+        validateSessionFn: async () => ({
+          tenantId: t1.id, user: { id: admin, email: 'admin@t.local', name: 'A' },
+          roles, customAbilities
+        }),
+        verifyPasswordFn: async () => false,
+        createSessionFn: async () => ({ token: 'x', expiresAt: new Date(Date.now() + 60000) }),
+        revokeSessionFn: async () => {},
+        lockedSecondsFn: async () => 0,
+        recordFailedLoginFn: async () => {},
+        resetLoginAttemptsFn: async () => {}
+      });
+      app.use(express.json());
+      app.use('/api/v1', router);
+      return new Promise((r) => {
+        const s = app.listen(0, '127.0.0.1', () =>
+          r({ s, base: `http://127.0.0.1:${s.address().port}/api/v1` }));
+      });
+    };
+    const authFor = async (base) => {
+      const r = await fetch(`${base}/_health`);
+      const c = (r.headers.get('set-cookie') || '').match(/csrf_token=[^;]*/)?.[0];
+      return { cookie: `lwc_session=x; ${c}`, csrf: c?.split('=')[1] };
+    };
+
+    const CASES = [
+      { label: 'Company Admin', roles: ['Company Admin'], custom: [] },
+      { label: 'Supervisor', roles: ['Supervisor'], custom: [] },
+      { label: 'Agent', roles: ['Agent'], custom: [] },
+      { label: 'custom read+update', roles: [], custom: ['team.read', 'team.update'] },
+      { label: 'custom disable only', roles: [], custom: ['team.disable'] },
+      { label: 'custom assign only', roles: [], custom: ['team.assign'] },
+      { label: 'custom nothing', roles: [], custom: [] }
+    ];
+
+    let seq = 0;
+    let mismatches = 0;
+    const servers = [];
+
+    for (const c of CASES) {
+      const srv = await appFor(c.roles, c.custom);
+      servers.push(srv);
+      const auth = await authFor(srv.base);
+      const reported = ((await (await fetch(`${srv.base}/teams/capabilities`,
+        { headers: { Cookie: auth.cookie } })).json())?.data?.abilities) ?? [];
+
+      const h = { 'Content-Type': 'application/json', Cookie: auth.cookie, 'x-csrf-token': auth.csrf };
+      const mkTeam = async (tag) => (await q(
+        `INSERT INTO teams (tenant_id,name) VALUES ($1,$2) RETURNING id`,
+        [t1.id, `Prop ${tag} ${seq++}`])).rows[0].id;
+      const gid = await mkTeam(c.label);
+      // A SEPARATE team for the disable probe. Sharing one made the assign probe
+      // hit an already-disabled team and return 409 TEAM_FORBIDDEN, which reads
+      // like a permission refusal and is not one. Each probe now measures
+      // exactly one thing.
+      const gidDisable = await mkTeam(`${c.label} disable`);
+
+      // One real request per ability, against the real routes.
+      const probes = [
+        ['team.read', () => fetch(`${srv.base}/teams`, { headers: { Cookie: auth.cookie } })],
+        ['team.create', () => fetch(`${srv.base}/teams`, {
+          method: 'POST', headers: h, body: JSON.stringify({ name: `Probe ${seq++}` }) })],
+        ['team.update', () => fetch(`${srv.base}/teams/${gid}`, {
+          method: 'PATCH', headers: h, body: JSON.stringify({ name: `Renamed ${seq++}` }) })],
+        ['team.assign', () => fetch(`${srv.base}/teams/${gid}/members`, {
+          method: 'POST', headers: h, body: JSON.stringify({ userId: agent }) })],
+        ['team.disable', () => fetch(`${srv.base}/teams/${gidDisable}`, {
+          method: 'PATCH', headers: h, body: JSON.stringify({ status: 'disabled' }) })]
+      ];
+
+      for (const [ability, run] of probes) {
+        const says = reported.includes(ability);
+        const res = await run();
+        const allowed = res.status < 400;
+        if (says !== allowed) {
+          mismatches++;
+          console.log(`        MISMATCH ${c.label} ${ability}: reported=${says} route=${allowed} (${res.status})`);
+        }
+      }
+    }
+
+    eq('capabilities and the routes agree on all 35 ability/role combinations',
+      mismatches, 0);
+
+    // And the scope question specifically: team.* abilities are COMPANY-scoped,
+    // never brand-scoped. Brand scope decides which conversations a person sees,
+    // not whether they may administer departments. A brand delegation must
+    // therefore never manufacture a team ability.
+    const brandOnly = await appFor([], ['brand.grant', 'brand.grant_all', 'brand.integration.connect']);
+    servers.push(brandOnly);
+    const boAuth = await authFor(brandOnly.base);
+    eq('brand powers alone confer NO team capability',
+      (await (await fetch(`${brandOnly.base}/teams/capabilities`,
+        { headers: { Cookie: boAuth.cookie } })).json())?.data?.abilities, []);
+
+    for (const s of servers) s.s.close();
+    await pool.end();
+  }
+
   section('16 removing a member: the three paths that matter');
   {
     const express = (await import('express')).default;
