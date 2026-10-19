@@ -26,11 +26,20 @@ async function assertRolesDelegable(req, roles) {
   const actorRoles = req.auth?.roles ?? [];
   const actorCustomAbilities = req.v1?.customAbilities ?? req.auth?.customAbilities ?? [];
   const { rows } = await pool.query(
-    `SELECT name, permissions FROM roles WHERE tenant_id = $1 AND name = ANY($2)`,
+    `SELECT name, permissions, status FROM roles WHERE tenant_id = $1 AND name = ANY($2)`,
     [req.auth.tenantId, roles.map(String)]
   );
   const byName = new Map(rows.map((r) => [r.name, r.permissions]));
+  const statusByName = new Map(rows.map((r) => [r.name, r.status]));
   for (const roleName of roles) {
+    // Reject disabled or deleted roles.
+    const status = statusByName.get(String(roleName));
+    if (status !== 'active') {
+      const err = new Error(`role "${roleName}" is not active`);
+      err.status = 409;
+      err.code = 'ROLE_NOT_ACTIVE';
+      throw err;
+    }
     if (!canDelegateRole({
       actorRoles,
       actorCustomAbilities,
@@ -47,7 +56,7 @@ async function assertRolesDelegable(req, roles) {
 
 /** Emit the ceiling rejection without leaking a stack trace. */
 function respondDelegationError(res, e) {
-  if (e?.code === 'ROLE_NOT_DELEGABLE') {
+  if (e?.code === 'ROLE_NOT_DELEGABLE' || e?.code === 'ROLE_NOT_ACTIVE') {
     return res.status(e.status ?? 403).json({ error: e.message, code: e.code });
   }
   throw e;

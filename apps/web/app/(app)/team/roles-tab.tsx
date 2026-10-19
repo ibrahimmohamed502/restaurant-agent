@@ -53,7 +53,7 @@ const PERMISSION_GROUPS: Array<{ module: string; abilities: string[] }> = [
   ]},
   { module: 'brand', abilities: [
     'brand.read', 'brand.create', 'brand.update', 'brand.disable',
-    'brand.grant', 'brand.revoke', 'brand.grant_all', 'brand.revoke_all',
+    'brand.grant', 'brand.revoke',
     'brand.integration.connect', 'brand.integration.disconnect',
     'brand.integration.reconnect', 'brand.integration.status'
   ]},
@@ -210,8 +210,10 @@ export function RolesTab({ busy, setBusy, setActionError }: Props) {
                       <td className="px-4 py-2.5">
                         <span className={r.status === 'active'
                           ? 'inline-flex items-center rounded-md border border-success/30 bg-success/10 px-1.5 py-0.5 text-2xs font-medium text-success'
+                          : r.status === 'deleted'
+                          ? 'inline-flex items-center rounded-md border border-red-300/30 bg-red-500/10 px-1.5 py-0.5 text-2xs font-medium text-red-600'
                           : 'inline-flex items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 text-2xs font-medium text-destructive'}>
-                          {r.status === 'active' ? tc('active') : t('disabled')}
+                          {r.status === 'active' ? tc('active') : r.status === 'deleted' ? t('deleted') : t('disabled')}
                         </span>
                       </td>
                       <td className="px-4 py-2.5">
@@ -221,9 +223,9 @@ export function RolesTab({ busy, setBusy, setActionError }: Props) {
                             <Pencil className="h-3 w-3" aria-hidden /> {tc('edit')}
                           </Button>
                           <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs"
-                            disabled={busy || isSystem} onClick={() => toggleStatus(r)}>
+                            disabled={busy || isSystem || r.status === 'deleted'} onClick={() => toggleStatus(r)}>
                             {r.status === 'active' ? <ShieldOff className="h-3 w-3" aria-hidden /> : <ShieldCheck className="h-3 w-3" aria-hidden />}
-                            {r.status === 'active' ? t('disable') : t('enable')}
+                            {r.status === 'active' ? t('disable') : r.status === 'deleted' ? t('deleted') : t('enable')}
                           </Button>
                           <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs text-destructive"
                             disabled={busy || isSystem} onClick={() => setConfirmDelete(r)}>

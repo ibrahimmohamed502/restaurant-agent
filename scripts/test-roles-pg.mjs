@@ -33,6 +33,7 @@ const rejects = async (name, code, fn) => {
   try { await fn(); check(name, false, 'expected a rejection, got success'); }
   catch (e) { check(name, e?.code === code, `code=${e?.code} want=${code}`); }
 };
+const section = (t) => console.log('\n=== ' + t + ' ===');
 
 await client.connect();
 

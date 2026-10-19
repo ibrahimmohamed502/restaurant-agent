@@ -290,6 +290,11 @@ export async function setRoleStatus({ tenantId, actorUserId, roleId, status, db 
     if (!before) fail(ROLE_ERRORS.NOT_FOUND, 404, 'role not found');
     if (SYSTEM_ROLES.has(before.name)) fail(ROLE_ERRORS.SYSTEM, 409, 'system roles cannot be disabled');
 
+    // A soft-deleted role cannot be re-enabled through the normal endpoint.
+    if (before.status === 'deleted' && status === 'active') {
+      fail(ROLE_ERRORS.NOT_DELEGABLE, 409, 'a deleted role cannot be re-enabled');
+    }
+
     const { rows: [after] } = await client.query(
       `UPDATE roles SET status = $3, updated_at = now()
         WHERE id = $1 AND tenant_id = $2
@@ -349,9 +354,10 @@ export async function deleteRole({ tenantId, actorUserId, roleId, db = pool }) {
     );
     if (holders.n > 0) fail(ROLE_ERRORS.NOT_DELEGABLE, 409, 'remove all users from this role before deleting it');
 
-    // Soft delete: set status to disabled. The row stays for audit history.
+    // Soft delete: set status to deleted. The row stays for audit history.
+    // Distinct from 'disabled' so a deleted role cannot be re-enabled.
     const { rows: [after] } = await client.query(
-      `UPDATE roles SET status = 'disabled', updated_at = now()
+      `UPDATE roles SET status = 'deleted', updated_at = now()
         WHERE id = $1 AND tenant_id = $2
         RETURNING id, name, permissions, status, created_at, created_by, updated_at`,
       [roleId, tenantId]
