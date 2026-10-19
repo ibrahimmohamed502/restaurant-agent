@@ -1238,10 +1238,11 @@ console.log('='.repeat(64));
 // the remaining sections never run - the run must fail rather than report a
 // short pass. This number is the verified count as of run 39218882467; raise it
 // when adding coverage, never lower it.
-// Raised 196 -> 228 for the PKCE/config_id section. The floor is precisely what
-// would have caught the original defect: the suite could report 196 passing
-// while never once asserting that code_verifier is sent at the exchange.
-const MIN_ASSERTIONS = 228;
+// Raised 196 -> 229 for the PKCE/config_id section, verified on run 39232448510.
+// The floor is precisely what would have caught the original defect: the suite
+// could report 196 passing while never once asserting that code_verifier is sent
+// at the exchange.
+const MIN_ASSERTIONS = 229;
 if (pass < MIN_ASSERTIONS) {
   console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
   console.log('  This is NOT a pass - sections were almost certainly skipped.');
