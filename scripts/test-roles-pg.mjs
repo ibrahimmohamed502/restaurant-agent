@@ -88,6 +88,12 @@ try {
   await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Supervisor',$2::jsonb)`, [t1, JSON.stringify(['role.read','conversation.read'])]);
   await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Agent',$2::jsonb)`, [t1, JSON.stringify(['conversation.read'])]);
   await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Escalation Manager',$2::jsonb)`, [t1, JSON.stringify(['escalation.resolve'])]);
+  // A role that belongs to the SECOND company. The HTTP section tries to reach
+  // it from a first-company session and expects a 404; without this row the
+  // lookup returned nothing and threw, which is how the assertion silently
+  // stopped being an assertion at all.
+  const { rows: [otherTenantRole] } = await q(
+    `INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Other Tenant Manager',$2::jsonb) RETURNING id`, [t2, JSON.stringify(['conversation.read'])]);
   // Assign admin the Company Admin role
   const { rows: [adminRole] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t1]);
   await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2)`, [admin, adminRole.id]);
@@ -370,14 +376,19 @@ try {
   // ---------------------------------------------------------------- 11 transaction rollback
   section('11 transaction rollback on failure');
   {
+    // The permission list must be one Company Admin actually holds, or the
+    // delegation ceiling refuses the FIRST create and the duplicate is never
+    // reached - which is what happened with permissions: [] before.
     await rejects('a failed create does not leave a partial row', ROLE_ERRORS.NAME_TAKEN, async () => {
       await q('BEGIN');
       try {
         await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-          actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test', permissions: [], db: dbPool });
+          actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test',
+          permissions: ['conversation.read'], db: dbPool });
         // Force a failure by creating a duplicate
         await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-          actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test', permissions: [], db: dbPool });
+          actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test',
+          permissions: ['conversation.read'], db: dbPool });
         await q('COMMIT');
       } catch (e) {
         await q('ROLLBACK');
@@ -501,8 +512,17 @@ try {
       check('no role was created in the other company', !crossTenant);
     }
 
-    // Cross-tenant
-    eq('cross-tenant access is refused', (await send(ca.base, caAuth, 'GET', `/roles/${(await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t2])).rows[0].id}`)).status, 404);
+    // Cross-tenant: this session belongs to t1 and must not reach a role that
+    // belongs to t2. Refers to the fixture row created in t2, not to a lookup
+    // that could return nothing.
+    eq('cross-tenant access is refused',
+      (await send(ca.base, caAuth, 'GET', `/roles/${otherTenantRole.id}`)).status, 404);
+    eq('cross-tenant edit is refused',
+      (await send(ca.base, caAuth, 'PATCH', `/roles/${otherTenantRole.id}`, { name: 'Hacked' })).status, 404);
+    eq('cross-tenant delete is refused',
+      (await send(ca.base, caAuth, 'DELETE', `/roles/${otherTenantRole.id}`)).status, 404);
+    const { rows: [survived] } = await q(`SELECT name FROM roles WHERE id=$1`, [otherTenantRole.id]);
+    eq('and the other company role is untouched', survived?.name, 'Other Tenant Manager');
 
     // Disable/enable
     const disable = await send(ca.base, caAuth, 'POST', `/roles/${roleId}/status`, { status: 'disabled' });
