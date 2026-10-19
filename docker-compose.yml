@@ -1,3 +1,4 @@
+name: restaurant-agent
 # =============================================================================
 # LWC Customer Engagement Platform - production stack (project: restaurant-agent)
 #
@@ -127,6 +128,13 @@ services:
     restart: unless-stopped
     ports:
       - "3001:3000"
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=restaurant-agent_default
+      - traefik.http.routers.social.rule=Host(`social.universalfoodco.com`)
+      - traefik.http.routers.social.entrypoints=websecure
+      - traefik.http.routers.social.tls.certresolver=letsencrypt
+      - traefik.http.services.social.loadbalancer.server.port=3000
     environment:
       NODE_ENV: production
       PORT: "3000"
