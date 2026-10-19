@@ -373,31 +373,53 @@ try {
     await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: dbPool });
   }
 
-  // ---------------------------------------------------------------- 11 transaction rollback
-  section('11 transaction rollback on failure');
+  // ---------------------------------------------------------------- 11 transaction atomicity
+  section('11 transaction atomicity on failure');
   {
-    // The permission list must be one Company Admin actually holds, or the
-    // delegation ceiling refuses the FIRST create and the duplicate is never
-    // reached - which is what happened with permissions: [] before.
-    await rejects('a failed create does not leave a partial row', ROLE_ERRORS.NAME_TAKEN, async () => {
-      await q('BEGIN');
-      try {
-        await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-          actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test',
-          permissions: ['conversation.read'], db: dbPool });
-        // Force a failure by creating a duplicate
-        await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-          actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test',
-          permissions: ['conversation.read'], db: dbPool });
-        await q('COMMIT');
-      } catch (e) {
-        await q('ROLLBACK');
-        throw e;
-      }
-    });
-    // Verify no row was left
-    const { rows } = await q(`SELECT count(*)::int n FROM roles WHERE tenant_id=$1 AND name='Rollback Test'`, [t1]);
-    check('no partial row left after rollback', rows[0].n === 0);
+    // WHAT THIS USED TO ASSERT, AND WHY IT COULD NOT BE TRUE.
+    // The previous version wrapped the calls in its own BEGIN/ROLLBACK and then
+    // expected zero rows. That framing was impossible: acquire() borrows its OWN
+    // client from the pool and manages its own BEGIN/COMMIT/ROLLBACK, so a
+    // BEGIN issued by the caller on a different connection cannot wrap it. The
+    // first create committed regardless, and the assertion was failing for a
+    // reason that had nothing to do with the service.
+    //
+    // WHAT IS ACTUALLY GUARANTEED, AND NOW TESTED: a createRole call that fails
+    // adds no row. That is the real atomicity property - its own transaction
+    // leaves nothing behind - and it is independent of what the caller does.
+    const countRows = async (name) =>
+      (await q(`SELECT count(*)::int n FROM roles WHERE tenant_id=$1 AND name=$2`, [t1, name])).rows[0].n;
+
+    await q(`DELETE FROM roles WHERE tenant_id=$1 AND name='Atomicity Test'`, [t1]);
+
+    const before = await countRows('Atomicity Test');
+    eq('the name is free to begin with', before, 0);
+
+    await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
+      actorCustomAbilities: ['role.create', 'role.read'], name: 'Atomicity Test',
+      permissions: ['conversation.read'], db: dbPool });
+    eq('a valid create persists one row', await countRows('Atomicity Test'), 1);
+
+    // Now fail it: a duplicate name must not add a second row, and must not
+    // damage the first.
+    await rejects('a duplicate create is refused', ROLE_ERRORS.NAME_TAKEN,
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
+        actorCustomAbilities: ['role.create', 'role.read'], name: 'Atomicity Test',
+        permissions: ['conversation.reply'], db: dbPool }));
+    eq('a failed create adds no row', await countRows('Atomicity Test'), 1);
+
+    // A failure inside the transaction, after validation has passed, must also
+    // leave nothing: the permission set that trips the delegation ceiling is
+    // rejected before any write, and the row count must be unchanged.
+    const countBeforeEscalation = await countRows('Escalated');
+    await rejects('an escalation attempt is refused', ROLE_ERRORS.NOT_DELEGABLE,
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
+        actorCustomAbilities: ['role.create', 'role.read'], name: 'Atomicity Escalation',
+        permissions: ['company.create'], db: dbPool }));
+    eq('and leaves no escalation row behind', await countRows('Atomicity Escalation'), 0);
+    eq('and disturbs no existing row', await countRows('Escalated'), countBeforeEscalation);
+
+    await q(`DELETE FROM roles WHERE tenant_id=$1 AND name='Atomicity Test'`, [t1]);
   }
 
   // ---------------------------------------------------------------- 12 HTTP authz
