@@ -421,7 +421,42 @@ try {
 
     // Verify it's still in the DB (soft delete)
     const { rows: [stillThere] } = await q(`SELECT status FROM roles WHERE id=$1`, [roleId]);
-    check('soft-deleted role still exists in DB', stillThere.status === 'disabled');
+    check('soft-deleted role still exists in DB', stillThere.status === 'deleted');
+
+    // ---------------------------------------------------------------- Negative security tests
+    section('12b negative security');
+
+    // 1. Backend rejects updating a deleted role
+    eq('updating a deleted role is refused', (await send(ca.base, caAuth, 'PATCH', `/roles/${roleId}`, { name: 'Hacked' })).status, 409);
+
+    // 2. Backend rejects assigning a deleted role to a user
+    const userCreate = await send(ca.base, caAuth, 'POST', '/users', { email: 'testassign@t.local', name: 'TestAssign', password: 'password123', roles: [] });
+    const testUserId = userCreate.body?.id;
+    if (testUserId) {
+      eq('assigning a deleted role to a user is refused', (await send(ca.base, caAuth, 'POST', `/users/${testUserId}/roles`, { roles: ['HTTP Test Role'] })).status, 409);
+    }
+
+    // 3. Cross-brand isolation: brand.grant_all is rejected in custom roles
+    eq('brand.grant_all in custom role is refused', (await send(ca.base, caAuth, 'POST', '/roles', { name: 'BrandEscalated', permissions: ['brand.grant_all'] })).status, 422);
+
+    // 4. Disabled role cannot be assigned
+    const disabledRoleCreate = await send(ca.base, caAuth, 'POST', '/roles', { name: 'Disabled Test Role', permissions: ['conversation.read'] });
+    const disabledRoleId = disabledRoleCreate.body?.data?.role?.id;
+    if (disabledRoleId) {
+      await send(ca.base, caAuth, 'POST', `/roles/${disabledRoleId}/status`, { status: 'disabled' });
+      if (testUserId) {
+        eq('assigning a disabled role to a user is refused', (await send(ca.base, caAuth, 'POST', `/users/${testUserId}/roles`, { roles: ['Disabled Test Role'] })).status, 409);
+      }
+      // Cleanup
+      await q(`DELETE FROM user_roles WHERE role_id=$1`, [disabledRoleId]);
+      await send(ca.base, caAuth, 'DELETE', `/roles/${disabledRoleId}`);
+    }
+
+    // Cleanup test user
+    if (testUserId) {
+      await q(`DELETE FROM user_roles WHERE user_id=$1`, [testUserId]);
+      await q(`DELETE FROM users WHERE id=$1`, [testUserId]);
+    }
 
     for (const s of [ca, sup, ag]) s.s.close();
     await pool.end();
