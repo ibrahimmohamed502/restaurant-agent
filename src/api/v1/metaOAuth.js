@@ -36,6 +36,7 @@ import {
   claimGrantForConfirm,
   purgeExpiredOAuthStates,
   generatePkce,
+  takePkceVerifier,
   OAuthStateError,
   OAUTH_STATE_ERRORS
 } from '../../services/oauthState.js';
@@ -119,6 +120,11 @@ function statusForStateError(code) {
       return 409;
     case OAUTH_STATE_ERRORS.MISMATCH:
       return 403;
+    case OAUTH_STATE_ERRORS.CRYPTO_UNAVAILABLE:
+      // Server-side misconfiguration (missing/rotated ENCRYPTION_KEY), not a
+      // client error. 500 so it is not mistaken for "you did something wrong"
+      // and retried by the user.
+      return 500;
     default:
       return 400;
   }
@@ -258,9 +264,19 @@ export function createMetaOAuthRouter({ pool }) {
 
     let token;
     try {
-      token = await exchangeCode({ code, redirectUri });
+      // PKCE: release the verifier that was encrypted against this state, and
+      // destroy it in the same step. It is needed for exactly one exchange, and
+      // the state is already claimed so there is no retry path to protect.
+      // Returning null here is correct and non-fatal: it means this connection
+      // was started with META_OAUTH_PKCE=false.
+      const codeVerifier = await takePkceVerifier({
+        stateId: claimed.id,
+        expectedHash: claimed.codeVerifierHash,
+        db: req.db
+      });
+      token = await exchangeCode({ code, redirectUri, codeVerifier });
     } catch (e) {
-      if (e instanceof MetaOAuthError) {
+      if (e instanceof MetaOAuthError || e instanceof OAuthStateError) {
         audit({
           tenantId: claimed.tenantId,
           actorUserId: claimed.actorUserId,
@@ -268,9 +284,13 @@ export function createMetaOAuthRouter({ pool }) {
           objectType: 'oauth',
           objectId: claimed.id,
           ip: req.ip,
+          // Our own error code only. The verifier, the authorization code and
+          // Meta's description are never recorded.
           metadata: { upstream: e.code }
         });
-        return apiError(res, 502, e.code, e.message);
+        const sent = sendServiceError(res, e);
+        if (sent) return sent;
+        return apiError(res, e instanceof OAuthStateError ? statusForStateError(e.code) : 502, e.code, e.message);
       }
       throw e;
     }

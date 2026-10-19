@@ -4,8 +4,9 @@
 B1's assumptions can be confirmed or corrected **before** any real OAuth attempt.
 **No changes are made by this inspection.** Nothing here requires the App Secret.
 
-**Status:** B1 is Development + CI Verified. **Not accepted, not deployed, not
-merged.** This document is a read request; it changes nothing.
+**Status:** B1 is CI Verified. **Not accepted, not deployed, not merged.** Steps 1
+and the B1 permission rows of Step 4 are **owner-verified**; the rest remain a
+read request. Nothing in this document changes Meta.
 
 ---
 
@@ -25,50 +26,53 @@ merged.** This document is a read request; it changes nothing.
 
 ## Step 1 — Identify the app, and its App Mode
 
-**Where:** <https://developers.facebook.com/apps> → your app → **Dashboard** (the
-landing page for the app).
+**STATUS: COMPLETE — owner verified 2026-10-19. Do not re-collect these values.**
 
-**What to look for:**
-1. The **App ID**, shown in the app header. Confirm it matches `FB_APP_ID` on the
-   VPS (it is an identifier, safe to share).
-2. The **App Mode** indicator, shown near the top of the dashboard — a toggle or
-   banner reading **Live** or **Development**.
+| Field | Verified value |
+|---|---|
+| App ID | `1673966207646736` |
+| App Name | Restaurant Bot |
+| App Mode | **Live** |
+| App Type | Business |
 
-**Report:** App ID · App Mode (Live / Development)
-
-> Why it matters: in **Development** mode, only people with an App Role
-> (Admin / Developer / Tester) can complete the authorization. A real customer
-> will not be able to connect until the app is Live or added as a tester.
+> Why it matters, now that the answer is known: the app is **Live**, so
+> authorization is not restricted to App Roles. Any Facebook account the app is
+> not otherwise restricted by Page access can complete a consent. That also means
+> `pages_show_list` / `pages_read_engagement` must be **Active** rather than
+> merely requested — which is what Step 4 confirms.
 
 ---
 
 ## Step 2 — Login Type (the single most important unknown)
 
-**Where:** left sidebar → **Facebook Login** (or **Use cases** → **Login and
-account discovery**, in newer layouts). Then the **Settings** tab on that page.
+**STATUS: PARTIALLY COMPLETE — owner verified 2026-10-19.**
 
-**What to look for:**
-1. Whether the configured product is **Facebook Login** or **Facebook Login for
-   Business**. In Facebook Login for Business the product is usually listed under
-   **Business** or **Use cases**, not under Facebook Login.
-2. The **Client OAuth Settings** section, and within it:
-   - whether **PKCE** is listed as supported / enabled;
-   - whether **Enforce HTTPS** is on.
+| Field | Verified value |
+|---|---|
+| Product | **Facebook Login for Business** — set up |
+| PKCE supported | **UNKNOWN** — not yet inspected |
+| Enforce HTTPS | **UNKNOWN** — not yet inspected |
+| Configuration ID | **UNKNOWN** — not yet inspected |
 
-**Report:** Login Type (Facebook Login / Facebook Login for Business) · PKCE
-supported (yes / no / not shown) · Enforce HTTPS (on / off / not shown)
+**Remaining work: Facebook Login for Business → Configurations.** Read the
+Configuration ID from that screen (it is an identifier, safe to share) and report
+whether PKCE is offered.
 
-> Why it matters: the two login types can behave differently for redirect URIs,
-> scopes and token handling. B1 sends PKCE **on** by default
-> (`META_OAUTH_PKCE=true`). If PKCE is not supported for this configuration,
-> that single env var must be set to `false` before the Spike — otherwise every
-> connect fails.
+> Why the Configuration ID matters now: the app is confirmed to be **Facebook
+> Login for Business**. B1 sends **no `config_id`** — it relies on the app's
+> default configuration. Login for Business configurations are addressed by
+> `config_id`, and if this app has no usable default the authorization request
+> will be rejected before any user sees a consent screen. This is the single
+> highest-value unknown remaining.
 
 ---
 
 ## Step 3 — Valid OAuth Redirect URIs
 
-**Where:** same page → **Facebook Login → Settings** → **Client OAuth Settings** →
+**STATUS: NOT DONE — this is now unblocked and is the next owner action after the
+Configuration ID.**
+
+**Where:** Facebook Login for Business → **Configurations** → the configuration →
 **Valid OAuth redirect URIs**.
 
 **What to look for:**
@@ -82,10 +86,16 @@ supported (yes / no / not shown) · Enforce HTTPS (on / off / not shown)
 > https://social.universalfoodco.com/api/v1/integrations/facebook/callback
 > ```
 >
-> It is **not** registered today — there is no Traefik router for
-> `social.universalfoodco.com` yet. So expect an empty or unrelated list. That
-> is expected at this stage; it must be added only after the router exists, and
-> only with separate Production approval.
+> It is **not** registered today. The Traefik router for
+> `social.universalfoodco.com` **now exists** and serves the app — corrected
+> 2026-10-19, GitHub `main` commit `287e178`, which pinned the compose project
+> name and registered the six Traefik labels. Verified live: `/dashboard` → 307,
+> `/api/v1/_health` → 200.
+>
+> The remaining blocker is **not** the router. It is that B1 itself is not
+> deployed, so the callback path currently resolves to the pre-B1 integrations
+> router and answers `401`. Registering the URI before B1 ships would send real
+> users to a dead endpoint.
 >
 > Also note: B1 compares the redirect URI with **exact string equality**. A
 > trailing slash or a missing segment will be refused.
@@ -107,7 +117,21 @@ supported (yes / no / not shown) · Enforce HTTPS (on / off / not shown)
 | `pages_manage_posts` | Requested? Access level · App Review status |
 | `pages_manage_engagement` | Requested? Access level · App Review status |
 
-**Report, per permission:** `name` — access level — review status.
+**STATUS: the two B1 permissions are CONFIRMED. The rest remain unknown.**
+
+| Permission | Verified state |
+|---|---|
+| `pages_show_list` | **Standard Access / Active** |
+| `pages_read_engagement` | **Standard Access / Active** |
+| `business_management` | unknown — not requested by B1 |
+| `pages_manage_posts` | unknown — not requested by B1 |
+| `pages_manage_engagement` | unknown — not requested by B1 |
+
+> Why it matters: this is the good news in the whole document. B1's two scopes are
+> **Active at Standard Access**, so there is **no App Review blocker** on the
+> permission side. Combined with the app being **Live**, the remaining unknowns are
+> the Configuration ID, the redirect URI, and the Page task — none of which is an
+> App Review gate.
 
 > Why it matters: B1 requests **only** `pages_show_list` and
 > `pages_read_engagement`. The posting and moderation permissions are **not** in
@@ -183,19 +207,26 @@ Explorer / any Graph URL.
 
 ## What to send back
 
-Reply with this block filled in. Anything you are unsure about, write
-`unknown` — an honest `unknown` is more useful than a guess.
+**Already answered — do NOT re-collect these:**
 
 ```
-App ID:                <id or "different, see note">
-App Mode:              Development | Live
-Login Type:            Facebook Login | Facebook Login for Business | unknown
+App ID:                1673966207646736
+App Name:              Restaurant Bot
+App Mode:              Live
+App Type:              Business
+Login Type:            Facebook Login for Business (set up)
+pages_show_list          Standard Access / Active
+pages_read_engagement    Standard Access / Active
+```
+
+**Still outstanding:**
+
+```
+Configuration ID:      <id, or "none shown">
 PKCE supported:        yes | no | not shown
 Enforce HTTPS:         on | off | not shown
 Valid redirect URIs:   <list, or "none">
 
-pages_show_list          <access level> / <review status>
-pages_read_engagement    <access level> / <review status>
 business_management      <access level> / <review status>
 pages_manage_posts       <access level> / <review status>
 pages_manage_engagement  <access level> / <review status>
@@ -206,22 +237,32 @@ Min Graph API version: <version or "not pinned">
 Data deletion callback: configured | not configured
 ```
 
+Anything you are unsure about, write `unknown` — an honest `unknown` is more
+useful than a guess.
+
 ---
 
 ## After you report back
 
 Nothing happens automatically. In order, and each needing separate approval:
 
-1. **Reconcile B1's assumptions** against your answers. If Login Type or App Mode
-   invalidates an assumption, it gets corrected on the dev branch and re-tested
-   with mocks — no Production involved.
-2. **Traefik router** for `social.universalfoodco.com` — needs Production
-   approval. The URL is already publicly resolving and answering 404.
-3. **Register the redirect URI** in Meta — only after the router exists, or the
-   first real user gets a 404 mid-consent.
-4. **Real Meta OAuth Spike** — one test Page, one test brand, mocked-then-real.
+1. ~~**Traefik router** for `social.universalfoodco.com`~~ — **DONE.**
+   Live and serving, 2026-10-19. `/dashboard` → 307, `/api/v1/_health` → 200.
+   Made durable in GitHub `main` commit `287e178`.
+2. **Reconcile B1's assumptions** against your answers — add `config_id` support
+   if Login for Business requires it, on the dev branch, re-tested with mocks.
+   No Production involved.
+3. **Fix the PKCE code-exchange defect** — found in review 2026-10-19, not yet
+   implemented. B1 sends `code_challenge` but never sends `code_verifier`, so
+   every real connect would fail at token exchange. Must land before any Spike.
+4. **Deploy B1 + apply migration 023** — needs Production approval. Until this
+   happens the callback path is not served by B1.
+5. **Register the redirect URI** in Meta — only after step 4, or the first real
+   user gets a `401` mid-consent instead of a working callback.
+6. **Real Meta OAuth Spike** — one test Page, one test brand, mocked-then-real.
    First genuine verification of anything B1 has claimed so far.
-5. Deploy and merge only after that Spike is accepted.
+7. Merge to `main` only after that Spike is accepted.
 
-Until step 4 completes, **nothing B1 has built is verified against Meta.** Every
-test to date used a deterministic mock: it proves our logic, not Meta's.
+Until step 6 completes, **nothing B1 has built is verified against Meta.** Every
+test to date used a deterministic mock: it proves our logic, not Meta's. The
+PKCE defect in step 3 is exactly the kind of bug a mock cannot catch.

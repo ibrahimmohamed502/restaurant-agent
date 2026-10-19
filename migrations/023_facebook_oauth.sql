@@ -55,9 +55,29 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   -- redirect URL, and is never persisted.
   state_hash          bytea  NOT NULL,
 
-  -- PKCE (S256). Nullable because PKCE support depends on the chosen Meta login
-  -- configuration; when unused the column is NULL rather than a fake value.
-  code_verifier_hash  bytea,
+  -- PKCE (S256). THREE columns, all nullable because PKCE support depends on the
+  -- chosen Meta login configuration; when unused they are NULL rather than fakes.
+  --
+  -- WHY THE RAW VERIFIER IS STORED, NOT JUST ITS HASH
+  --   PKCE requires the client to present the ORIGINAL verifier at the code
+  --   exchange so Meta can hash it and compare it with the code_challenge it was
+  --   given. A hash cannot be reversed, so storing only the digest makes the
+  --   exchange impossible - the request would omit code_verifier and Meta would
+  --   reject it. An earlier draft of this migration stored only the hash and the
+  --   verifier could never be recovered.
+  --
+  --   So the raw verifier is stored, ENCRYPTED, with exactly the same
+  --   AES-256-GCM key and layout as user_token_encrypted. A database read still
+  --   yields nothing usable.
+  --
+  -- WHY THE HASH IS KEPT AS WELL
+  --   It is an integrity check, not a storage format. The verifier is decrypted
+  --   and re-hashed before it is sent; a mismatch means the ciphertext was
+  --   tampered with or is corrupt, and the exchange is refused rather than
+  --   attempted with a value Meta would reject anyway.
+  code_verifier_hash      bytea,
+  code_verifier_encrypted bytea,
+  code_verifier_iv        bytea,
 
   -- Redirect URI actually used, so the callback can prove it is completing the
   -- request it started and not one an attacker injected.

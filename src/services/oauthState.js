@@ -38,7 +38,11 @@ export const OAUTH_STATE_ERRORS = {
   EXPIRED: 'OAUTH_STATE_EXPIRED',
   ALREADY_USED: 'OAUTH_STATE_ALREADY_USED',
   MISMATCH: 'OAUTH_STATE_MISMATCH',
-  UNSUPPORTED_PROVIDER: 'OAUTH_STATE_UNSUPPORTED_PROVIDER'
+  UNSUPPORTED_PROVIDER: 'OAUTH_STATE_UNSUPPORTED_PROVIDER',
+  // Raised when PKCE is on but the verifier cannot be protected at rest. The
+  // connect is refused rather than downgraded: storing the verifier in the clear
+  // would be worse than not using PKCE at all.
+  CRYPTO_UNAVAILABLE: 'OAUTH_STATE_CRYPTO_UNAVAILABLE'
 };
 
 export class OAuthStateError extends Error {
@@ -129,17 +133,44 @@ export async function issueOAuthState({
 
   const state = generateStateToken();
   const stateHash = hashState(state);
-  const codeVerifierHash = pkceVerifier
-    ? crypto.createHash('sha256').update(pkceVerifier, 'utf8').digest()
-    : null;
+
+  // PKCE: store the RAW verifier, encrypted, plus its digest for an integrity
+  // check on the way back.
+  //
+  // PKCE needs the original verifier at the exchange - Meta hashes it and
+  // compares against the code_challenge. A digest cannot be reversed, so a
+  // hash-only design made the exchange impossible. The raw value is protected
+  // with the same AES-256-GCM key as the parked user token, so a database read
+  // still yields nothing usable.
+  let codeVerifierHash = null;
+  let codeVerifierEncrypted = null;
+  let codeVerifierIv = null;
+  if (pkceVerifier) {
+    const { encrypt } = await import('../db/crypto.js');
+    try {
+      const enc = encrypt(pkceVerifier);
+      codeVerifierEncrypted = enc.value;
+      codeVerifierIv = enc.iv;
+    } catch {
+      // Fail the connect. Sending a challenge we cannot complete is strictly
+      // worse than not starting: Meta would reject the exchange after the user
+      // has already granted consent.
+      fail(
+        OAUTH_STATE_ERRORS.CRYPTO_UNAVAILABLE,
+        'cannot store the PKCE verifier securely; refusing to start a connection that cannot complete'
+      );
+    }
+    codeVerifierHash = crypto.createHash('sha256').update(pkceVerifier, 'utf8').digest();
+  }
 
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
 
   await db.query(
     `INSERT INTO oauth_states
        (tenant_id, actor_user_id, session_id, provider, brand_id,
-        state_hash, code_verifier_hash, redirect_uri, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        state_hash, code_verifier_hash, code_verifier_encrypted, code_verifier_iv,
+        redirect_uri, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
     [
       tenantId,
       actorUserId,
@@ -148,6 +179,8 @@ export async function issueOAuthState({
       brandId,
       stateHash,
       codeVerifierHash,
+      codeVerifierEncrypted,
+      codeVerifierIv,
       redirectUri,
       expiresAt
     ]
@@ -190,7 +223,8 @@ export async function consumeOAuthState({
         AND consumed_at IS NULL
         AND expires_at > now()
       RETURNING id, tenant_id, actor_user_id, session_id, provider, brand_id,
-                code_verifier_hash, redirect_uri, expires_at`,
+                code_verifier_hash, code_verifier_encrypted, code_verifier_iv,
+                redirect_uri, expires_at`,
     [stateHash]
   );
 
@@ -248,17 +282,88 @@ export async function consumeOAuthState({
     sessionId: row.session_id,
     provider: row.provider,
     brandId: row.brand_id,
+    // The digest is carried so the verifier can be integrity-checked after
+    // decryption. The ciphertext is deliberately NOT returned here: it is
+    // released only by takePkceVerifier(), which destroys it on read, so it can
+    // never be replayed.
     codeVerifierHash: row.code_verifier_hash,
+    hasCodeVerifier: Boolean(row.code_verifier_encrypted && row.code_verifier_iv),
     redirectUri: row.redirect_uri,
     expiresAt: row.expires_at
   };
 }
 
-/** The PKCE verifier hashed form, for the code exchange. */
+/**
+ * Constant-time confirmation that a candidate verifier matches a stored digest.
+ *
+ * Returns the verifier on a match, null otherwise. The length guard matters:
+ * `crypto.timingSafeEqual` THROWS when the two buffers differ in length, which
+ * would turn "this row is corrupt" into an unhandled crash instead of a refusal.
+ */
 export function pkceVerifierFromHash(storedHash, verifier) {
-  if (!storedHash) return null;
+  if (!storedHash || verifier === null || verifier === undefined) return null;
+  const stored = Buffer.isBuffer(storedHash) ? storedHash : Buffer.from(storedHash);
   const candidate = crypto.createHash('sha256').update(String(verifier), 'utf8').digest();
-  return crypto.timingSafeEqual(candidate, storedHash) ? String(verifier) : null;
+  if (stored.length !== candidate.length) return null;
+  return crypto.timingSafeEqual(candidate, stored) ? String(verifier) : null;
+}
+
+/**
+ * Read the PKCE verifier exactly once, then destroy it.
+ *
+ * THE ORIGINAL DEFECT, for the record: this function did not exist. B1 sent a
+ * `code_challenge` to Meta but stored only SHA-256(verifier), and never sent
+ * `code_verifier` back at the exchange. Since PKCE requires the RAW verifier
+ * (Meta hashes it and compares), a hash-only design made every real connect
+ * fail at token exchange - while 196 mocked assertions stayed green, because
+ * the suite only ever asserted the challenge went OUT.
+ *
+ * Destroy-on-read is the correct shape here, and it does not weaken retry
+ * handling: by the time this is called the state has already been claimed
+ * (`consumed_at` set), so the row cannot be replayed and there is nothing to
+ * retry. The verifier is therefore dead the moment the claim succeeds, and the
+ * ciphertext is removed immediately rather than left to be swept by expires_at.
+ *
+ * The decrypted verifier is re-hashed and compared with the stored digest before
+ * being returned. A mismatch means the ciphertext was tampered with or is
+ * corrupt, and the exchange is refused rather than attempted with a value Meta
+ * would reject anyway.
+ *
+ * @returns {Promise<string|null>} the plaintext verifier, or null when this
+ *   connection was started without PKCE.
+ */
+export async function takePkceVerifier({ stateId, expectedHash = null, db = pool }) {
+  if (!stateId) return null;
+  const { decrypt } = await import('../db/crypto.js');
+
+  // Destroy on read, in one statement, so two concurrent callbacks cannot both
+  // obtain the verifier even if they somehow both reached this line.
+  const { rows } = await db.query(
+    `UPDATE oauth_states
+        SET code_verifier_encrypted = NULL, code_verifier_iv = NULL
+      WHERE id = $1 AND code_verifier_encrypted IS NOT NULL
+      RETURNING code_verifier_encrypted, code_verifier_iv, code_verifier_hash`,
+    [stateId]
+  );
+  if (!rows.length) return null;
+
+  const row = rows[0];
+  if (!row.code_verifier_encrypted || !row.code_verifier_iv) return null;
+
+  let verifier;
+  try {
+    verifier = decrypt(row.code_verifier_encrypted, row.code_verifier_iv);
+  } catch {
+    // A decryption failure means wrong key or tampered ciphertext. Never
+    // substitute or continue: the value is unusable and guessing is worse.
+    fail(OAUTH_STATE_ERRORS.CRYPTO_UNAVAILABLE, 'stored PKCE verifier could not be read');
+  }
+
+  const digest = row.code_verifier_hash || expectedHash;
+  if (digest && !pkceVerifierFromHash(digest, verifier)) {
+    fail(OAUTH_STATE_ERRORS.MISMATCH, 'stored PKCE verifier failed its integrity check');
+  }
+  return verifier;
 }
 
 /** Housekeeping. Expired rows carry no value once they can no longer be used. */

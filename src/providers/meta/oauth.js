@@ -120,6 +120,32 @@ export function assertAllowedRedirectUri(uri) {
 }
 
 /**
+ * Facebook Login for Business Configuration ID.
+ *
+ * Login for Business configurations are addressed explicitly by `config_id` on
+ * the authorization URL. An app that has one usable DEFAULT configuration needs
+ * nothing here, and B1 must keep working exactly as before when this is unset -
+ * so it is optional, never required, and never hardcoded.
+ *
+ * The value is validated rather than interpolated blindly: it goes into a URL
+ * that a browser is sent to, and it comes from the environment. Only a plain
+ * identifier is accepted; anything else is a configuration error and fails
+ * loudly at connect time rather than producing a request Meta will reject with
+ * an opaque message.
+ */
+export function configId() {
+  const raw = String(process.env.META_OAUTH_CONFIG_ID || '').trim();
+  if (!raw) return null;
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(raw)) {
+    throw new MetaOAuthError(
+      META_OAUTH_ERRORS.MISSING_CONFIG,
+      'META_OAUTH_CONFIG_ID must be a plain identifier (letters, digits, dash, underscore)'
+    );
+  }
+  return raw;
+}
+
+/**
  * Build the Meta authorize URL.
  *
  * `state` is passed through untouched: the caller generated it and stored only
@@ -138,6 +164,10 @@ export function buildAuthorizationUrl({ redirectUri, state, scopes = B1_SCOPES, 
     url.searchParams.set('code_challenge', codeChallenge);
     url.searchParams.set('code_challenge_method', 'S256');
   }
+  // Absent when not configured, which keeps the plain Facebook Login flow
+  // byte-identical to what it was before this parameter existed.
+  const cid = configId();
+  if (cid) url.searchParams.set('config_id', cid);
   return url.toString();
 }
 

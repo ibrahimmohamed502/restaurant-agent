@@ -341,7 +341,60 @@ item 5 of `META_INSPECTION.md`.
 
 ---
 
-## 8. Meta assumptions and external blockers
+## 7b. PKCE verifier defect - found in review, FIXED
+
+**Severity: this would have failed the first real OAuth attempt.**
+
+B1 sent a `code_challenge` to Meta and stored only `SHA-256(verifier)`, then
+called `exchangeCode({ code, redirectUri })` **without a `codeVerifier`**. PKCE
+requires the client to present the *original* verifier at the exchange so Meta
+can hash it and compare; a digest cannot be reversed. Every real connect would
+therefore have been rejected at token exchange.
+
+**Why 196 green assertions missed it.** The suite mocked the Graph transport with
+a mock that only *counted* calls. Its single PKCE assertion checked that
+`code_challenge` appeared in the authorize URL - the challenge going **out**. No
+assertion ever checked the verifier coming **back**. That asymmetry is the blind
+spot, and the count floor could not detect an assertion that did not exist.
+
+**The fix.**
+
+1. `code_verifier_encrypted` / `code_verifier_iv` added to the **unapplied**
+   migration 023 - free, since it has never run.
+2. The raw verifier is encrypted with the same AES-256-GCM key as
+   `user_token_encrypted`. The digest is *kept* as an integrity check.
+3. `takePkceVerifier()` releases it and **destroys it in the same statement**.
+4. The callback passes `codeVerifier` to `exchangeCode()`.
+5. If the verifier cannot be encrypted, `/connect` fails with
+   `OAUTH_STATE_CRYPTO_UNAVAILABLE` instead of starting a doomed flow.
+
+**Why destroy-on-read is safe, not a regression.** By the time the verifier is
+read, the state has already been claimed (`consumed_at` set), so the row cannot be
+replayed and there is no retry path to protect. The ciphertext is dead the moment
+the claim succeeds; clearing it immediately is strictly better than leaving it for
+`expires_at` to sweep.
+
+**Concurrency and single-use are unchanged.** The claim remains a single
+conditional `UPDATE ... WHERE consumed_at IS NULL`, and `takePkceVerifier` uses
+its own single-statement `UPDATE ... RETURNING`, so two concurrent callbacks cannot
+both obtain the verifier. Suite asserts exactly one of three concurrent callbacks
+succeeds.
+
+## 7c. Facebook Login for Business Configuration ID
+
+The app is **Login for Business**, where configurations are addressed by an
+explicit `config_id`. B1 previously sent none and relied on a default.
+
+`META_OAUTH_CONFIG_ID` is now supported and is **entirely optional**: unset, the
+authorize URL is byte-identical to before, so plain Facebook Login is unaffected.
+The value is validated (`[A-Za-z0-9_-]{1,64}`) and never hardcoded - a value
+carrying URL syntax is refused at connect time rather than producing a request
+Meta would reject opaquely.
+
+**The Configuration ID is not known yet.** It is read from the Meta dashboard and
+must not be guessed.
+
+
 
 ### Mock-tested, NOT verified against Meta
 
@@ -485,9 +538,18 @@ Read-only. **Report values and statuses only — never paste a secret.**
 | `META_OAUTH_REDIRECT_URIS` | same value | Comma-separated exact-match allowlist |
 | `META_OAUTH_PKCE` | `true` | Set `false` only if §10 B5 says no |
 | `META_OAUTH_APP_PATH` | `/integrations/facebook` | Post-callback landing path; default is the same |
+| `META_OAUTH_CONFIG_ID` | from Meta | **Optional.** Required only if the app has no usable *default* Login for Business configuration. Never hardcode. Omit it entirely for plain Facebook Login. |
+| `META_OAUTH_EXCHANGE_METHOD` | unset → `GET` | `GET` is the documented form. `POST` is undocumented. |
+| `META_OAUTH_REQUIRED_TASKS` | unset → `MANAGE` | Only raise when a publishing/moderation feature actually ships |
 | `META_GRAPH_VERSION` | unset → `v26.0` | Do **not** set it to match `FB_GRAPH_VERSION` |
 
 `FB_*` variables are untouched.
+
+> **`ENCRYPTION_KEY` is now load-bearing for PKCE.** Since the verifier is stored
+> encrypted, a missing or wrongly-sized `ENCRYPTION_KEY` makes `/connect` fail
+> with `OAUTH_STATE_CRYPTO_UNAVAILABLE` (HTTP 500) rather than silently starting
+> a connection that cannot complete. That is intentional: sending a
+> `code_challenge` we cannot honour is worse than not using PKCE.
 
 ### Migration
 
