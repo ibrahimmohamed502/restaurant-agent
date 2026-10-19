@@ -18,4 +18,19 @@ describe('navigation (information architecture)', () => {
     const hrefs = NAV_ITEMS.map((i) => i.href);
     expect(new Set(hrefs).size).toBe(hrefs.length);
   });
+
+  it('keeps the provider-neutral overview separate from the B1 Facebook flow', () => {
+    // '/integrations' stays read-only and provider-neutral by design. B1's
+    // connect flow is a distinct, provider-specific route directly after it -
+    // not a mode bolted onto the overview, which would drag provider knowledge
+    // into a screen that deliberately has none.
+    const overview = NAV_ITEMS.find((i) => i.href === '/integrations');
+    const facebook = NAV_ITEMS.find((i) => i.href === '/integrations/facebook');
+    expect(overview).toBeDefined();
+    expect(facebook).toBeDefined();
+    expect(overview?.key).toBe('integrations');
+    expect(facebook?.key).toBe('facebook');
+    expect(NAV_ITEMS.indexOf(facebook!)).toBe(NAV_ITEMS.indexOf(overview!) + 1);
+    expect(facebook?.superAdminOnly).toBeUndefined();
+  });
 });

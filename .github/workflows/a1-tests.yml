@@ -60,7 +60,12 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:16
+        # pgvector, not stock postgres. migrations/001_init.sql does
+        # `CREATE EXTENSION IF NOT EXISTS vector`, so a stock image cannot apply
+        # the migration ledger at all - a green run against it would be testing a
+        # schema that does not match production. pgvector/pgvector:pg16 is the
+        # same Postgres 16 with that extension, matching the production server.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test

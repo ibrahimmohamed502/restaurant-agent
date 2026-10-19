@@ -794,3 +794,81 @@ export const integrationsApi = {
   status: (channelId: string) =>
     api.get<{ integration: IntegrationInfo }>(`/integrations/${encodeURIComponent(channelId)}/status`)
 };
+
+/* ----------------------------------- B1: Facebook Page self-service OAuth */
+
+/**
+ * A Facebook Page the connected account manages, as reported by Meta.
+ *
+ * `connectable` is decided by the SERVER from Meta's task list, never by this
+ * client: a page the app can read but not act on must be refused rather than
+ * connected and left to fail silently later. `missingTasks` is what the UI shows
+ * to explain why an entry is disabled.
+ */
+export type DiscoverablePage = {
+  pageId: string;
+  name: string | null;
+  category: string | null;
+  tasks: string[];
+  connectable: boolean;
+  missingTasks: string[];
+};
+
+/** A stored Page <-> Brand connection. Never carries a token. */
+export type FacebookConnection = {
+  id: string;
+  brand: { id: string; name: string } | null;
+  pageId: string | null;
+  pageName: string | null;
+  status: string;
+  provider: string | null;
+  connectedAt: string | null;
+  scopes: string[];
+  /**
+   * `credentialExpiresAt` is null when Meta stated no expiry. That is reported
+   * as-is: it is NOT the same as "never expires", and B1 deliberately does not
+   * make that claim. Token refresh is a separate batch.
+   */
+  credentialPresent: boolean;
+  credentialExpiresAt: string | null;
+};
+
+export const facebookApi = {
+  /**
+   * Step 1. Mints the OAuth state server-side and returns where to send the
+   * browser. The caller navigates; nothing is persisted client-side.
+   */
+  start: (brandId: string) =>
+    api.post<{ authorizeUrl: string; state: string; expiresAt: string }>(
+      '/integrations/facebook/connect',
+      { brandId }
+    ),
+
+  /**
+   * Step 3. Re-reads the grant the callback parked, for this session's user and
+   * tenant only. Used after the browser returns from Meta.
+   */
+  pages: (stateId: string) =>
+    api.get<{ pages: DiscoverablePage[]; brandId: string | null }>(
+      `/integrations/facebook/pages?stateId=${encodeURIComponent(stateId)}`
+    ),
+
+  /** Step 4. Persists the chosen page. The server re-derives the page list itself. */
+  confirm: (input: { brandId: string; pageId: string; stateId: string; mode?: 'connect' | 'reconnect' }) =>
+    api.post<{ connection: { channelId: string; pageId: string; name: string | null; mode: string } }>(
+      '/integrations/facebook/confirm',
+      input
+    ),
+
+  /** Tenant- and brand-scoped on the server. Reports presence and expiry only. */
+  connections: (brandId?: string) =>
+    api.get<{ connections: FacebookConnection[] }>(
+      `/integrations/facebook/connections${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ''}`
+    ),
+
+  /** Deactivates the channel and deletes its credential. History is kept. */
+  disconnect: (channelId: string) =>
+    api.del<{ channelId: string; pageId: string }>(
+      `/integrations/facebook/connections/${encodeURIComponent(channelId)}`
+    )
+};

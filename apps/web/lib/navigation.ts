@@ -22,6 +22,10 @@ export const NAV_ITEMS: NavItem[] = [
   // DEPARTMENT MEMBERSHIP and eligibility. Different jobs, different abilities.
   { key: 'teams', href: '/teams', icon: 'users-round', group: 'configuration' },
   { key: 'integrations', href: '/integrations', icon: 'plug', group: 'configuration' },
+  // B1. Deliberately adjacent to /integrations and deliberately SEPARATE from it:
+  // /integrations stays provider-neutral and read-only; this is the
+  // Facebook-specific self-service flow where a Page is actually connected.
+  { key: 'facebook', href: '/integrations/facebook', icon: 'facebook', group: 'configuration' },
   { key: 'audit', href: '/audit', icon: 'scroll-text', group: 'configuration', superAdminOnly: true },
   { key: 'settings', href: '/settings', icon: 'settings', group: 'configuration' }
 ];

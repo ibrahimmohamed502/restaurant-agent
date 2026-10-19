@@ -121,7 +121,13 @@ describe('integrations page security & provider neutrality', () => {
   });
 
   it('API client exposes only read operations on the integrations scope', () => {
-    const block = apiSrc.slice(apiSrc.indexOf('export const integrationsApi'));
+    // Bounded to THIS object. A later slice of api.ts (facebookApi, added by B1)
+    // legitimately contains writes; an unbounded slice would have silently
+    // turned this read-only guarantee into a false failure - or, worse, been
+    // "fixed" by deleting real code.
+    const start = apiSrc.indexOf('export const integrationsApi');
+    const end = apiSrc.indexOf('export const facebookApi');
+    const block = apiSrc.slice(start, end === -1 ? undefined : end);
     expect(block).toContain('api.get<IntegrationsResponse>');
     expect(block).toContain('api.get<{ integration: IntegrationInfo }>');
     expect(block).not.toContain('api.post');

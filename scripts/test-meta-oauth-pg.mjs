@@ -38,6 +38,9 @@ process.env.META_OAUTH_REDIRECT_URIS ||= process.env.META_OAUTH_REDIRECT_URI;
 process.env.META_OAUTH_PKCE ||= 'true';
 
 const client = new pg.Client({ connectionString: url });
+// Module scope, not try-block scope: the `finally` below has to close it even
+// when the suite dies before reaching the section that creates it.
+const pool = new pg.Pool({ connectionString: url, max: 8 });
 const q = (sql, params) => client.query(sql, params);
 
 let pass = 0;
@@ -60,7 +63,6 @@ try {
   await client.connect();
 
   // ---------------------------------------------------------------- helpers
-  const pool = new pg.Pool({ connectionString: url, max: 8 });
   const DB = { connect: () => pool.connect(), query: (sql, params) => pool.query(sql, params) };
 
   let t1, t2, b1, b1b, b1c, b2, admin1, admin2;
@@ -772,7 +774,7 @@ try {
   console.error('\nfatal:', e?.code, e?.message, e?.stack);
 } finally {
   for (const s of servers) { try { s.close(); } catch {} }
-  await pool?.end?.().catch(() => {});
+  await pool.end().catch(() => {});
   await client.end().catch(() => {});
 }
 
