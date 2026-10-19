@@ -749,6 +749,62 @@ try {
     check('expired states are purged', removed >= 1 && removed <= before.rows[0].n);
   }
 
+  // ---------------------------------------------------------------- 13b one-shot claim
+  section('13b one-shot grant is an atomic claim, not a best-effort cleanup');
+  {
+    // Previously one-shot was INFERRED from the parked token being cleared in a
+    // finally block whose errors are swallowed. This section proves it no longer
+    // depends on that cleanup succeeding.
+    const fresh = async () => {
+      const s = await state.issueOAuthState({
+        tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB
+      });
+      const c = await state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB });
+      await state.stashUserToken({ stateId: c.id, userToken: 'EAA-t', db: DB });
+      return c;
+    };
+
+    const g1 = await fresh();
+    eq('an unspent grant claims successfully',
+      await state.claimGrantForConfirm({ stateId: g1.id, tenantId: t1, actorUserId: admin1, db: DB }), true);
+    eq('and a spent grant does not',
+      await state.claimGrantForConfirm({ stateId: g1.id, tenantId: t1, actorUserId: admin1, db: DB }), false);
+    check('grantIsSpent agrees', (await state.grantIsSpent({ stateId: g1.id, db: DB })) === true);
+
+    // Even if the parked token is still present - the exact condition under which
+    // the old, cleanup-dependent design would have allowed a second confirm -
+    // the claim still refuses it.
+    const g2 = await fresh();
+    await state.claimGrantForConfirm({ stateId: g2.id, tenantId: t1, actorUserId: admin1, db: DB });
+    check('the parked token is still readable after the claim',
+      (await state.takeUserToken({ stateId: g2.id, db: DB })) === 'EAA-t');
+    eq('but the grant cannot be claimed a second time',
+      await state.claimGrantForConfirm({ stateId: g2.id, tenantId: t1, actorUserId: admin1, db: DB }), false);
+
+    // Binding is enforced on the claim too.
+    const g3 = await fresh();
+    eq('a grant cannot be claimed by a different user',
+      await state.claimGrantForConfirm({ stateId: g3.id, tenantId: t1, actorUserId: admin2, db: DB }), false);
+    eq('nor by a different company',
+      await state.claimGrantForConfirm({ stateId: g3.id, tenantId: t2, actorUserId: admin1, db: DB }), false);
+
+    // Concurrency: many simultaneous claims, exactly one winner.
+    const g4 = await fresh();
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        state.claimGrantForConfirm({ stateId: g4.id, tenantId: t1, actorUserId: admin1, db: DB }))
+    );
+    eq('exactly one of 8 concurrent claims wins', results.filter(Boolean).length, 1);
+
+    // An expired grant cannot be claimed.
+    const sExp = await state.issueOAuthState({
+      tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB, ttlSeconds: -1
+    });
+    eq('an expired state cannot be consumed at all',
+      await (async () => { try { await state.consumeOAuthState({ state: sExp.state, redirectUri: URI, db: DB }); return true; } catch { return false; } })(),
+      false);
+  }
+
   // ---------------------------------------------------------------- 14 HTTP gates
   section('14 HTTP authorization (real Express, real DB, mocked Meta)');
   {
@@ -999,7 +1055,7 @@ console.log('='.repeat(64));
 // the remaining sections never run - the run must fail rather than report a
 // short pass. This number is the verified count as of run 39217148993; raise it
 // when adding coverage, never lower it.
-const MIN_ASSERTIONS = 187;
+const MIN_ASSERTIONS = 187;  // raise when adding coverage
 if (pass < MIN_ASSERTIONS) {
   console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
   console.log('  This is NOT a pass - sections were almost certainly skipped.');

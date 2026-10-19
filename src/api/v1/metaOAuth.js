@@ -33,6 +33,7 @@ import {
   stashUserToken,
   takeUserToken,
   readConsumedState,
+  claimGrantForConfirm,
   purgeExpiredOAuthStates,
   generatePkce,
   OAuthStateError,
@@ -426,6 +427,27 @@ export function createMetaOAuthRouter({ pool }) {
       return apiError(res, 410, 'AUTHORIZATION_EXPIRED', 'the Facebook authorization is no longer available; please reconnect');
     }
 
+    // SPEND THE GRANT, ATOMICALLY, BEFORE DOING ANY WORK.
+    //
+    // One-shot used to be inferred from the parked token being cleared in a
+    // finally block whose errors are swallowed. That made a security guarantee
+    // depend on best-effort cleanup, and it was observably flaky: a second
+    // confirm could succeed when that cleanup did not land.
+    //
+    // This is a single conditional UPDATE, so exactly one caller can win and the
+    // guarantee holds regardless of what happens afterwards. A failed connect
+    // still spends the grant, which is the intended fail-closed behaviour: the
+    // user starts again rather than retrying a half-used authorization.
+    const claimedGrant = await claimGrantForConfirm({
+      stateId: String(stateId),
+      tenantId,
+      actorUserId,
+      db: req.db
+    });
+    if (!claimedGrant) {
+      return apiError(res, 410, 'AUTHORIZATION_EXPIRED', 'this Facebook authorization has already been used; please connect again');
+    }
+
     try {
       const availablePages = await listAvailablePages({ db: req.db, userAccessToken: userToken });
 
@@ -448,6 +470,8 @@ export function createMetaOAuthRouter({ pool }) {
       if (sent) return sent;
       throw e;
     } finally {
+      // Best-effort hygiene only. The one-shot guarantee no longer depends on
+      // this - the grant was already claimed above.
       await takeUserToken({ stateId: String(stateId), db: req.db, destroy: true }).catch(() => {});
     }
   });

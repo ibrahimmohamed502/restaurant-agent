@@ -79,6 +79,15 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 
   expires_at          timestamptz NOT NULL,
   consumed_at         timestamptz,
+  -- Set when the grant is SPENT by a successful confirm.
+  --
+  -- This is what makes a grant genuinely one-shot. An earlier design inferred
+  -- one-shot from `user_token_encrypted IS NOT NULL`, i.e. from the parked token
+  -- being cleared afterwards - but that cleanup is best-effort, so a transient
+  -- failure silently downgraded a security guarantee. This column is claimed
+  -- atomically with `WHERE confirmed_at IS NULL`, so a second confirm can never
+  -- win a race, and the guarantee does not depend on any cleanup succeeding.
+  confirmed_at        timestamptz,
   created_at          timestamptz NOT NULL DEFAULT now(),
 
   CONSTRAINT oauth_states_provider_check CHECK (provider IN ('meta')),
@@ -102,6 +111,12 @@ CREATE INDEX IF NOT EXISTS oauth_states_expires_idx
 CREATE UNIQUE INDEX IF NOT EXISTS oauth_states_inflight_uidx
   ON oauth_states (tenant_id, actor_user_id, provider)
   WHERE consumed_at IS NULL;
+
+-- One-shot grants: the claim is a single conditional UPDATE, so the index is
+-- what makes a concurrent double-confirm impossible rather than merely unlikely.
+CREATE UNIQUE INDEX IF NOT EXISTS oauth_states_confirmed_uidx
+  ON oauth_states (id)
+  WHERE confirmed_at IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- 2. channels: record how the channel was connected

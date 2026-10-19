@@ -271,6 +271,49 @@ export async function purgeExpiredOAuthStates({ db = pool, olderThanSeconds = 86
 }
 
 /**
+ * Spend a grant exactly once.
+ *
+ * The one-shot guarantee used to be INFERRED from the parked token being cleared
+ * afterwards, which made it depend on a best-effort cleanup: if that cleanup
+ * failed, a second confirm would silently succeed. A security guarantee resting
+ * on a `.catch(() => {})` is not a guarantee - and it produced a genuinely
+ * flaky test.
+ *
+ * This claims the grant with a single conditional UPDATE, so exactly one caller
+ * can ever win, and the guarantee holds regardless of what any cleanup does.
+ *
+ * @returns {Promise<boolean>} true if THIS caller claimed it; false if it was
+ *   already spent, which the caller reports as an expired authorization.
+ */
+export async function claimGrantForConfirm({ stateId, tenantId, actorUserId, db = pool }) {
+  if (!stateId || !tenantId || !actorUserId) {
+    fail(OAUTH_STATE_ERRORS.NOT_FOUND, 'stateId, tenantId and actorUserId are required');
+  }
+
+  const { rowCount } = await db.query(
+    `UPDATE oauth_states
+        SET confirmed_at = now()
+      WHERE id = $1
+        AND tenant_id = $2
+        AND actor_user_id = $3
+        AND consumed_at IS NOT NULL
+        AND confirmed_at IS NULL
+        AND expires_at > now()`,
+    [stateId, tenantId, actorUserId]
+  );
+  return rowCount === 1;
+}
+
+/** Has this grant already been spent? For read-only reporting. */
+export async function grantIsSpent({ stateId, db = pool }) {
+  const { rows } = await db.query(
+    `SELECT confirmed_at IS NOT NULL AS spent FROM oauth_states WHERE id = $1`,
+    [stateId]
+  );
+  return Boolean(rows[0]?.spent);
+}
+
+/**
  * Park an encrypted User Access Token against a claimed state.
  *
  * Called once, inside the callback, immediately after the code exchange. This
