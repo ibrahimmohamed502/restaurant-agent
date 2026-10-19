@@ -60,6 +60,15 @@ try {
     check('user_roles has an FK to roles', fk.rows[0].n === 1);
   }
 
+  // ---------------------------------------------------------------- 1b migration 022
+  section('1b 022 shape');
+  {
+    const checkConstraint = await q(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname='roles_status_check'`);
+    const def = checkConstraint.rows[0]?.def || '';
+    check('roles_status_check allows deleted', def.includes('deleted'));
+  }
+
+
   // ---------------------------------------------------------------- 2 fixtures
   section('2 fixtures');
   const { rows: [t1] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T1','a1-t1') RETURNING id`);
@@ -472,3 +481,5 @@ try {
 } finally {
   await client.end().catch(() => {});
 }
+
+

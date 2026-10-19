@@ -1,0 +1,106 @@
+name: A1 Tests
+
+on:
+  push:
+    branches: [a1-custom-roles]
+  pull_request:
+    branches: [a1-custom-roles, main]
+
+permissions:
+  contents: read
+
+jobs:
+  web-tests:
+    name: Web Tests, TypeScript & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install web dependencies
+        run: cd apps/web && npm ci
+
+      - name: Run Web Tests
+        run: cd apps/web && npx vitest run
+
+      - name: TypeScript Check
+        run: cd apps/web && npx tsc --noEmit
+
+      - name: Next.js Build
+        run: cd apps/web && npm run build
+
+      - name: npm audit (root)
+        run: npm audit --json > /tmp/audit-root.json || true
+        continue-on-error: true
+
+      - name: npm audit (web)
+        run: cd apps/web && npm audit --json > /tmp/audit-web.json || true
+        continue-on-error: true
+
+      - name: Summarize audit findings
+        run: |
+          echo "=== Root audit ==="
+          node -e "const d=require('/tmp/audit-root.json'); const v=d.metadata?.vulnerabilities||{}; console.log('critical:',v.critical||0,'high:',v.high||0,'moderate:',v.moderate||0,'low:',v.low||0)"
+          echo "=== Web audit ==="
+          node -e "const d=require('/tmp/audit-web.json'); const v=d.metadata?.vulnerabilities||{}; console.log('critical:',v.critical||0,'high:',v.high||0,'moderate:',v.moderate||0,'low:',v.low||0)"
+
+  pg-tests:
+    name: PostgreSQL Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Run PG integration tests
+        env:
+          TEST_DATABASE_URL: postgresql://test:test@localhost:5432/test_db
+        run: |
+          node scripts/test-roles-pg.mjs | tee /tmp/pg-test-output.txt
+
+      - name: Verify PG suite executed (not SKIP)
+        run: |
+          if grep -q "SKIP" /tmp/pg-test-output.txt; then
+            echo "ERROR: PG test suite was skipped"
+            exit 1
+          fi
+          if ! grep -q "passed" /tmp/pg-test-output.txt; then
+            echo "ERROR: No assertion results found"
+            exit 1
+          fi
+          echo "PG suite executed successfully"
+          grep -E "passed,|failed" /tmp/pg-test-output.txt | tail -1
