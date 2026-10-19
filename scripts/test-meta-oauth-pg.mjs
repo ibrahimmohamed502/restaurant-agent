@@ -1050,6 +1050,13 @@ try {
         post: async () => ({ access_token: 'EAA-mock' }),
         get: async (path, params) => {
           if (path === '/oauth/access_token') { capturedExchange = { ...params }; return { access_token: 'EAA-mock' }; }
+          // A REALISTIC page list. An empty `data` makes listAvailablePages fail
+          // with UPSTREAM_ERROR (HTTP 502) by design - it is a genuine refusal,
+          // not a mock artefact, so the mock must return a usable Page.
+          if (path === '/me/accounts') {
+            return { data: [{ id: 'PAGE-PROBE-1', name: 'Probe Page', category: 'Restaurant',
+                             tasks: ['MANAGE'], access_token: 'EAA-page-token' }] };
+          }
           return { data: [] };
         }
       });
@@ -1138,8 +1145,10 @@ try {
           `SELECT code_verifier_encrypted FROM oauth_states WHERE state_hash = $1`, [e2eHash]);
         check('the verifier is not left behind after a completed callback', e2eRow[0].code_verifier_encrypted === null);
 
+        // A spent state reports ALREADY_USED (409), which is distinct from an
+        // unknown state (400). Asserting 400 here would have been wrong.
         eq('the state cannot be replayed after a successful exchange',
-          (await fetch(`${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(e2e.body.data.state)}`, NR)).status, 400);
+          (await fetch(`${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(e2e.body.data.state)}`, NR)).status, 409);
 
         // ------------------------------------------- concurrency
         const cs = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
