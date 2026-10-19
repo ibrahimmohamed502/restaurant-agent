@@ -33,13 +33,23 @@ read request. Nothing in this document changes Meta.
 | App ID | `1673966207646736` |
 | App Name | Restaurant Bot |
 | App Mode | **Live** |
-| App Type | Business |
+| App Type | **Business** |
+| Configuration name | `Social Agent - Page Connect` |
+| Configuration ID | `2307209183477068` |
+| Configuration type selected | **General → User access token** |
+| Redirect URI | **registered and saved**, confirmed by the owner after a page refresh |
 
 > Why it matters, now that the answer is known: the app is **Live**, so
 > authorization is not restricted to App Roles. Any Facebook account the app is
 > not otherwise restricted by Page access can complete a consent. That also means
 > `pages_show_list` / `pages_read_engagement` must be **Active** rather than
 > merely requested — which is what Step 4 confirms.
+
+> ⚠️ **Do not read this as "ready for customers."** Meta requires **Advanced
+> Access via App Review** to *"serve businesses that you do not own or manage"*,
+> and Advanced Access carries **Ongoing Review** obligations. A successful test
+> with an App Role account proves the wiring only — never external reachability.
+> That is a separate workstream.
 
 ---
 
@@ -80,25 +90,24 @@ Configuration ID.**
 
 **Report:** the exact list of registered redirect URIs (URLs are not secrets).
 
-> Why it matters: Meta matches the redirect URI **exactly**. B1 will use:
+> ✅ **Owner reports this URI is registered, saved, and confirmed after a page
+> refresh:**
 >
 > ```
 > https://social.universalfoodco.com/api/v1/integrations/facebook/callback
 > ```
 >
-> It is **not** registered today. The Traefik router for
-> `social.universalfoodco.com` **now exists** and serves the app — corrected
-> 2026-10-19, GitHub `main` commit `287e178`, which pinned the compose project
-> name and registered the six Traefik labels. Verified live: `/dashboard` → 307,
-> `/api/v1/_health` → 200.
+> The Traefik router for `social.universalfoodco.com` exists and serves the app —
+> corrected 2026-10-19, GitHub `main` commit `287e178`, which pinned the compose
+> project name and registered the six Traefik labels. Verified live: `/dashboard`
+> → 307, `/api/v1/_health` → 200.
 >
-> The remaining blocker is **not** the router. It is that B1 itself is not
-> deployed, so the callback path currently resolves to the pre-B1 integrations
-> router and answers `401`. Registering the URI before B1 ships would send real
-> users to a dead endpoint.
+> The remaining blocker is **not** the URI and **not** the router. It is that B1
+> is not deployed, so the callback path currently resolves to the pre-B1
+> integrations router and answers `401`.
 >
-> Also note: B1 compares the redirect URI with **exact string equality**. A
-> trailing slash or a missing segment will be refused.
+> Also note: B1 compares the redirect URI with **exact string equality**, and so
+> does Meta. The configured value must be byte-identical — no trailing slash.
 
 ---
 
@@ -117,7 +126,8 @@ Configuration ID.**
 | `pages_manage_posts` | Requested? Access level · App Review status |
 | `pages_manage_engagement` | Requested? Access level · App Review status |
 
-**STATUS: the two B1 permissions are CONFIRMED. The rest remain unknown.**
+**STATUS: the two B1 permissions are CONFIRMED at app level. The Configuration's
+own permission list is still unverified.**
 
 | Permission | Verified state |
 |---|---|
@@ -130,8 +140,20 @@ Configuration ID.**
 > Why it matters: this is the good news in the whole document. B1's two scopes are
 > **Active at Standard Access**, so there is **no App Review blocker** on the
 > permission side. Combined with the app being **Live**, the remaining unknowns are
-> the Configuration ID, the redirect URI, and the Page task — none of which is an
-> App Review gate.
+> the Configuration's persisted contents and the Page task — neither of which is
+> an App Review gate.
+>
+> ⚠️ **One thing to confirm on the Configuration screen.** With `config_id` in
+> play, the permissions granted are those enabled **on the configuration**, not
+> the `scope` parameter — B1 omits `scope` for exactly this reason. The owner
+> selected both permissions during creation; please confirm they are present in
+> the saved configuration. If they are not, `/me/accounts` returns nothing and the
+> connect fails with `NO_MANAGED_PAGES`.
+>
+> ⚠️ **Also confirm the configuration is a *User access token* configuration**,
+> not a System-User one. B1's design depends on a user token (`/me/accounts` lists
+> Pages for the authorizing person). The owner selected "General → User access
+> token" during creation; this is worth confirming survived the save.
 
 > Why it matters: B1 requests **only** `pages_show_list` and
 > `pages_read_engagement`. The posting and moderation permissions are **not** in
@@ -222,20 +244,34 @@ pages_read_engagement    Standard Access / Active
 **Still outstanding:**
 
 ```
-Configuration ID:      <id, or "none shown">
-PKCE supported:        yes | no | not shown
-Enforce HTTPS:         on | off | not shown
-Valid redirect URIs:   <list, or "none">
+Configuration ID:      2307209183477068  (owner-observed; persisted contents unverified)
+                        -> confirm: User access token (not System-User)
+                        -> confirm: pages_show_list + pages_read_engagement present
+Valid redirect URIs:   registered and saved (owner-confirmed)
+
+PKCE supported:        UNRESOLVED - Meta documents code_challenge only for the
+                        OIDC Code Flow, and that page says the feature is
+                        "still in testing". B1 sends neither `openid` nor
+                        `nonce`, so its request is NOT a valid OIDC PKCE request.
+                        PKCE stays enabled by owner decision; NO automatic
+                        downgrade. If the first real consent fails at the token
+                        exchange, the diagnosis is META_CODE_EXCHANGE_FAILED and
+                        META_OAUTH_PKCE=false is the documented fallback -
+                        but changing it is an owner decision.
 
 business_management      <access level> / <review status>
 pages_manage_posts       <access level> / <review status>
 pages_manage_engagement  <access level> / <review status>
 
 Test Page task:        <label>  tasks: <list>
-Test account App Role: <role or "none">
 Min Graph API version: <version or "not pinned">
 Data deletion callback: configured | not configured
 ```
+
+> **"Test account App Role" is no longer asked.** The app is **Live**, so
+> authorization is not restricted to App Roles. Keep testing with an App Role
+> account anyway — it is the lower-risk path for a first Spike — but do not
+> record it as a gate.
 
 Anything you are unsure about, write `unknown` — an honest `unknown` is more
 useful than a guess.

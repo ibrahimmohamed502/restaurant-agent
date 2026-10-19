@@ -1173,21 +1173,56 @@ try {
         // ------------------------------------------- config_id
         const savedCid = process.env.META_OAUTH_CONFIG_ID;
         try {
-          delete process.env.META_OAUTH_CONFIG_ID;
-          eq('without config_id the authorize URL is unchanged',
-            metaOAuth.configId(), null);
-          check('no config_id parameter appears when unset',
-            !metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' }).includes('config_id'));
+        // -------------------------------- config_id / scope are EXCLUSIVE
+        //
+        // Meta's Facebook Login for Business contract: "config_id has replaced
+        // scope (which should not be used)". A configuration carries its own
+        // permission list, so sending both is two competing declarations of the
+        // same thing. The two modes must never overlap.
+        delete process.env.META_OAUTH_CONFIG_ID;
+        const plainUrl = metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' });
+        eq('without config_id the authorize URL is unchanged', metaOAuth.configId(), null);
+        check('plain mode sends scope', plainUrl.includes('scope=pages_show_list'));
+        check('plain mode sends NO config_id', !plainUrl.includes('config_id'));
 
-          process.env.META_OAUTH_CONFIG_ID = '1673966207646736';
-          eq('configId() reads the configured value', metaOAuth.configId(), '1673966207646736');
-          check('config_id is present in the authorize URL when configured',
-            metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' }).includes('config_id=1673966207646736'));
+        process.env.META_OAUTH_CONFIG_ID = '2307209183477068';
+        eq('configId() reads the configured value', metaOAuth.configId(), '2307209183477068');
+        const cfgUrl = metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' });
+        check('config_id is present in the authorize URL when configured',
+          cfgUrl.includes('config_id=2307209183477068'));
+        check('configuration mode sends NO scope - Meta documents scope as replaced',
+          !cfgUrl.includes('scope='));
+        check('the two modes are mutually exclusive',
+          (plainUrl.includes('scope=') && !plainUrl.includes('config_id')) &&
+          (cfgUrl.includes('config_id=') && !cfgUrl.includes('scope=')));
 
-          process.env.META_OAUTH_CONFIG_ID = 'abc&evil=1';
-          let threw = null;
-          try { metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' }); } catch (e) { threw = e.code; }
-          eq('a config_id carrying URL syntax is refused', threw, metaOAuth.META_OAUTH_ERRORS.MISSING_CONFIG);
+        // Shared parameters must survive BOTH modes.
+        for (const [label, u] of [['plain', plainUrl], ['config', cfgUrl]]) {
+          check(`${label} mode still carries client_id`, u.includes(`client_id=${process.env.FB_APP_ID}`));
+          check(`${label} mode still carries the exact redirect_uri`, u.includes(encodeURIComponent(URI)));
+          check(`${label} mode still carries response_type=code`, u.includes('response_type=code'));
+          check(`${label} mode still carries state`, u.includes('state=S'));
+          check(`${label} mode still carries PKCE when a challenge is supplied`,
+            metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S', codeChallenge: 'CHAL' })
+              .includes('code_challenge=CHAL'));
+          check(`${label} mode never leaks the app secret`, !u.includes(process.env.FB_APP_SECRET));
+          check(`${label} mode never leaks a token or client_secret`,
+            !/EAA-|[?&](client_secret|access_token)=/.test(u));
+        }
+
+        // ------------------------------------------------ parameter validation
+        for (const bad of ['abc&evil=1', 'a b', 'https://evil.example', 'x'.repeat(65)]) {
+          process.env.META_OAUTH_CONFIG_ID = bad;
+          let code = null;
+          try { metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' }); } catch (e) { code = e.code; }
+          eq(`a malformed config_id is refused: ${JSON.stringify(bad.slice(0, 20))}`,
+            code, metaOAuth.META_OAUTH_ERRORS.MISSING_CONFIG);
+        }
+        process.env.META_OAUTH_CONFIG_ID = 'a';
+        eq('a minimal valid config_id is accepted', metaOAuth.configId(), 'a');
+        process.env.META_OAUTH_CONFIG_ID = '  2307209183477068  ';
+        eq('a padded config_id is trimmed, not rejected', metaOAuth.configId(), '2307209183477068');
+        process.env.META_OAUTH_CONFIG_ID = '';
         } finally {
           if (savedCid === undefined) delete process.env.META_OAUTH_CONFIG_ID;
           else process.env.META_OAUTH_CONFIG_ID = savedCid;
@@ -1242,7 +1277,7 @@ console.log('='.repeat(64));
 // The floor is precisely what would have caught the original defect: the suite
 // could report 196 passing while never once asserting that code_verifier is sent
 // at the exchange.
-const MIN_ASSERTIONS = 229;
+const MIN_ASSERTIONS = 251;
 if (pass < MIN_ASSERTIONS) {
   console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
   console.log('  This is NOT a pass - sections were almost certainly skipped.');

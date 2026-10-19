@@ -382,17 +382,93 @@ succeeds.
 
 ## 7c. Facebook Login for Business Configuration ID
 
-The app is **Login for Business**, where configurations are addressed by an
-explicit `config_id`. B1 previously sent none and relied on a default.
+**Owner-observed configuration (verified 2026-10-19):**
 
-`META_OAUTH_CONFIG_ID` is now supported and is **entirely optional**: unset, the
-authorize URL is byte-identical to before, so plain Facebook Login is unaffected.
-The value is validated (`[A-Za-z0-9_-]{1,64}`) and never hardcoded - a value
-carrying URL syntax is refused at connect time rather than producing a request
-Meta would reject opaquely.
+| Field | Value |
+|---|---|
+| App ID | `1673966207646736` |
+| App Name | Restaurant Bot |
+| App Mode | **Live** |
+| App Type | **Business** |
+| Configuration name | `Social Agent - Page Connect` |
+| Configuration ID | `2307209183477068` |
+| Selected during creation | **General → User access token** |
+| Permissions enabled | `pages_show_list`, `pages_read_engagement` |
+| Redirect URI | **registered and saved**, confirmed by the owner after a page refresh |
 
-**The Configuration ID is not known yet.** It is read from the Meta dashboard and
-must not be guessed.
+> The persisted contents of that configuration are still worth a second look
+> before the Spike: that the two permissions and the *User access token* (not
+> System-User) selection survived the save.
+
+### config_id and scope are mutually exclusive
+
+Meta's Login for Business contract is explicit: **"config_id has replaced scope
+(which should not be used)"**. A configuration carries its own permission list,
+so sending `scope` alongside `config_id` is not additive — it is two competing
+declarations of the same thing.
+
+`buildAuthorizationUrl` therefore branches:
+
+| `META_OAUTH_CONFIG_ID` | Request carries |
+|---|---|
+| set | `config_id`, and **no** `scope` |
+| unset | `scope`, and **no** `config_id` (plain Facebook Login, unchanged) |
+
+The unset path is byte-identical to the pre-`config_id` behaviour. `configId()` is
+validated **before** the URL is assembled, so a malformed value fails with our own
+error code rather than producing a request Meta rejects opaquely.
+
+### PKCE compatibility with Login for Business is UNVERIFIED
+
+Owner decision: **PKCE stays enabled by default. No automatic downgrade.**
+
+This is a deliberate risk acceptance, not an oversight. The record:
+
+- Meta documents `code_challenge` **only** for the **OIDC Code Flow**, and that
+  page states *"this functionality is still in testing."*
+- OIDC PKCE additionally requires `openid` in `scope` and a `nonce`. **B1 sends
+  neither**, so its request is **not** a valid OIDC PKCE request.
+- B1 **does** send `client_secret`, and Meta documents `code_verifier` as
+  *"required if the client_secret parameter isn't included"* — so sending both is
+  permitted.
+- Three outcomes are possible against the live API: Meta ignores the challenge
+  (PKCE inert, harmless), Meta rejects it (every connect fails), or Meta honours
+  it (PKCE works). **No test in this repository can distinguish these**, because
+  the Graph transport is mocked.
+
+**If the first real consent fails at the token exchange**, the diagnosis is
+`META_CODE_EXCHANGE_FAILED`. `META_OAUTH_PKCE=false` is the documented fallback,
+but changing it is an owner decision, not an automatic behaviour.
+
+### Advanced Access gates external customers — a separate workstream
+
+Meta: *"To serve businesses that you do not own or manage, your app must be
+approved for **Advanced Access via Meta's App Review**."* Apps holding Advanced
+Access are also subject to **Ongoing Review**.
+
+Consequence: a successful internal test with an App Role account proves **nothing**
+about external customers. This must not be read as "connect works". It is its own
+workstream, separate from the B1 Spike, and it should be tracked rather than
+deferred silently.
+
+### Technical Debt — `takeUserToken({ destroy: true })`
+
+Confirmed by code read, **not** changed (out of scope):
+
+`takeUserToken`'s destroy branch has the same `UPDATE ... RETURNING` defect class
+that the PKCE fix corrected — PostgreSQL returns the **new** row, so it returns
+`NULL`. Current impact is **none**:
+
+| Call site | Flag | Return used? |
+|---|---|---|
+| `metaOAuth.js:304` | `destroy: true` | no — `.catch(() => {})` |
+| `metaOAuth.js:495` | `destroy: true` | no — `.catch(() => {})` |
+| `metaOAuth.js:357` | default (`false`) | yes — `SELECT` path, correct |
+| `metaOAuth.js:445` | default (`false`) | yes — `SELECT` path, correct |
+
+The `UPDATE` still clears the columns correctly; only the returned value is wrong.
+**Fix it before anyone starts reading that return value.** One-line CTE change,
+same shape as `takePkceVerifier`.
 
 
 
@@ -538,7 +614,7 @@ Read-only. **Report values and statuses only — never paste a secret.**
 | `META_OAUTH_REDIRECT_URIS` | same value | Comma-separated exact-match allowlist |
 | `META_OAUTH_PKCE` | `true` | Set `false` only if §10 B5 says no |
 | `META_OAUTH_APP_PATH` | `/integrations/facebook` | Post-callback landing path; default is the same |
-| `META_OAUTH_CONFIG_ID` | from Meta | **Optional.** Required only if the app has no usable *default* Login for Business configuration. Never hardcode. Omit it entirely for plain Facebook Login. |
+| `META_OAUTH_CONFIG_ID` | `2307209183477068` | Facebook Login for Business configuration. **When set, `scope` is omitted** — Meta documents `config_id` as replacing it. Omit entirely for plain Facebook Login. |
 | `META_OAUTH_EXCHANGE_METHOD` | unset → `GET` | `GET` is the documented form. `POST` is undocumented. |
 | `META_OAUTH_REQUIRED_TASKS` | unset → `MANAGE` | Only raise when a publishing/moderation feature actually ships |
 | `META_GRAPH_VERSION` | unset → `v26.0` | Do **not** set it to match `FB_GRAPH_VERSION` |

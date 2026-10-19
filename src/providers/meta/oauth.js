@@ -150,24 +150,47 @@ export function configId() {
  *
  * `state` is passed through untouched: the caller generated it and stored only
  * its hash, so this function must not transform it.
+ *
+ * config_id AND scope ARE MUTUALLY EXCLUSIVE
+ * ------------------------------------------
+ * Meta's Facebook Login for Business documentation is explicit about
+ * configuration-based flows: "config_id has replaced scope (which should not be
+ * used)". A configuration carries its own permission list, so sending `scope`
+ * alongside it is not additive - it is two competing declarations of the same
+ * thing, and which one wins is not something to bet a first production connect
+ * on.
+ *
+ * So the two modes are mutually exclusive by construction:
+ *
+ *   META_OAUTH_CONFIG_ID set   -> config_id, and NO scope
+ *   META_OAUTH_CONFIG_ID unset -> scope, and NO config_id  (plain Facebook Login)
+ *
+ * The unset path is byte-identical to the behaviour before config_id existed, so
+ * nothing that relied on plain Facebook Login changes.
  */
 export function buildAuthorizationUrl({ redirectUri, state, scopes = B1_SCOPES, codeChallenge = null }) {
   assertAllowedRedirectUri(redirectUri);
+
+  // Validated BEFORE the URL is assembled, so a malformed value fails with our
+  // own error code instead of producing a request Meta rejects opaquely.
+  const cid = configId();
 
   const url = new URL(`https://www.facebook.com/${META_GRAPH_VERSION}/dialog/oauth`);
   url.searchParams.set('client_id', appId());
   url.searchParams.set('redirect_uri', redirectUri);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('state', state);
-  url.searchParams.set('scope', scopes.join(','));
+
+  if (cid) {
+    url.searchParams.set('config_id', cid);
+  } else {
+    url.searchParams.set('scope', scopes.join(','));
+  }
+
   if (codeChallenge) {
     url.searchParams.set('code_challenge', codeChallenge);
     url.searchParams.set('code_challenge_method', 'S256');
   }
-  // Absent when not configured, which keeps the plain Facebook Login flow
-  // byte-identical to what it was before this parameter existed.
-  const cid = configId();
-  if (cid) url.searchParams.set('config_id', cid);
   return url.toString();
 }
 
