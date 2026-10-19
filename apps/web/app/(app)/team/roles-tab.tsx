@@ -219,7 +219,7 @@ export function RolesTab({ busy, setBusy, setActionError }: Props) {
                       <td className="px-4 py-2.5">
                         <span className="flex items-center justify-end gap-1">
                           <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs"
-                            disabled={busy || isSystem} onClick={() => openEdit(r)}>
+                            disabled={busy || isSystem || r.status === 'deleted'} onClick={() => openEdit(r)}>
                             <Pencil className="h-3 w-3" aria-hidden /> {tc('edit')}
                           </Button>
                           <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs"
@@ -228,7 +228,7 @@ export function RolesTab({ busy, setBusy, setActionError }: Props) {
                             {r.status === 'active' ? t('disable') : r.status === 'deleted' ? t('deleted') : t('enable')}
                           </Button>
                           <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs text-destructive"
-                            disabled={busy || isSystem} onClick={() => setConfirmDelete(r)}>
+                            disabled={busy || isSystem || r.status === 'deleted'} onClick={() => setConfirmDelete(r)}>
                             <Trash2 className="h-3 w-3" aria-hidden /> {tc('delete')}
                           </Button>
                         </span>
@@ -303,3 +303,4 @@ export function RolesTab({ busy, setBusy, setActionError }: Props) {
     </div>
   );
 }
+

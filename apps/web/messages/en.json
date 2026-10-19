@@ -18,7 +18,9 @@
     "platformName": "LWC Platform",
     "close": "Close",
     "back": "Back",
-    "edit": "Edit"
+    "edit": "Edit",
+    "active": "Active",
+    "delete": "Delete"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -615,7 +617,11 @@
       "agent": "Agent"
     },
     "delete": "Delete",
-    "confirmDelete": "Permanently delete \"{name}\" ({email})? This removes the account and all their sessions. This cannot be undone."
+    "confirmDelete": "Permanently delete \"{name}\" ({email})? This removes the account and all their sessions. This cannot be undone.",
+    "tabs": {
+      "users": "Users",
+      "roles": "Roles & Permissions"
+    }
   },
   "teams": {
     "nav": "Departments",
@@ -1010,6 +1016,7 @@
       "notDelegable": "You cannot grant abilities you do not hold.",
       "invalid": "Invalid role data.",
       "generic": "Something went wrong. Try again."
-    }
+    },
+    "disabled": "Disabled"
   }
 }

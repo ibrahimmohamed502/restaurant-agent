@@ -223,6 +223,7 @@ export async function updateRole({ tenantId, actorUserId, actorRoles, actorCusto
     );
     if (!before) fail(ROLE_ERRORS.NOT_FOUND, 404, 'role not found');
     if (SYSTEM_ROLES.has(before.name)) fail(ROLE_ERRORS.SYSTEM, 409, 'system roles cannot be edited');
+    if (before.status === 'deleted') fail(ROLE_ERRORS.NOT_DELEGABLE, 409, 'deleted roles cannot be edited');
 
     const nextName = name === undefined ? before.name : normaliseName(name);
     const nextPermissions = permissions === undefined
@@ -290,9 +291,9 @@ export async function setRoleStatus({ tenantId, actorUserId, roleId, status, db 
     if (!before) fail(ROLE_ERRORS.NOT_FOUND, 404, 'role not found');
     if (SYSTEM_ROLES.has(before.name)) fail(ROLE_ERRORS.SYSTEM, 409, 'system roles cannot be disabled');
 
-    // A soft-deleted role cannot be re-enabled through the normal endpoint.
-    if (before.status === 'deleted' && status === 'active') {
-      fail(ROLE_ERRORS.NOT_DELEGABLE, 409, 'a deleted role cannot be re-enabled');
+    // A soft-deleted role cannot be modified through the normal endpoint.
+    if (before.status === 'deleted') {
+      fail(ROLE_ERRORS.NOT_DELEGABLE, 409, 'a deleted role cannot be modified');
     }
 
     const { rows: [after] } = await client.query(
@@ -346,6 +347,7 @@ export async function deleteRole({ tenantId, actorUserId, roleId, db = pool }) {
     );
     if (!before) fail(ROLE_ERRORS.NOT_FOUND, 404, 'role not found');
     if (SYSTEM_ROLES.has(before.name)) fail(ROLE_ERRORS.SYSTEM, 409, 'system roles cannot be deleted');
+    if (before.status === 'deleted') fail(ROLE_ERRORS.NOT_DELEGABLE, 409, 'role is already deleted');
 
     // Cannot delete a role that still has holders.
     const { rows: [holders] } = await client.query(
@@ -425,3 +427,8 @@ export async function canEditRoles(session) {
   return can(roles, 'role.create', custom) || can(roles, 'role.update', custom)
     || can(roles, 'role.disable', custom) || can(roles, 'role.delete', custom);
 }
+
+
+
+
+
