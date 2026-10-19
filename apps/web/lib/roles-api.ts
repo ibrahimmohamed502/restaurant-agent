@@ -4,7 +4,7 @@
 
 import { api, ApiError } from './api';
 
-export type RoleStatus = 'active' | 'disabled';
+export type RoleStatus = 'active' | 'disabled' | 'deleted';
 
 export type Role = {
   id: string;
