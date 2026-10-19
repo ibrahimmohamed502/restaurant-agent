@@ -99,6 +99,11 @@ async function findExistingOwner({ db, pageId }) {
  * This is the "show me what I can connect" step. It is deliberately read-only:
  * an abandoned selection must leave no channel, no credential and no audit row
  * suggesting a connection happened.
+ *
+ * SECURITY: the result carries the per-Page access token, so it is SERVER-INTERNAL.
+ * Never serialise it. The HTTP layer re-projects each entry to
+ * { pageId, name, category, tasks, connectable, missingTasks } and drops the
+ * token before anything reaches the browser; tests/assertions cover that.
  */
 export async function listAvailablePages({ db, userAccessToken }) {
   let pages;
@@ -127,7 +132,12 @@ export async function listAvailablePages({ db, userAccessToken }) {
       // Surfaced so the UI can explain WHY a page is greyed out instead of
       // letting the user pick something that will fail later.
       connectable: assessment.connectable,
-      missingTasks: assessment.missingTasks
+      missingTasks: assessment.missingTasks,
+      // SERVER-INTERNAL. Carried so connectPage() can store the credential the
+      // server has already validated. The HTTP layer re-projects each entry and
+      // drops this before any response is built; a regression test asserts no
+      // EAA- string reaches the browser.
+      pageAccessToken: p.pageAccessToken
     };
   });
 }

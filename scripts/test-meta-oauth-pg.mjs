@@ -371,6 +371,15 @@ try {
   let channelOne;
 
   {
+    // Regression guard. connectPage() stores the per-Page token, so the
+    // discovery result MUST carry it internally - an earlier version dropped it
+    // and every single connect failed with CREDENTIAL_MISSING. The two checks
+    // below pin both halves: carried inside the service, never across HTTP.
+    const firstLook = await discovered();
+    check('discovery carries the page token internally', firstLook[0].pageAccessToken === 'EAA-page-111');
+    check('and the service is documented as internal-only',
+      /SERVER-INTERNAL/.test(readFileSync(join(REPO, 'src/services/facebookConnections.js'), 'utf8')));
+
     const r = await conn.connectPage({
       tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: TENANT_SCOPE,
       availablePages: await discovered(), pageId: '111', scopes: ['pages_show_list'], db: DB
