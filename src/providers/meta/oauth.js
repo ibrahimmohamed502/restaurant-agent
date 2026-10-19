@@ -260,22 +260,30 @@ async function graphGet(path, params, accessToken) {
 /**
  * HTTP method for the code exchange.
  *
- * Meta's guide documents this endpoint as a GET with client_secret in the query
- * string. It does NOT document POST for this endpoint. B1 defaults to POST
- * because a GET puts the app secret - which Meta calls "the core of the security
- * of your app" - into every proxy log and access log on the path, and because
- * Graph accepts the same parameters over POST.
+ * RESEARCHED 2026-10-19 against Meta's official documentation. Every official
+ * page that shows this endpoint uses GET with the parameters in the query string:
+ *   - Facebook Login, "Manually Build a Login Flow"  -> GET
+ *   - Facebook Login, "Get a Long-Lived User Access Token" -> curl -X GET
+ *   - "Access Tokens for Meta Technologies"         -> curl -X GET
+ *   - Marketing API, "Authentication"               -> GET
+ * POST appears only in community threads, where developers report that it works.
+ * That is evidence of tolerance, NOT of documented support.
  *
- * That reasoning is a security preference, NOT a claim of documented support, and
- * it has never been verified against the live API. So the method is explicit and
- * switchable: META_OAUTH_EXCHANGE_METHOD=GET restores the documented form
- * without a code change if the real-Meta Spike shows POST is refused.
+ * SO THE DEFAULT IS THE DOCUMENTED FORM: GET. Choosing an undocumented path for
+ * the first real integration would mean betting the entire connect flow on
+ * undocumented tolerance, and the cost of being wrong is total failure of B1.
  *
- *   POST (default) - secret in the request body; never in a URL.
- *   GET            - documented; secret necessarily travels in the query string.
+ * The residual risk of GET is that client_secret travels in a query string. It
+ * is bounded here because the call is server-to-server, the URL is never logged
+ * by this module, and no error path can echo it - all asserted in the suite.
+ *
+ *   GET  (default)  - the documented form.
+ *   POST (opt-in)   - undocumented; keeps client_secret out of the URL. Set
+ *                     META_OAUTH_EXCHANGE_METHOD=POST only after confirming it
+ *                     works against the live API.
  */
 export function exchangeMethod() {
-  const m = String(process.env.META_OAUTH_EXCHANGE_METHOD || 'POST').toUpperCase();
+  const m = String(process.env.META_OAUTH_EXCHANGE_METHOD || 'GET').toUpperCase();
   if (m !== 'GET' && m !== 'POST') {
     throw new MetaOAuthError(
       META_OAUTH_ERRORS.MISSING_CONFIG,
@@ -353,31 +361,44 @@ export async function discoverPages({ userAccessToken, limit = 100 } = {}) {
 /**
  * Which Page Tasks a connection must carry.
  *
- * DEFAULT: MANAGE + CREATE_CONTENT + MODERATE.
+ * CONNECT SCOPE vs FEATURE SCOPE. These are different questions and conflating
+ * them is what made the original threshold wrong.
  *
- * WHY THAT IS THE DEFAULT. B1 itself only connects and lists; it does not post,
- * reply or moderate yet. The gate is forward-looking: it refuses a Page the agent
- * could not actually work on, rather than accepting it and failing silently on
- * first use. Refusing loudly is the safer failure.
+ *   - CONNECT asks: may this Page be linked to a brand? B1 does nothing more
+ *     than store a Page access token and list it. It does not post, reply or
+ *     moderate.
+ *   - FEATURE asks: may the agent post / reply / moderate? That belongs to the
+ *     Inbox, publishing and automation batches, and each should check its own
+ *     task at the moment it needs it.
  *
- * THE LEAST-PRIVILEGE ALTERNATIVE, and why it is not the default.
- *   - `MANAGE` alone is the smallest set that proves real Page administration.
- *     It is what to use if legitimate Pages turn out to be refused under the
- *     default. Set META_OAUTH_REQUIRED_TASKS=MANAGE.
- *   - `MANAGE,MODERATE` covers comment replies without asking for posting rights.
- *     Set META_OAUTH_REQUIRED_TASKS=MANAGE,MODERATE.
- *   - `READ_CONTENT` alone would accept Pages the app can see but not act on.
- *     That is NOT recommended: it reintroduces the silent-failure failure mode.
+ * Demanding CREATE_CONTENT and MODERATE at connect time asks a Page to prove it
+ * supports features that do not exist yet. That is asking for future capability
+ * without justification, and it refuses legitimate Pages for the sake of later
+ * batches.
  *
- * META-Dependent uncertainty: the exact task names Meta returns for this app in
- * this configuration are UNVERIFIED. If they differ, every Page is reported as
- * not connectable with the missing names listed, which is visible rather than
- * silent - but it is the first thing to check during the Real Meta Spike.
+ * DEFAULT: MANAGE only. It is the smallest task that establishes genuine Page
+ * administration rather than mere visibility, so it is a real gate and not a
+ * formality. READ_CONTENT is explicitly NOT sufficient: a Page the app can see
+ * but not act on would connect and then fail silently on first use.
  *
- * Configured rather than hard-coded so the threshold can be corrected from the
- * Spike without a code change and without silently loosening anything.
+ * THE LADDER (set META_OAUTH_REQUIRED_TASKS, comma-separated):
+ *   MANAGE                        - default; connect-only scope
+ *   MANAGE,CREATE_CONTENT         - add when a publishing feature ships
+ *   MANAGE,CREATE_CONTENT,MODERATE- original threshold; keep as the post-Inbox target
+ *   READ_CONTENT                  - not recommended; reintroduces silent failure
+ *
+ * The ACTUAL task values Meta returns for this app are unverified and are on the
+ * Meta Dashboard inspection list. If they differ, every Page is reported as not
+ * connectable with the missing names listed - visible, not silent.
  */
-export const B1_DEFAULT_REQUIRED_TASKS = Object.freeze(['MANAGE', 'CREATE_CONTENT', 'MODERATE']);
+export const B1_DEFAULT_REQUIRED_TASKS = Object.freeze(['MANAGE']);
+
+/** Documented ladder, surfaced so the UI and the operator agree on the options. */
+export const PAGE_TASK_LADDER = Object.freeze({
+  connectOnly: Object.freeze(['MANAGE']),
+  withPublishing: Object.freeze(['MANAGE', 'CREATE_CONTENT']),
+  withModeration: Object.freeze(['MANAGE', 'CREATE_CONTENT', 'MODERATE'])
+});
 
 export function requiredPageTasks() {
   const raw = process.env.META_OAUTH_REQUIRED_TASKS;

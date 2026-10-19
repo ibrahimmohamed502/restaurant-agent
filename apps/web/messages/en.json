@@ -1064,7 +1064,7 @@
       "title": "Connected Pages",
       "count": "{count} connected",
       "disconnect": "Disconnect this Page",
-      "reconnectHint": "To reconnect or move a Page to another brand, connect it again from Facebook. The existing connection is updated in place."
+      "reconnectHint": "The brand is fixed when you start connecting. To move a Page to another brand, start the connection again and choose that brand - the Page is updated in place, not duplicated."
     },
     "errors": {
       "META_ACCESS_DENIED": "You declined the Facebook permission request, so nothing was connected.",
@@ -1081,7 +1081,8 @@
       "META_UPSTREAM_UNAVAILABLE": "Facebook is temporarily unavailable. Please try again in a few minutes.",
       "META_CODE_EXCHANGE_FAILED": "Facebook did not accept the authorization. Please start again.",
       "CONNECTION_UPSTREAM_ERROR": "The Facebook Pages could not be read. Please try again.",
-      "NETWORK_ERROR": "The request could not be completed. Check your connection and try again."
+      "NETWORK_ERROR": "The request could not be completed. Check your connection and try again.",
+      "BRAND_DOES_NOT_MATCH_GRANT": "This authorization was started for a different brand. Start again and choose this brand before connecting to Facebook."
     }
   }
 }

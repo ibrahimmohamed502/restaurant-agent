@@ -394,6 +394,33 @@ export function createMetaOAuthRouter({ pool }) {
       throw e;
     }
 
+    // EXACT BRAND BINDING.
+    //
+    // The grant was minted for exactly one brand, chosen BEFORE the consent
+    // screen. A confirm that names a different brand is rejected outright.
+    //
+    // Previously the body's brandId won and the state's was ignored. That was
+    // not directly exploitable - connectPage re-checks the brand against the
+    // tenant and the caller's scope inside the transaction, so a caller could
+    // only ever target a brand they were already entitled to - but it meant the
+    // binding recorded at issuance was decorative, and the one moment the user
+    // was told "you are connecting this page to THIS brand" was not the moment
+    // the database recorded.
+    //
+    // Changing the brand is still possible, but only by starting a new connect
+    // flow with the new brand selected, which re-runs the whole authorization
+    // and re-binds the state. There is deliberately no silent override here:
+    // an explicit re-selection flow would have to be designed and reviewed
+    // before it exists, not bolted on as an escape hatch.
+    if (String(claimed.brand_id) !== String(brandId)) {
+      return apiError(
+        res,
+        409,
+        'BRAND_DOES_NOT_MATCH_GRANT',
+        'this authorization was started for a different brand; start again to connect the page to this one'
+      );
+    }
+
     const userToken = await takeUserToken({ stateId: String(stateId), db: req.db });
     if (!userToken) {
       return apiError(res, 410, 'AUTHORIZATION_EXPIRED', 'the Facebook authorization is no longer available; please reconnect');

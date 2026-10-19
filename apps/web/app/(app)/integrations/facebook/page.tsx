@@ -75,15 +75,16 @@ type KnownError =
   | 'META_CODE_EXCHANGE_FAILED'
   | 'NETWORK_ERROR';
 
-function isKnownError(code: string): code is KnownError {
-  return [
+const isKnownError = (code: string): code is KnownError =>
+  [
     'META_ACCESS_DENIED', 'META_NO_MANAGED_PAGES', 'CONNECTION_UPSTREAM_ERROR',
     'PAGE_NOT_CONNECTABLE', 'PAGE_OWNED_BY_ANOTHER_TENANT', 'PAGE_NOT_IN_ACCOUNT',
     'BRAND_NOT_ACCESSIBLE', 'AUTHORIZATION_EXPIRED', 'OAUTH_STATE_EXPIRED',
     'OAUTH_STATE_ALREADY_USED', 'OAUTH_STATE_NOT_FOUND', 'OAUTH_STATE_MISMATCH',
-    'META_UPSTREAM_UNAVAILABLE', 'META_CODE_EXCHANGE_FAILED', 'NETWORK_ERROR'
+    'META_UPSTREAM_UNAVAILABLE', 'META_CODE_EXCHANGE_FAILED', 'NETWORK_ERROR',
+    // The grant is minted for one brand; the server refuses a retarget.
+    'BRAND_DOES_NOT_MATCH_GRANT'
   ].includes(code);
-}
 
 export default function FacebookConnectPage() {
   const t = useTranslations('facebook');

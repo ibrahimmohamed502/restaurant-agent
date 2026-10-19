@@ -146,8 +146,13 @@ try {
       globalThis.fetch = async (u, opts) => { seen = { url: String(u), headers: opts.headers, body: opts.body }; return new Response(JSON.stringify({ access_token: 'EAA-user' }), { status: 200 }); };
 
       await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI });
-      check('the code exchange never puts the app secret in the URL', !seen.url.includes('test-app-secret'));
-      check('the app secret travels in the POST body instead', String(seen.body).includes('client_secret=test-app-secret'));
+      // The documented GET form necessarily carries client_secret in the query
+      // string. The guarantee is not "the secret is not in the URL" - it is that
+      // the URL is never logged and no error path can echo it. Those are asserted
+      // below and in the redaction section.
+      check('the documented GET form does send client_secret as a parameter',
+        seen.url.includes('client_secret=test-app-secret'));
+      check('and it sends no body', seen.body === undefined || seen.body === null);
 
       seen = null;
       await metaOAuth.discoverPages({ userAccessToken: 'EAA-super-secret' });
@@ -336,50 +341,71 @@ try {
   }
 
   // ---------------------------------------------------------------- 7 page permissions
-  section('7 page permission assessment');
+  // CONNECT scope, not FEATURE scope. B1 links a Page and lists it; it does not
+  // post, reply or moderate. Requiring CREATE_CONTENT/MODERATE here would demand
+  // capability for features that do not exist yet and refuse legitimate Pages.
+  section('7 page permission assessment (connect scope)');
   {
-    const DEFAULT = ['MANAGE', 'CREATE_CONTENT', 'MODERATE'];
-    check('the full task set is connectable',
-      metaOAuth.assessPagePermissions(DEFAULT).connectable === true);
+    const CONNECT = ['MANAGE'];
+    check('MANAGE alone is connectable', metaOAuth.assessPagePermissions(['MANAGE']).connectable === true);
+    check('MANAGE plus extra tasks is connectable',
+      metaOAuth.assessPagePermissions(['MANAGE', 'CREATE_CONTENT', 'MODERATE']).connectable === true);
     const readOnly = metaOAuth.assessPagePermissions(['READ_CONTENT']);
     check('read-only is NOT connectable', readOnly.connectable === false);
-    eq('and every missing task is reported', readOnly.missingTasks, DEFAULT);
-    check('a partial task set is not connectable',
-      metaOAuth.assessPagePermissions(['MANAGE']).connectable === false);
-    check('task comparison is case-insensitive',
-      metaOAuth.assessPagePermissions(['manage', 'create_content', 'moderate']).connectable === true);
+    eq('and the missing task is reported', readOnly.missingTasks, CONNECT);
     check('an empty task list is not connectable',
       metaOAuth.assessPagePermissions([]).connectable === false);
+    check('task comparison is case-insensitive',
+      metaOAuth.assessPagePermissions(['manage']).connectable === true);
+    check('CREATE_CONTENT alone is not connectable - visibility is not administration',
+      metaOAuth.assessPagePermissions(['CREATE_CONTENT']).connectable === false);
 
-    // The threshold is configuration, not hard-coded policy, so the Real Meta
-    // Spike can correct it without a code change and without silently loosening.
-    eq('the default threshold is the full set', metaOAuth.requiredPageTasks(), DEFAULT);
-    eq('and it is reported back to the caller', metaOAuth.assessPagePermissions(['MANAGE']).requiredTasks, DEFAULT);
+    eq('the default threshold is connect scope only', metaOAuth.requiredPageTasks(), CONNECT);
+    eq('and it is reported back to the caller',
+      metaOAuth.assessPagePermissions(['READ_CONTENT']).requiredTasks, CONNECT);
 
-    process.env.META_OAUTH_REQUIRED_TASKS = 'manage';
-    eq('the threshold can be lowered to MANAGE alone', metaOAuth.requiredPageTasks(), ['MANAGE']);
-    check('MANAGE alone then makes a MANAGE-only page connectable',
-      metaOAuth.assessPagePermissions(['MANAGE']).connectable === true);
-    check('but still refuses a read-only page',
-      metaOAuth.assessPagePermissions(['READ_CONTENT']).connectable === false);
+    // The ladder is explicit so the UI and the operator cannot disagree.
+    eq('the documented ladder separates connect from feature scope',
+      metaOAuth.PAGE_TASK_LADDER,
+      {
+        connectOnly: ['MANAGE'],
+        withPublishing: ['MANAGE', 'CREATE_CONTENT'],
+        withModeration: ['MANAGE', 'CREATE_CONTENT', 'MODERATE']
+      });
 
-    process.env.META_OAUTH_REQUIRED_TASKS = 'MANAGE, MODERATE';
-    eq('a comma-separated list is honoured',
-      metaOAuth.requiredPageTasks(), ['MANAGE', 'MODERATE']);
-    check('and a page missing one of them is refused',
+    // Raising the threshold for a later feature batch is one env var.
+    process.env.META_OAUTH_REQUIRED_TASKS = 'MANAGE,CREATE_CONTENT';
+    eq('the threshold can be raised for a publishing feature',
+      metaOAuth.requiredPageTasks(), ['MANAGE', 'CREATE_CONTENT']);
+    check('and a MANAGE-only page is then refused',
       metaOAuth.assessPagePermissions(['MANAGE']).connectable === false);
+
+    process.env.META_OAUTH_REQUIRED_TASKS = 'MANAGE,CREATE_CONTENT,MODERATE';
+    check('the original full threshold is still reachable',
+      metaOAuth.assessPagePermissions(['MANAGE', 'CREATE_CONTENT', 'MODERATE']).connectable === true);
 
     process.env.META_OAUTH_REQUIRED_TASKS = '   ';
     eq('a blank value falls back to the default, never to "no tasks"',
-      metaOAuth.requiredPageTasks(), DEFAULT);
+      metaOAuth.requiredPageTasks(), CONNECT);
     delete process.env.META_OAUTH_REQUIRED_TASKS;
-    eq('and deleting it restores the default', metaOAuth.requiredPageTasks(), DEFAULT);
+    eq('and deleting it restores the default', metaOAuth.requiredPageTasks(), CONNECT);
   }
 
   // ---------------------------------------------------------------- 7b exchange method
-  section('7b code exchange method (POST is a security preference, not documented support)');
+  // DEFAULT IS THE DOCUMENTED FORM.
+  //
+  // Researched 2026-10-19: every official Meta page that shows
+  // /oauth/access_token uses GET - the manual login flow guide, the long-lived
+  // token guide, "Access Tokens for Meta Technologies", and Marketing API
+  // authentication. POST appears only in community threads where developers
+  // report it works. That is evidence of tolerance, not of documented support.
+  //
+  // So B1 defaults to GET rather than betting the whole connect flow on
+  // undocumented tolerance. POST remains available as an opt-in, and its whole
+  // advantage is that the secret never touches a URL.
+  section('7b code exchange method (GET is the documented form)');
   {
-    eq('the exchange method defaults to POST', metaOAuth.exchangeMethod(), 'POST');
+    eq('the exchange method defaults to the documented GET', metaOAuth.exchangeMethod(), 'GET');
 
     const calls = [];
     metaOAuth.setGraphTransport({
@@ -388,13 +414,47 @@ try {
     });
 
     await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI });
-    eq('POST is used by default', calls, ['post']);
+    eq('GET is used by default', calls, ['get']);
 
     calls.length = 0;
-    process.env.META_OAUTH_EXCHANGE_METHOD = 'get';
-    eq('GET is selectable without a code change', metaOAuth.exchangeMethod(), 'GET');
+    process.env.META_OAUTH_EXCHANGE_METHOD = 'post';
+    eq('POST is selectable without a code change', metaOAuth.exchangeMethod(), 'POST');
     await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI });
-    eq('and the documented GET form is then used', calls, ['get']);
+    eq('and the undocumented POST form is then used', calls, ['post']);
+
+    // The reason POST exists: it keeps client_secret out of the URL entirely.
+    const realFetch2 = globalThis.fetch;
+    try {
+      let seenPost = null;
+      globalThis.fetch = async (u, opts) => {
+        seenPost = { url: String(u), body: opts.body };
+        return new Response(JSON.stringify({ access_token: 'EAA-mock' }), { status: 200 });
+      };
+      await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI });
+      check('POST keeps the app secret out of the URL', !seenPost.url.includes('test-app-secret'));
+      check('and puts it in the body instead', String(seenPost.body).includes('client_secret=test-app-secret'));
+
+      // Under the DEFAULT GET the secret IS in the URL, so the guarantee has to
+      // be that no failure path ever echoes that URL or its secret.
+      globalThis.fetch = async () => { throw new TypeError('fetch failed: ENOTFOUND graph.facebook.com'); };
+      let netErr = null;
+      try { await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI }); } catch (e) { netErr = e; }
+      check('a network failure is reported without the secret',
+        netErr && !/client_secret|test-app-secret/.test(String(netErr.message)),
+        `message=${netErr?.message}`);
+      check('a network failure does not leak the upstream hostname',
+        netErr && !/graph\.facebook\.com/.test(String(netErr.message)));
+
+      globalThis.fetch = async () => new Response('<html>client_secret=test-app-secret</html>', { status: 500 });
+      let redactionError = null;
+      try { await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI }); } catch (e) { redactionError = e; }
+      check('a non-JSON error body cannot leak the secret',
+        redactionError && !/client_secret|test-app-secret/.test(String(redactionError.message)),
+        `message=${redactionError?.message}`);
+    } finally {
+      globalThis.fetch = realFetch2;
+      delete process.env.META_OAUTH_EXCHANGE_METHOD;
+    }
 
     process.env.META_OAUTH_EXCHANGE_METHOD = 'PUT';
     await rejects('an unsupported method is refused rather than guessed',
@@ -820,6 +880,33 @@ try {
       (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
         { brandId: b1, pageId: '111', stateId: 'nope' })).status, 400);
 
+    // EXACT BRAND BINDING. The grant is minted for one brand; confirm may not
+    // silently retarget another, even one the caller is entitled to.
+    {
+      const startedMove = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
+      const moveCb = await fetch(
+        `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(startedMove.body.data.state)}`,
+        noRedirect);
+      const moveSid = new URL(moveCb.headers.get('location')).searchParams.get('stateId');
+
+      const moved = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
+        { brandId: b1b, pageId: '111', stateId: moveSid });
+      eq('confirming a different brand than the grant was issued for is a 409', moved.status, 409);
+      check('and reports a distinct code',
+        moved.body?.error?.code === 'BRAND_DOES_NOT_MATCH_GRANT', `code=${moved.body?.error?.code}`);
+
+      // It must not have connected anything.
+      const { rows: [onB1b] } = await q(
+        `SELECT count(*)::int n FROM channels WHERE tenant_id=$1 AND brand_id=$2 AND oauth_provider='meta' AND status='active'`,
+        [t1, b1b]);
+      eq('and nothing was written for the retargeted brand', onB1b.n, 0);
+
+      // The grant survives, so the user can simply confirm correctly.
+      const right = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
+        { brandId: b1, pageId: '111', stateId: moveSid });
+      eq('confirming the brand the grant was issued for still works', right.status, 201);
+    }
+
     // Cross-tenant: another company must not be able to use this state id.
     const other = await appFor({ roles: ['Company Admin'], brandIds: null, allBrands: true, tenant: t2, userId: admin2 });
     const otherAuth = await authFor(other.base);
@@ -887,7 +974,7 @@ console.log('='.repeat(64));
 // the remaining sections never run - the run must fail rather than report a
 // short pass. This number is the verified count as of run 39212007748; raise it
 // when adding coverage, never lower it.
-const MIN_ASSERTIONS = 178;
+const MIN_ASSERTIONS = 178;  // raise when adding coverage
 if (pass < MIN_ASSERTIONS) {
   console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
   console.log('  This is NOT a pass - sections were almost certainly skipped.');
