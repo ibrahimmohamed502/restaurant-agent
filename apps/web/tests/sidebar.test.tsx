@@ -31,13 +31,16 @@ describe('Sidebar (global SaaS navigation — reference layout)', () => {
     const html = render(<Sidebar collapsed={false} isSuperAdmin mobileOpen={false} onToggleCollapsed={noop} onCloseMobile={noop} />);
     // '/teams' sits directly after '/team': the two are related but do different
     // jobs (accounts vs departments), so the order is pinned on purpose.
-    const order = ['/dashboard', '/inbox', '/customers', '/companies', '/brands', '/channels', '/ai', '/knowledge', '/team', '/teams', '/integrations', '/audit', '/settings'];
+    // B1 added '/integrations/facebook' directly after '/integrations': the
+    // neutral read-only overview and the Facebook self-service flow are two
+    // different jobs, and their adjacency is what makes that legible.
+    const order = ['/dashboard', '/inbox', '/customers', '/companies', '/brands', '/channels', '/ai', '/knowledge', '/team', '/teams', '/integrations', '/integrations/facebook', '/audit', '/settings'];
     const positions = order.map((h) => html.indexOf(`href="${h}"`));
     expect(positions.every((p) => p >= 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions); // ascending = reference order
     // every item has an icon (svg) and a visible label
     expect((html.match(/<svg/g) ?? []).length).toBeGreaterThanOrEqual(order.length);
-    for (const label of ['Dashboard', 'Unified Inbox', 'Customers', 'Companies', 'Brands', 'Channels', 'AI', 'Knowledge Base', 'Team &amp; Access', 'Departments', 'Integrations', 'Audit Logs', 'Settings']) {
+    for (const label of ['Dashboard', 'Unified Inbox', 'Customers', 'Companies', 'Brands', 'Channels', 'AI', 'Knowledge Base', 'Team &amp; Access', 'Departments', 'Integrations', 'Facebook Pages', 'Audit Logs', 'Settings']) {
       expect(html).toContain(label);
     }
   });

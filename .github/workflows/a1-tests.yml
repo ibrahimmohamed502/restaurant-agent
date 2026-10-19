@@ -2,9 +2,9 @@ name: A1 Tests
 
 on:
   push:
-    branches: [a1-custom-roles]
+    branches: [a1-custom-roles, b1-facebook-oauth]
   pull_request:
-    branches: [a1-custom-roles, main]
+    branches: [a1-custom-roles, b1-facebook-oauth, main]
 
 permissions:
   contents: read
@@ -60,7 +60,12 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:16
+        # pgvector, not stock postgres. migrations/001_init.sql does
+        # `CREATE EXTENSION IF NOT EXISTS vector`, so a stock image cannot apply
+        # the migration ledger at all - a green run against it would be testing a
+        # schema that does not match production. pgvector/pgvector:pg16 is the
+        # same Postgres 16 with that extension, matching the production server.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
@@ -86,12 +91,62 @@ jobs:
       - name: Install root dependencies
         run: npm ci
 
-      - name: Run PG integration tests
+      - name: Run A1 role suite
         env:
           TEST_DATABASE_URL: postgresql://test:test@localhost:5432/test_db
         run: node scripts/test-roles-pg.mjs
 
-      - name: Verify migrations 021 and 022
+  pg-tests-b1:
+    name: B1 Facebook OAuth (PG, mocked Meta)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        # pgvector, not stock postgres. migrations/001_init.sql does
+        # `CREATE EXTENSION IF NOT EXISTS vector`, so a stock image cannot apply
+        # the migration ledger at all - a green run against it would be testing a
+        # schema that does not match production. pgvector/pgvector:pg16 is the
+        # same Postgres 16 with that extension, matching the production server.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Run B1 Meta OAuth suite
+        env:
+          TEST_DATABASE_URL: postgresql://test:test@localhost:5432/test_db
         run: |
-          echo "Migration verification is performed inside the test suite."
-          echo "Check the test output above for '021 shape' and '022 shape' sections."
+          echo "================================================================"
+          echo " B1 - Facebook Page Self-Service OAuth"
+          echo " Real PostgreSQL, MOCKED Meta. A pass here proves OUR logic"
+          echo " (state replay, tenant/brand isolation, ownership conflicts,"
+          echo " token encryption and redaction). It does NOT prove real Meta"
+          echo " connectivity, which remains unverified."
+          echo "================================================================"
+          node scripts/test-meta-oauth-pg.mjs
+
+      - name: Verify migration 023
+        run: |
+          echo "Migration verification is performed inside the suite."
+          echo "Check the output above for the '1 023 shape' section."

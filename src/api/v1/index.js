@@ -29,6 +29,7 @@ import { createConversationsRouter } from './conversations.js';
 import { createPlatformRouter } from './platform.js';
 import { createCompaniesRouter } from './companies.js';
 import { createIntegrationsRouter } from './integrations.js';
+import { createMetaOAuthRouter } from './metaOAuth.js';
 
 const CSRF_COOKIE = 'csrf_token';
 const CSRF_HEADER = 'x-csrf-token';
@@ -341,6 +342,12 @@ export function createApiV1Router(deps = {}) {
 
   /* --------------------- Stage 8 Batch 1: Company Admin --------------------- */
   router.use('/companies', createCompaniesRouter());
+
+  /* ------------------------- B1: Facebook Page self-service OAuth ---------------------- */
+  /* Mounted BEFORE the generic integrations router so the B1 paths can never be
+     shadowed by the read-only `/:id/status` route. Both sit under the same v1
+     session, CSRF and brand-scope machinery. */
+  router.use('/integrations/facebook', createMetaOAuthRouter({ pool }));
 
   /* --------- Stage 8 Batch 2: integrations (provider-neutral, read-only) --------- */
   router.use('/integrations', createIntegrationsRouter({ pool }));

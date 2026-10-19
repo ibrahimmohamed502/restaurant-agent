@@ -35,7 +35,8 @@
     "integrations": "Integrations",
     "audit": "Audit Logs",
     "settings": "Settings",
-    "teams": "Departments"
+    "teams": "Departments",
+    "facebook": "Facebook Pages"
   },
   "navGroups": {
     "overview": "Overview",
@@ -1018,5 +1019,70 @@
       "generic": "Something went wrong. Try again."
     },
     "disabled": "Disabled"
+  },
+  "facebook": {
+    "title": "Facebook Pages",
+    "description": "Connect a Facebook Page to a brand so the agent can work with it. You choose which Page, and which brand it belongs to.",
+    "noBrand": "No brand",
+    "errorTitle": "Could not complete the connection",
+    "tokenNotice": "Facebook access tokens are stored encrypted and are never shown here. Token renewal is handled separately and a Page may need reconnecting.",
+    "connect": {
+      "title": "Connect a Facebook Page",
+      "description": "You will be sent to Facebook to approve access, then choose which of your Pages to connect. Facebook decides which Pages you may manage; this app can only connect the ones Facebook reports.",
+      "brandLabel": "Connect to brand",
+      "start": "Continue to Facebook",
+      "starting": "Starting…",
+      "addAnother": "Connect another Page",
+      "noBrandsTitle": "No brands available",
+      "noBrandsDescription": "A Page must belong to a brand. You do not currently have access to any brand, so there is nothing to connect to."
+    },
+    "states": {
+      "waiting": {
+        "title": "Finish on Facebook",
+        "description": "A Facebook window should have opened. Approve the request there, then this page will show the Pages you can connect. If nothing opened, check for a popup blocker.",
+        "cancel": "Cancel and go back"
+      },
+      "picking": {
+        "title": "Choose a Page to connect",
+        "description": "These are the Pages Facebook reports you manage. A Page can only be connected if your Facebook access allows the agent to work with it.",
+        "confirm": "Connect this Page",
+        "confirming": "Connecting…",
+        "connectable": "Can be connected",
+        "notConnectable": "Missing access",
+        "missingTasks": "Your Facebook access is missing: {tasks}. Ask a Facebook administrator for full Page access, then try again."
+      },
+      "connected": {
+        "title": "Page connected",
+        "description": "The Page is now connected and visible in your integrations."
+      }
+    },
+    "status": {
+      "connected": "Connected",
+      "needsReconnect": "Needs reconnecting"
+    },
+    "connections": {
+      "title": "Connected Pages",
+      "count": "{count} connected",
+      "disconnect": "Disconnect this Page",
+      "reconnectHint": "The brand is fixed when you start connecting. To move a Page to another brand, start the connection again and choose that brand - the Page is updated in place, not duplicated."
+    },
+    "errors": {
+      "META_ACCESS_DENIED": "You declined the Facebook permission request, so nothing was connected.",
+      "META_NO_MANAGED_PAGES": "Facebook did not report any Pages that you manage. Check that you are a full Page administrator, not only an editor or analyst.",
+      "PAGE_NOT_CONNECTABLE": "Your Facebook access to this Page is not sufficient. A Facebook administrator must give you full Page access.",
+      "PAGE_OWNED_BY_ANOTHER_TENANT": "This Facebook Page is already connected to another company. A Page can only belong to one company. Disconnect it there first, or ask an administrator.",
+      "PAGE_NOT_IN_ACCOUNT": "That Page was not part of the Facebook authorization you approved. Please start again and pick a Page from the list.",
+      "BRAND_NOT_ACCESSIBLE": "You do not have access to that brand.",
+      "AUTHORIZATION_EXPIRED": "The Facebook authorization has expired. Please connect again.",
+      "OAUTH_STATE_EXPIRED": "The connection request took too long and expired. Please start again.",
+      "OAUTH_STATE_ALREADY_USED": "This connection link has already been used. Please start again.",
+      "OAUTH_STATE_NOT_FOUND": "This connection link is not valid. Please start again.",
+      "OAUTH_STATE_MISMATCH": "This connection link does not match your current session. Please start again.",
+      "META_UPSTREAM_UNAVAILABLE": "Facebook is temporarily unavailable. Please try again in a few minutes.",
+      "META_CODE_EXCHANGE_FAILED": "Facebook did not accept the authorization. Please start again.",
+      "CONNECTION_UPSTREAM_ERROR": "The Facebook Pages could not be read. Please try again.",
+      "NETWORK_ERROR": "The request could not be completed. Check your connection and try again.",
+      "BRAND_DOES_NOT_MATCH_GRANT": "This authorization was started for a different brand. Start again and choose this brand before connecting to Facebook."
+    }
   }
 }

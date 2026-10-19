@@ -9,6 +9,7 @@ import {
   Building2,
   ChevronsLeft,
   ChevronsRight,
+  Facebook,
   Inbox,
   LayoutDashboard,
   Menu as MenuIcon,
@@ -38,6 +39,7 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   'book-open': BookOpen,
   shield: Shield,
   plug: Plug,
+  facebook: Facebook,
   'scroll-text': ScrollText,
   settings: Settings
 };
