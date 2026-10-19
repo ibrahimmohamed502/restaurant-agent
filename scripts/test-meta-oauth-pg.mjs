@@ -1,0 +1,747 @@
+﻿// B1 - Facebook Page Self-Service OAuth test suite.
+//
+// REAL-POSTGRESQL, MOCKED META.
+//
+// Meta is never contacted: setGraphTransport() swaps the Graph HTTP layer for a
+// deterministic mock, so the whole connect flow is exercised against real rows
+// and real HTTP without a network call, a real Facebook account, or a real
+// token. That means these tests CAN prove our logic - state replay, tenant
+// isolation, ownership conflicts, token encryption - but they CANNOT prove that
+// Meta's real API behaves as modelled. Nothing here is evidence of real Meta
+// connectivity.
+//
+// Follows the established A1 pattern (scripts/test-roles-pg.mjs): apply the real
+// migration ledger to a throwaway database, exercise the services against real
+// rows, then mount the router over real HTTP to test the gates a service test
+// cannot see.
+
+import pg from 'pg';
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
+const url = process.env.TEST_DATABASE_URL;
+
+// A missing database is NOT a pass. CI must supply one.
+if (!url) {
+  console.log('  SKIP  TEST_DATABASE_URL not set - this is NOT a pass. CI must provide a database.');
+  process.exit(1);
+}
+
+process.env.DATABASE_URL ||= url;
+process.env.ENCRYPTION_KEY ||= 'b'.repeat(64);
+process.env.FB_APP_ID ||= 'test-app-id';
+process.env.FB_APP_SECRET ||= 'test-app-secret';
+process.env.META_OAUTH_REDIRECT_URI ||= 'https://social.universalfoodco.com/api/v1/integrations/facebook/callback';
+process.env.META_OAUTH_REDIRECT_URIS ||= process.env.META_OAUTH_REDIRECT_URI;
+process.env.META_OAUTH_PKCE ||= 'true';
+
+const client = new pg.Client({ connectionString: url });
+const q = (sql, params) => client.query(sql, params);
+
+let pass = 0;
+const failures = [];
+function check(name, ok, detail = '') {
+  if (ok) { pass++; console.log(`  PASS  ${name}`); }
+  else { failures.push(`${name}${detail ? ` [${detail}]` : ''}`); console.log(`  FAIL  ${name}  ${detail}`); }
+}
+const eq = (name, got, want) =>
+  check(name, JSON.stringify(got) === JSON.stringify(want), `got ${JSON.stringify(got)} want ${JSON.stringify(want)}`);
+const rejects = async (name, code, fn) => {
+  try { await fn(); check(name, false, 'expected a rejection, got success'); }
+  catch (e) { check(name, e?.code === code, `code=${e?.code} want=${code}`); }
+};
+const section = (t) => console.log('\n=== ' + t + ' ===');
+
+const servers = [];
+
+try {
+  await client.connect();
+
+  // ---------------------------------------------------------------- helpers
+  const pool = new pg.Pool({ connectionString: url, max: 8 });
+  const DB = { connect: () => pool.connect(), query: (sql, params) => pool.query(sql, params) };
+
+  let t1, t2, b1, b1b, b1c, b2, admin1, admin2;
+
+  // ---------------------------------------------------------------- 0 migrations
+  const dirs = readdirSync(join(REPO, 'migrations')).filter((f) => f.endsWith('.sql')).sort();
+  for (const f of dirs) await q(readFileSync(join(REPO, 'migrations', f), 'utf8'));
+  check('every migration applies cleanly, including 023', true);
+
+  // ---------------------------------------------------------------- 1 schema
+  section('1 023 shape');
+  {
+    const { rows: cols } = await q(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name='oauth_states' ORDER BY ordinal_position`
+    );
+    const names = cols.map((r) => r.column_name);
+    for (const c of ['state_hash', 'code_verifier_hash', 'user_token_encrypted', 'user_token_iv',
+                     'redirect_uri', 'expires_at', 'consumed_at', 'brand_id', 'session_id']) {
+      check(`oauth_states.${c} exists`, names.includes(c));
+    }
+
+    const { rows: storable } = await q(
+      `SELECT count(*)::int n FROM information_schema.columns
+        WHERE table_name='oauth_states' AND column_name IN ('state','state_token')`
+    );
+    eq('no plaintext state column exists', storable[0].n, 0);
+
+    const { rows: idx } = await q(`SELECT indexname FROM pg_indexes WHERE tablename='oauth_states'`);
+    const idxNames = idx.map((r) => r.indexname);
+    check('oauth_states_hash_uidx exists', idxNames.includes('oauth_states_hash_uidx'));
+    check('oauth_states_inflight_uidx exists', idxNames.includes('oauth_states_inflight_uidx'));
+    check('oauth_states_expires_idx exists', idxNames.includes('oauth_states_expires_idx'));
+
+    const { rows: own } = await q(
+      `SELECT indexname FROM pg_indexes WHERE indexname='channels_meta_tenant_owner_uidx'`
+    );
+    check('channels_meta_tenant_owner_uidx exists', own.length === 1);
+
+    const { rows: chCols } = await q(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name='channels' AND column_name LIKE 'oauth_%' ORDER BY column_name`
+    );
+    eq('channels gains exactly the three oauth_* columns',
+      chCols.map((r) => r.column_name), ['oauth_connected_at', 'oauth_provider', 'oauth_scopes']);
+
+    // Additive only: the pre-existing A1/P0.5 objects are untouched.
+    const { rows: legacy } = await q(
+      `SELECT indexname FROM pg_indexes WHERE indexname='channels_meta_external_uidx'`
+    );
+    check('the pre-existing channels_meta_external_uidx is still present', legacy.length === 1);
+  }
+
+  // ---------------------------------------------------------------- 2 fixtures
+  section('2 fixtures');
+  ({ rows: [t1] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T1','b1-t1') RETURNING id`));
+  ({ rows: [t2] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T2','b1-t2') RETURNING id`));
+  ({ rows: [b1] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1','b1-b1') RETURNING id`, [t1.id]));
+  ({ rows: [b1b] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1 second','b1-b1b') RETURNING id`, [t1.id]));
+  ({ rows: [b1c] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1 third','b1-b1c') RETURNING id`, [t1.id]));
+  ({ rows: [b2] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B2','b1-b2') RETURNING id`, [t2.id]));
+  ({ rows: [admin1] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'a1@b1.local','A1','x') RETURNING id`, [t1.id]));
+  ({ rows: [admin2] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'a2@b2.local','A2','x') RETURNING id`, [t2.id]));
+  check('two companies, three brands on the first and one on the second', true);
+
+  const state = await import('../src/services/oauthState.js');
+  const conn = await import('../src/services/facebookConnections.js');
+  const metaOAuth = await import('../src/providers/meta/oauth.js');
+
+  const URI = process.env.META_OAUTH_REDIRECT_URI;
+
+  // ---------------------------------------------------------------- 1b transport
+  section('1b Meta adapter transport and redaction (stubbed HTTP, no network)');
+  {
+    // This section deliberately drives the REAL graphPost/graphGet by stubbing
+    // global fetch, rather than replacing the transport. Replacing it would test
+    // the mock and prove nothing about the code that actually runs in production.
+    const realFetch = globalThis.fetch;
+    try {
+      let seen = null;
+      globalThis.fetch = async (u, opts) => { seen = { url: String(u), headers: opts.headers, body: opts.body }; return new Response(JSON.stringify({ access_token: 'EAA-user' }), { status: 200 }); };
+
+      await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI });
+      check('the code exchange never puts the app secret in the URL', !seen.url.includes('test-app-secret'));
+      check('the app secret travels in the POST body instead', String(seen.body).includes('client_secret=test-app-secret'));
+
+      seen = null;
+      await metaOAuth.discoverPages({ userAccessToken: 'EAA-super-secret' });
+      check('the access token is never placed in a query string', !seen.url.includes('EAA-super-secret'));
+      eq('it is sent as an Authorization header', seen.headers.Authorization, 'Bearer EAA-super-secret');
+
+      // Meta error bodies can echo request parameters back. Nothing may be echoed.
+      globalThis.fetch = async () => new Response(
+        JSON.stringify({ error: { message: 'redirect_uri=https://evil/abc&secret=leak', code: 100, error_subcode: 533 } }),
+        { status: 400, headers: { 'content-type': 'application/json' } }
+      );
+      await rejects('a Graph JSON error is normalised', metaOAuth.META_OAUTH_ERRORS.UPSTREAM_ERROR,
+        () => metaOAuth.discoverPages({ userAccessToken: 'U' }));
+      try {
+        await metaOAuth.discoverPages({ userAccessToken: 'U' });
+      } catch (e) {
+        check('the upstream error body is never echoed', !/leak|evil/.test(String(e.message)));
+        eq('only the numeric code and subcode survive', e.detail, { code: 100, subcode: 533 });
+      }
+
+      globalThis.fetch = async () => new Response('<html>secret=leak</html>', { status: 502 });
+      await rejects('a non-JSON Graph response is normalised', metaOAuth.META_OAUTH_ERRORS.UPSTREAM_ERROR,
+        () => metaOAuth.discoverPages({ userAccessToken: 'U' }));
+      try {
+        await metaOAuth.discoverPages({ userAccessToken: 'U' });
+      } catch (e) {
+        check('a non-JSON body is never echoed', !/leak/.test(String(e.message)));
+      }
+
+      globalThis.fetch = async () => { throw new TypeError('fetch failed: ENOTFOUND secret-host'); };
+      await rejects('an unreachable Graph host is a clean upstream error', metaOAuth.META_OAUTH_ERRORS.UPSTREAM_UNAVAILABLE,
+        () => metaOAuth.discoverPages({ userAccessToken: 'U' }));
+      try {
+        await metaOAuth.discoverPages({ userAccessToken: 'U' });
+      } catch (e) {
+        check('a low-level network error is never echoed', !/secret-host/.test(String(e.message)));
+      }
+
+      // The injectable transport must actually be honoured. A direct call to the
+      // private graphPost/graphGet would bypass it and hit Meta for real.
+      const originalFetch = globalThis.fetch;
+      let transportUsed = 0;
+      metaOAuth.setGraphTransport({
+        post: async () => { transportUsed++; return { access_token: 'EAA-mock' }; },
+        get: async () => { transportUsed++; return { data: [] }; }
+      });
+      await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI });
+      await metaOAuth.discoverPages({ userAccessToken: 'U' });
+      metaOAuth.resetGraphTransport();
+      globalThis.fetch = originalFetch;
+      eq('the injectable transport is actually used, not bypassed', transportUsed, 2);
+    } finally {
+      globalThis.fetch = realFetch;
+      metaOAuth.resetGraphTransport();
+    }
+
+    eq('B1 pins the current Graph API version', metaOAuth.META_GRAPH_VERSION, 'v26.0');
+    eq('B1 requests only the discovery baseline scopes', metaOAuth.B1_SCOPES, ['pages_show_list', 'pages_read_engagement']);
+  }
+
+  // The exact shapes brandScopeFromSession() produces.
+  const TENANT_SCOPE = { mode: 'tenant', brandIds: null };
+  const FIRST_BRAND_ONLY = { mode: 'restricted', brandIds: [b1.id] };
+  const T1_BOTH_BRANDS = { mode: 'restricted', brandIds: [b1.id, b1b.id] };
+  const T2_BRAND_ONLY = { mode: 'restricted', brandIds: [b2.id] };
+  const NO_BRANDS = { mode: 'restricted', brandIds: [] };
+
+  // ---------------------------------------------------------------- 3 oauth state
+  section('3 oauth state');
+  {
+    const s = await state.issueOAuthState({
+      tenantId: t1.id, actorUserId: admin1, provider: 'meta', brandId: b1.id, redirectUri: URI, db: DB
+    });
+    check('a state is issued', typeof s.state === 'string' && s.state.length >= 32);
+
+    const { rows: [row] } = await q(`SELECT state_hash FROM oauth_states WHERE actor_user_id=$1`, [admin1]);
+    eq('the row stores a 32-byte SHA-256 digest', row.state_hash.length, 32);
+    check('the plaintext state is not stored verbatim',
+      Buffer.from(row.state_hash).toString('hex') !== Buffer.from(s.state).toString('hex'));
+
+    const first = await state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB });
+    check('the state can be consumed once', typeof first.id === 'string');
+    await rejects('replaying the same state is refused', state.OAUTH_STATE_ERRORS.ALREADY_USED,
+      () => state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB }));
+
+    await rejects('an unknown state is refused', state.OAUTH_STATE_ERRORS.NOT_FOUND,
+      () => state.consumeOAuthState({ state: 'never-issued-at-all', redirectUri: URI, db: DB }));
+
+    // Binding.
+    const s2 = await state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB });
+    await rejects('a state issued for one user is refused for another', state.OAUTH_STATE_ERRORS.MISMATCH,
+      () => state.consumeOAuthState({ state: s2.state, tenantId: t1.id, actorUserId: admin2, redirectUri: URI, db: DB }));
+
+    const s3 = await state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB });
+    await rejects('a state issued for one company is refused for another', state.OAUTH_STATE_ERRORS.MISMATCH,
+      () => state.consumeOAuthState({ state: s3.state, tenantId: t2.id, actorUserId: admin1, redirectUri: URI, db: DB }));
+
+    const s4 = await state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB });
+    await rejects('a state is refused when the redirect uri differs', state.OAUTH_STATE_ERRORS.MISMATCH,
+      () => state.consumeOAuthState({ state: s4.state, redirectUri: 'https://evil.example/callback', db: DB }));
+
+    // Session binding.
+    const s4b = await state.issueOAuthState({
+      tenantId: t1.id, actorUserId: admin1, sessionId: '11111111-1111-1111-1111-111111111111',
+      brandId: b1.id, redirectUri: URI, db: DB
+    });
+    await rejects('a state issued in another session is refused', state.OAUTH_STATE_ERRORS.MISMATCH,
+      () => state.consumeOAuthState({
+        state: s4b.state, sessionId: '22222222-2222-2222-2222-222222222222', redirectUri: URI, db: DB
+      }));
+
+    // Expiry.
+    const s5 = await state.issueOAuthState({
+      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB, ttlSeconds: -1
+    });
+    await rejects('an expired state is refused', state.OAUTH_STATE_ERRORS.EXPIRED,
+      () => state.consumeOAuthState({ state: s5.state, redirectUri: URI, db: DB }));
+
+    await rejects('an unsupported provider is refused', state.OAUTH_STATE_ERRORS.UNSUPPORTED_PROVIDER,
+      () => state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, provider: 'instagram', redirectUri: URI, db: DB }));
+
+    // State entropy.
+    const a = state.generateStateToken();
+    const b = state.generateStateToken();
+    check('states are unique', a !== b && a.length >= 40);
+  }
+
+  // ---------------------------------------------------------------- 4 concurrency
+  section('4 concurrent replay');
+  {
+    const s = await state.issueOAuthState({
+      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB
+    });
+    const results = await Promise.allSettled([
+      state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB }),
+      state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB }),
+      state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB })
+    ]);
+    eq('exactly one concurrent consume wins', results.filter((r) => r.status === 'fulfilled').length, 1);
+    eq('the other two are rejected', results.filter((r) => r.status === 'rejected').length, 2);
+  }
+
+  // ---------------------------------------------------------------- 5 in-flight guard
+  section('5 in-flight guard');
+  {
+    await state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB });
+    await state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB });
+    const { rows } = await q(
+      `SELECT count(*)::int n FROM oauth_states WHERE actor_user_id=$1 AND consumed_at IS NULL`, [admin1]
+    );
+    eq('a second attempt supersedes the first instead of failing', rows[0].n, 1);
+  }
+
+  // ---------------------------------------------------------------- 6 redirect allowlist
+  section('6 redirect uri allowlist');
+  {
+    check('the configured uri is allowed', metaOAuth.isAllowedRedirectUri(URI) === true);
+    check('an unlisted uri is refused', metaOAuth.isAllowedRedirectUri('https://evil.example/cb') === false);
+    check('a prefix of the allowed uri is refused', metaOAuth.isAllowedRedirectUri(URI + '/extra') === false);
+    check('a suffix/typo is refused', metaOAuth.isAllowedRedirectUri(URI + 'x') === false);
+    await rejects('authorizing against an unlisted uri throws', metaOAuth.META_OAUTH_ERRORS.INVALID_REDIRECT_URI,
+      () => metaOAuth.buildAuthorizationUrl({ redirectUri: 'https://evil.example/cb', state: 'x' }));
+  }
+
+  // ---------------------------------------------------------------- 7 page permissions
+  section('7 page permission assessment');
+  {
+    check('the full task set is connectable',
+      metaOAuth.assessPagePermissions(['MANAGE', 'CREATE_CONTENT', 'MODERATE']).connectable === true);
+    const readOnly = metaOAuth.assessPagePermissions(['READ_CONTENT']);
+    check('read-only is NOT connectable', readOnly.connectable === false);
+    eq('and every missing task is reported', readOnly.missingTasks, ['MANAGE', 'CREATE_CONTENT', 'MODERATE']);
+    check('a partial task set is not connectable',
+      metaOAuth.assessPagePermissions(['MANAGE']).connectable === false);
+    check('task comparison is case-insensitive',
+      metaOAuth.assessPagePermissions(['manage', 'create_content', 'moderate']).connectable === true);
+    check('an empty task list is not connectable',
+      metaOAuth.assessPagePermissions([]).connectable === false);
+  }
+
+  // ---------------------------------------------------------------- 8 connect + isolation
+  section('8 connect, brand scope and ownership');
+  const PAGES = [
+    { id: '111', name: 'Page One', category: 'Retail', tasks: ['MANAGE', 'CREATE_CONTENT', 'MODERATE'], access_token: 'EAA-page-111' },
+    { id: '222', name: 'Page Two', category: 'Food', tasks: ['MANAGE', 'CREATE_CONTENT', 'MODERATE'], access_token: 'EAA-page-222' },
+    { id: '333', name: 'Read Only Page', category: 'Other', tasks: ['READ_CONTENT'], access_token: 'EAA-page-333' }
+  ];
+  // Real discovery normalises the Meta response shape; the mock returns it raw so
+  // the normalisation itself is under test rather than bypassed.
+  metaOAuth.setGraphTransport({
+    get: async (path) => (path === '/me/accounts'
+      ? { data: PAGES.map((p) => ({ id: p.id, name: p.name, category: p.category, tasks: p.tasks, access_token: p.access_token, picture: { data: { url: `https://cdn/${p.id}.jpg` } } })) }
+      : {}),
+    post: async () => ({ access_token: 'EAA-user-token', expires_in: 5184000 })
+  });
+
+  const discovered = () => conn.listAvailablePages({ db: DB, userAccessToken: 'u' });
+  let channelOne;
+
+  {
+    const r = await conn.connectPage({
+      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, brandScope: TENANT_SCOPE,
+      availablePages: await discovered(), pageId: '111', scopes: ['pages_show_list'], db: DB
+    });
+    channelOne = r.channelId;
+    check('a page connects to a brand', r.pageId === '111');
+
+    const { rows: [cred] } = await q(
+      `SELECT value_encrypted, iv FROM provider_credentials WHERE kind='page_access_token' AND channel_id=$1`, [r.channelId]
+    );
+    check('a credential row exists', Boolean(cred));
+    check('the credential is encrypted at rest, not plaintext',
+      Buffer.from(cred.value_encrypted).toString('utf8') !== 'EAA-page-111');
+    const { decrypt } = await import('../src/db/crypto.js');
+    eq('and it decrypts back to the original token', decrypt(cred.value_encrypted, cred.iv), 'EAA-page-111');
+
+    await rejects('a page outside the grant is refused', conn.CONNECTION_ERRORS.PAGE_NOT_IN_ACCOUNT,
+      async () => conn.connectPage({
+        tenantId: t1.id, actorUserId: admin1, brandId: b1.id, brandScope: TENANT_SCOPE,
+        availablePages: await discovered(), pageId: '999', db: DB
+      }));
+
+    await rejects('a read-only page is refused', conn.CONNECTION_ERRORS.PAGE_NOT_CONNECTABLE,
+      async () => conn.connectPage({
+        tenantId: t1.id, actorUserId: admin1, brandId: b1.id, brandScope: TENANT_SCOPE,
+        availablePages: await discovered(), pageId: '333', db: DB
+      }));
+
+    // Cross-BRAND: a brand of the same company that the caller was not granted.
+    await rejects('a brand outside the caller brand scope is refused', conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
+      async () => conn.connectPage({
+        tenantId: t1.id, actorUserId: admin1, brandId: b1c.id, brandScope: FIRST_BRAND_ONLY,
+        availablePages: await discovered(), pageId: '222', db: DB
+      }));
+
+    await rejects('a caller with zero brand grants is refused', conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
+      async () => conn.connectPage({
+        tenantId: t1.id, actorUserId: admin1, brandId: b1.id, brandScope: NO_BRANDS,
+        availablePages: await discovered(), pageId: '222', db: DB
+      }));
+
+    // Cross-TENANT: the same page, claimed by a different company.
+    await rejects('a page already owned by another company is refused',
+      conn.CONNECTION_ERRORS.PAGE_OWNED_BY_ANOTHER_TENANT,
+      async () => conn.connectPage({
+        tenantId: t2.id, actorUserId: admin2, brandId: b2.id, brandScope: T2_BRAND_ONLY,
+        availablePages: await discovered(), pageId: '111', db: DB
+      }));
+
+    // Cross-TENANT: a brand that belongs to somebody else.
+    await rejects('a brand belonging to another company is refused', conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
+      async () => conn.connectPage({
+        tenantId: t2.id, actorUserId: admin2, brandId: b1.id, brandScope: TENANT_SCOPE,
+        availablePages: await discovered(), pageId: '222', db: DB
+      }));
+
+    // The refused attempts above must have left nothing behind.
+    const { rows: [afterRefusals] } = await q(`SELECT count(*)::int n FROM channels WHERE external_id IN ('111','222','333')`);
+    eq('no channel row was created by any refused attempt', afterRefusals.n, 1);
+    const { rows: [credsAfter] } = await q(
+      `SELECT count(*)::int n FROM provider_credentials pc JOIN channels c ON c.id=pc.channel_id WHERE c.external_id IN ('111','222','333')`
+    );
+    eq('and no credential row either', credsAfter.n, 1);
+
+    // Reconnect inside the SAME company is allowed, and re-points the brand.
+    const again = await conn.connectPage({
+      tenantId: t1.id, actorUserId: admin1, brandId: b1b.id, brandScope: T1_BOTH_BRANDS,
+      availablePages: await discovered(), pageId: '111', mode: 'reconnect', db: DB
+    });
+    check('reconnecting within the same company succeeds', again.pageId === '111');
+    eq('and it reuses the same channel row', again.channelId, channelOne);
+    const { rows: [moved] } = await q(`SELECT brand_id FROM channels WHERE id=$1`, [channelOne]);
+    eq('and the page now points at the second brand', String(moved.brand_id), String(b1b.id));
+
+    const { rows: [dup] } = await q(`SELECT count(*)::int n FROM channels WHERE external_id='111'`);
+    eq('reconnect did not create a duplicate channel', dup.n, 1);
+  }
+
+  // ---------------------------------------------------------------- 9 concurrent connect
+  section('9 concurrent connect of the same page');
+  {
+    const settled = await Promise.allSettled([
+      conn.connectPage({
+        tenantId: t1.id, actorUserId: admin1, brandId: b1.id, brandScope: TENANT_SCOPE,
+        availablePages: await discovered(), pageId: '222', db: DB
+      }),
+      conn.connectPage({
+        tenantId: t1.id, actorUserId: admin1, brandId: b1b.id, brandScope: T1_BOTH_BRANDS,
+        availablePages: await discovered(), pageId: '222', db: DB
+      })
+    ]);
+    const { rows: [counted] } = await q(`SELECT count(*)::int n FROM channels WHERE external_id='222'`);
+    eq('concurrent connects of one page still produce exactly one channel', counted.n, 1);
+    check('at least one of the concurrent attempts succeeded',
+      settled.some((r) => r.status === 'fulfilled'));
+  }
+
+  // ---------------------------------------------------------------- 10 list + disconnect
+  section('10 list and disconnect');
+  {
+    const list = await conn.listConnections({ db: DB, tenantId: t1.id, scope: TENANT_SCOPE });
+    eq('two connections are listed', list.length, 2);
+    check('no token value appears anywhere in the listing', !JSON.stringify(list).includes('EAA-page'));
+    check('credential presence is reported', list.every((c) => c.credentialPresent === true));
+    check('expiry is surfaced as-is (null means unknown, not eternal)',
+      list.every((c) => 'credentialExpiresAt' in c));
+
+    const scoped = await conn.listConnections({ db: DB, tenantId: t1.id, scope: { mode: 'restricted', brandIds: [b1.id] } });
+    eq('a brand-scoped listing returns only that brand', scoped.length, 1);
+    eq('and it is the right one', scoped[0].brand.id, b1.id);
+
+    eq('a caller with zero brand grants sees nothing',
+      (await conn.listConnections({ db: DB, tenantId: t1.id, scope: NO_BRANDS })).length, 0);
+
+    eq('another company sees none of it',
+      (await conn.listConnections({ db: DB, tenantId: t2.id, scope: TENANT_SCOPE })).length, 0);
+
+    await conn.disconnectPage({ db: DB, tenantId: t1.id, actorUserId: admin1, channelId: channelOne });
+
+    const { rows: [gone] } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1`, [channelOne]
+    );
+    eq('the credential is removed on disconnect', gone.n, 0);
+
+    const { rows: [kept] } = await q(`SELECT status FROM channels WHERE id=$1`, [channelOne]);
+    eq('the channel row is kept, disabled, for history', kept.status, 'disabled');
+
+    await rejects('disconnecting another company channel is refused', conn.CONNECTION_ERRORS.CHANNEL_NOT_FOUND,
+      () => conn.disconnectPage({ db: DB, tenantId: t2.id, actorUserId: admin2, channelId: channelOne }));
+
+    const afterDisconnect = await conn.listConnections({ db: DB, tenantId: t1.id, scope: TENANT_SCOPE });
+    check('a disconnected page is no longer reported as connected',
+      afterDisconnect.filter((c) => c.credentialPresent).length === 1);
+  }
+
+  // ---------------------------------------------------------------- 11 audit
+  section('11 audit trail');
+  {
+    const { rows: acts } = await q(
+      `SELECT action, object_type, object_id FROM audit_logs WHERE object_type='channel' ORDER BY created_at`
+    );
+    const list = acts.map((r) => r.action);
+    check('a connect was audited', list.includes('integrations.facebook.connect'));
+    check('a reconnect was audited', list.includes('integrations.facebook.reconnect'));
+    check('a disconnect was audited', list.includes('integrations.facebook.disconnect'));
+
+    const { rows: conflict } = await q(
+      `SELECT metadata FROM audit_logs WHERE action='integrations.facebook.connect.conflict'`
+    );
+    check('a connect refused for an ownership conflict is audited too', conflict.length === 1);
+    check('and it records no token', !JSON.stringify(conflict).includes('EAA-'));
+
+    // The conflict audit must not name the other company.
+    const { rows: conflictRow } = await q(
+      `SELECT metadata, object_id FROM audit_logs WHERE action='integrations.facebook.connect.conflict'`
+    );
+    check('the conflict audit records the page, not its real owner',
+      conflictRow[0].object_id === '111' && !JSON.stringify(conflictRow[0].metadata).includes(String(t2.id)));
+  }
+
+  // ---------------------------------------------------------------- 12 parked user token
+  section('12 parked user token handoff');
+  {
+    const s = await state.issueOAuthState({
+      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB
+    });
+    const claimed = await state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB });
+
+    eq('stashing an already-consumed token is refused',
+      await state.stashUserToken({ stateId: claimed.id, userToken: 'x', db: DB }), 0);
+
+    await state.stashUserToken({ stateId: claimed.id, userToken: 'EAA-secret-user-token', db: DB });
+    eq('the parked token round-trips',
+      await state.takeUserToken({ stateId: claimed.id, db: DB }), 'EAA-secret-user-token');
+
+    const { rows: [enc] } = await q(`SELECT user_token_encrypted FROM oauth_states WHERE id=$1`, [claimed.id]);
+    check('the parked token is encrypted at rest',
+      Buffer.from(enc.user_token_encrypted).toString('utf8') !== 'EAA-secret-user-token');
+
+    await state.takeUserToken({ stateId: claimed.id, db: DB, destroy: true });
+    eq('and is destroyed after one use', await state.takeUserToken({ stateId: claimed.id, db: DB }), null);
+
+    // Cross-user / cross-tenant read of a consumed state.
+    const s2 = await state.issueOAuthState({
+      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB
+    });
+    const claimed2 = await state.consumeOAuthState({ state: s2.state, redirectUri: URI, db: DB });
+    await rejects('a consumed state cannot be read by a different user', state.OAUTH_STATE_ERRORS.NOT_FOUND,
+      () => state.readConsumedState({ stateId: claimed2.id, tenantId: t1.id, actorUserId: admin2, db: DB }));
+    await rejects('a consumed state cannot be read from a different company', state.OAUTH_STATE_ERRORS.NOT_FOUND,
+      () => state.readConsumedState({ stateId: claimed2.id, tenantId: t2.id, actorUserId: admin1, db: DB }));
+    check('its owner can read it', Boolean(await state.readConsumedState({
+      stateId: claimed2.id, tenantId: t1.id, actorUserId: admin1, db: DB
+    })));
+  }
+
+  // ---------------------------------------------------------------- 13 purge
+  section('13 purge');
+  {
+    await state.issueOAuthState({
+      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB, ttlSeconds: -100000
+    });
+    const before = await q(`SELECT count(*)::int n FROM oauth_states WHERE expires_at < now() - interval '1 hour'`);
+    const removed = await state.purgeExpiredOAuthStates({ db: DB, olderThanSeconds: 3600 });
+    check('expired states are purged', removed >= 1 && removed <= before.rows[0].n);
+  }
+
+  // ---------------------------------------------------------------- 14 HTTP gates
+  section('14 HTTP authorization (real Express, real DB, mocked Meta)');
+  {
+    const express = (await import('express')).default;
+    const { createApiV1Router } = await import('../src/api/v1/index.js');
+
+    const appFor = ({ roles, customAbilities = [], tenant = t1.id, brandIds = undefined, allBrands = false, userId = admin1 }) => {
+      const app = express();
+      const router = createApiV1Router({
+        pool,
+        validateSessionFn: async () => ({
+          tenantId: tenant,
+          user: { id: userId, email: 'a@b.local', name: 'A' },
+          sessionId: '33333333-3333-3333-3333-333333333333',
+          roles,
+          brandIds,
+          allBrandsInCompany: allBrands,
+          customAbilities,
+          isPlatformSuperAdmin: false
+        })
+      });
+      app.use(express.json());
+      app.use('/api/v1', router);
+      return new Promise((r) => {
+        const s = app.listen(0, '127.0.0.1', () => r({ s, base: `http://127.0.0.1:${s.address().port}/api/v1` }));
+        servers.push(s);
+      });
+    };
+
+    const authFor = async (base) => {
+      const r = await fetch(`${base}/_health`);
+      const c = (r.headers.get('set-cookie') || '').match(/csrf_token=[^;]*/)?.[0];
+      return { cookie: `lwc_session=x; ${c}`, csrf: c?.split('=')[1] };
+    };
+    const send = (base, auth, method, path, body) => fetch(`${base}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: auth.cookie,
+        ...(method === 'GET' ? {} : { 'x-csrf-token': auth.csrf })
+      },
+      body: body ? JSON.stringify(body) : undefined
+    }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+
+    // Company admin, tenant-wide brand scope.
+    const ca = await appFor({ roles: ['Company Admin'], brandIds: null, allBrands: true });
+    const caAuth = await authFor(ca.base);
+
+    eq('connect without a brand is a 400',
+      (await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', {})).status, 400);
+    eq('connect with a malformed brand is a 400',
+      (await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: 'nope' })).status, 400);
+    eq('connect with an unknown brand is a 403',
+      (await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect',
+        { brandId: '00000000-0000-0000-0000-000000000000' })).status, 403);
+
+    const started = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id });
+    eq('an admin can start a connect', started.status, 200);
+    const body = started.body?.data || {};
+    check('an authorize url is returned', String(body.authorizeUrl).includes('facebook.com'));
+    check('the authorize url carries the state', String(body.authorizeUrl).includes(String(body.state)));
+    check('the authorize url requests only the B1 scopes',
+      body.authorizeUrl.includes('pages_show_list') && !body.authorizeUrl.includes('pages_manage_posts'));
+    check('PKCE challenge is present', body.authorizeUrl.includes('code_challenge'));
+    check('no token is returned', !JSON.stringify(started.body).match(/EAA-/));
+
+    // CSRF is enforced by the shared guard, not by B1.
+    const noCsrf = await fetch(`${ca.base}/integrations/facebook/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: caAuth.cookie },
+      body: JSON.stringify({ brandId: b1.id })
+    });
+    eq('a POST without a CSRF token is refused', noCsrf.status, 403);
+
+    // Abilities.
+    const agent = await appFor({ roles: ['Agent'], brandIds: null, allBrands: true });
+    const agentAuth = await authFor(agent.base);
+    eq('a role without brand.integration.connect cannot start a connect',
+      (await send(agent.base, agentAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id })).status, 403);
+    eq('but the same role can read integration status',
+      (await send(agent.base, agentAuth, 'GET', '/integrations/facebook/connections')).status, 200);
+
+    const viewer = await appFor({ roles: ['Brand Viewer'], customAbilities: ['conversation.read'], brandIds: null, allBrands: true });
+    const viewerAuth = await authFor(viewer.base);
+    eq('a role with no integration abilities cannot list connections',
+      (await send(viewer.base, viewerAuth, 'GET', '/integrations/facebook/connections')).status, 403);
+    eq('nor can it start a connect',
+      (await send(viewer.base, viewerAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id })).status, 403);
+
+    // Brand scope at the HTTP edge.
+    const restricted = await appFor({ roles: ['Company Admin'], brandIds: [b1.id] });
+    const restrictedAuth = await authFor(restricted.base);
+    eq('a brand-scoped admin cannot start a connect for a brand outside their scope',
+      (await send(restricted.base, restrictedAuth, 'POST', '/integrations/facebook/connect', { brandId: b1c.id })).status, 403);
+    eq('but can for a brand inside their scope',
+      (await send(restricted.base, restrictedAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id })).status, 200);
+
+    const noBrands = await appFor({ roles: ['Company Admin'], brandIds: [] });
+    const noBrandsAuth = await authFor(noBrands.base);
+    eq('an admin with zero brand grants cannot connect anything',
+      (await send(noBrands.base, noBrandsAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id })).status, 403);
+
+    // Callback negatives.
+    eq('a callback with no state is a 400', (await fetch(`${ca.base}/integrations/facebook/callback?code=abc`)).status, 400);
+    const denied = await fetch(`${ca.base}/integrations/facebook/callback?state=x&error=access_denied`);
+    eq('a denied callback is a 400', denied.status, 400);
+    check('and reports access denied', JSON.stringify(await denied.json()).includes('META_ACCESS_DENIED'));
+    eq('a callback with an unknown state is refused',
+      (await fetch(`${ca.base}/integrations/facebook/callback?code=abc&state=not-a-real-state`)).status, 400);
+
+    // Full round trip with the mocked exchange.
+    const started2 = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id });
+    const st2 = started2.body?.data?.state;
+    const cb = await fetch(`${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(st2)}`);
+    const cbBody = await cb.json().catch(() => ({}));
+    eq('a valid callback succeeds', cb.status, 200);
+    check('and returns a state id', typeof cbBody?.data?.stateId === 'string');
+    check('and returns no token', !JSON.stringify(cbBody).includes('EAA-user-token'));
+    eq('and the discovered page list', cbBody.data.pages.length, 3);
+    check('read-only pages are flagged as not connectable',
+      cbBody.data.pages.find((p) => p.pageId === '333')?.connectable === false);
+    check('connectable pages are flagged as such',
+      cbBody.data.pages.find((p) => p.pageId === '111')?.connectable === true);
+    check('the page list carries no page tokens',
+      !JSON.stringify(cbBody.data.pages).includes('EAA-page'));
+
+    const sid = cbBody.data.stateId;
+    eq('confirm without a stateId is a 400',
+      (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm', { brandId: b1.id, pageId: '111' })).status, 400);
+    eq('confirm with a malformed stateId is a 400',
+      (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
+        { brandId: b1.id, pageId: '111', stateId: 'nope' })).status, 400);
+
+    // Cross-tenant: another company must not be able to use this state id.
+    const other = await appFor({ roles: ['Company Admin'], brandIds: null, allBrands: true, tenant: t2.id, userId: admin2 });
+    const otherAuth = await authFor(other.base);
+    eq('another company cannot read the pages of this grant',
+      (await send(other.base, otherAuth, 'GET', `/integrations/facebook/pages?stateId=${sid}`)).status, 400);
+    eq('nor confirm with it',
+      (await send(other.base, otherAuth, 'POST', '/integrations/facebook/confirm',
+        { brandId: b2.id, pageId: '222', stateId: sid })).status, 400);
+
+    // Owner confirms.
+    const confirmed = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
+      { brandId: b1.id, pageId: '111', stateId: sid });
+    eq('the owner can confirm', confirmed.status, 201);
+    check('and the response carries no token', !JSON.stringify(confirmed.body).includes('EAA-'));
+
+    eq('the grant is one-shot: a second confirm is refused',
+      (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
+        { brandId: b1.id, pageId: '222', stateId: sid })).status, 410);
+
+    // Confirming a read-only page is refused at the HTTP edge too.
+    const started3 = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id });
+    const cb3 = await fetch(`${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(started3.body.data.state)}`);
+    const sid3 = (await cb3.json()).data.stateId;
+    eq('confirming a read-only page is a 422',
+      (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
+        { brandId: b1.id, pageId: '333', stateId: sid3 })).status, 422);
+
+    // Listing at the HTTP edge.
+    const listed = await send(ca.base, caAuth, 'GET', '/integrations/facebook/connections');
+    eq('connections can be listed', listed.status, 200);
+    check('and the listing carries no token', !JSON.stringify(listed.body).includes('EAA-'));
+
+    eq('listing with a malformed brandId is a 400',
+      (await send(ca.base, caAuth, 'GET', '/integrations/facebook/connections?brandId=nope')).status, 400);
+    eq('disconnecting with a malformed id is a 400',
+      (await send(ca.base, caAuth, 'DELETE', '/integrations/facebook/connections/nope')).status, 400);
+    eq('disconnecting an unknown channel is a 404',
+      (await send(ca.base, caAuth, 'DELETE',
+        '/integrations/facebook/connections/00000000-0000-0000-0000-000000000000')).status, 404);
+  }
+
+  metaOAuth.resetGraphTransport();
+} catch (e) {
+  failures.push(`fatal: ${e?.code ?? ''} ${e?.message}`);
+  console.error('\nfatal:', e?.code, e?.message, e?.stack);
+} finally {
+  for (const s of servers) { try { s.close(); } catch {} }
+  await pool?.end?.().catch(() => {});
+  await client.end().catch(() => {});
+}
+
+console.log(`\n${'='.repeat(64)}`);
+console.log(`  ${pass} passed, ${failures.length} failed`);
+if (failures.length) {
+  console.log('\n  FAILURES:');
+  for (const f of failures) console.log(`   - ${f}`);
+}
+console.log('='.repeat(64));
+process.exit(failures.length ? 1 : 0);
