@@ -23,6 +23,8 @@
    *      Platform Super Admin cannot be edited or deleted.
    *   6. Tenant isolation: every lookup filters by tenant_id.
    *   7. Disabled roles grant nothing: the session loader filters them out.
+ *   9. Deleted roles are invisible: listRoles() excludes them by default while
+ *      keeping the row and its audit history in the database.
    *   8. Audit: every mutation writes a before/after audit row.
  */
 import { pool } from '../db/pg.js';
@@ -147,15 +149,24 @@ function acquire(db) {
   return Promise.resolve({ client: db, release: () => {} });
 }
 
-export async function listRoles({ tenantId, db = pool }) {
+export async function listRoles({ tenantId, db = pool, includeDeleted = false }) {
   if (!tenantId) fail(ROLE_ERRORS.FORBIDDEN, 403, 'company scope is required');
   const { client, release } = await acquire(db);
   try {
+    // Deleted roles are soft-deleted for audit history but must NOT appear in
+    // the normal Roles & Permissions list. The row and its audit trail stay in
+    // the database; only the default listing hides it.
     const { rows } = await client.query(
-      `SELECT id, name, permissions, status, created_at, created_by, updated_at
-         FROM roles
-        WHERE tenant_id = $1
-        ORDER BY name ASC`,
+      includeDeleted
+        ? `SELECT id, name, permissions, status, created_at, created_by, updated_at
+             FROM roles
+            WHERE tenant_id = $1
+            ORDER BY name ASC`
+        : `SELECT id, name, permissions, status, created_at, created_by, updated_at
+             FROM roles
+            WHERE tenant_id = $1
+              AND status <> 'deleted'
+            ORDER BY name ASC`,
       [tenantId]
     );
     return rows.map((r) => ({

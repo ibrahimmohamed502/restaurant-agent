@@ -218,7 +218,9 @@ try {
     const roles = await listRoles({ tenantId: t1.id, db: client });
     check('list returns roles', roles.length > 0);
     check('system roles are included (read-only)', roles.some((r) => r.name === 'Company Admin'));
-    check('deleted role still appears (soft delete)', roles.some((r) => r.name === 'Renamed Manager' && r.status === 'disabled'));
+    check('deleted role is excluded from the default list', !roles.some((r) => r.name === 'Renamed Manager'));
+    const rolesWithDeleted = await listRoles({ tenantId: t1.id, db: client, includeDeleted: true });
+    check('deleted role is present when explicitly requested', rolesWithDeleted.some((r) => r.name === 'Renamed Manager' && r.status === 'deleted'));
 
     const t2Roles = await listRoles({ tenantId: t2.id, db: client });
     const caRoleId = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1.id])).rows[0].id;
@@ -417,11 +419,18 @@ try {
     await q(`DELETE FROM user_roles WHERE role_id=$1`, [roleId]);
     const del = await send(ca.base, caAuth, 'DELETE', `/roles/${roleId}`);
     eq('a role can be soft-deleted', del.status, 200);
-    eq('and its status is disabled', del.body?.data?.role?.status, 'disabled');
+    eq('and its status is deleted', del.body?.data?.role?.status, 'deleted');
 
     // Verify it's still in the DB (soft delete)
     const { rows: [stillThere] } = await q(`SELECT status FROM roles WHERE id=$1`, [roleId]);
     check('soft-deleted role still exists in DB', stillThere.status === 'deleted');
+
+    // Deleted role must disappear from the default list immediately
+    const listAfterDelete = await send(ca.base, caAuth, 'GET', '/roles');
+    const listedNames = (listAfterDelete.body?.data?.roles ?? []).map((r) => r.name);
+    check('deleted role disappears from the API list', !listedNames.includes('HTTP Test Role'));
+    check('system roles still appear after delete', listedNames.includes('Company Admin'));
+    eq('a fresh GET /roles still returns 200 after delete', listAfterDelete.status, 200);
 
     // ---------------------------------------------------------------- Negative security tests
     section('12b negative security');

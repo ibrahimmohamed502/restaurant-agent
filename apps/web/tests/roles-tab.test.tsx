@@ -5,6 +5,27 @@ const rolesTabSrc = readFileSync(new URL('../app/(app)/team/roles-tab.tsx', impo
 const rolesApiSrc = readFileSync(new URL('../lib/roles-api.ts', import.meta.url), 'utf8');
 
 describe('roles tab (A1)', () => {
+  it('the list API excludes deleted roles server-side', () => {
+    const src = readFileSync(
+      new URL('../../../src/services/roles.js', import.meta.url),
+      'utf8'
+    );
+    expect(src).toContain("status <> 'deleted'");
+  });
+
+  it('the list API keeps an explicit includeDeleted escape hatch', () => {
+    const src = readFileSync(
+      new URL('../../../src/services/roles.js', import.meta.url),
+      'utf8'
+    );
+    expect(src).toContain('includeDeleted');
+  });
+
+  it('refreshes the list after a successful delete', () => {
+    expect(rolesTabSrc).toContain('rolesApi.remove');
+    expect(rolesTabSrc).toMatch(/remove\([\s\S]*?load\(\)/);
+  });
+
   it('renders a create button', () => {
     expect(rolesTabSrc).toContain('openCreate');
   });
