@@ -71,20 +71,20 @@ try {
 
   // ---------------------------------------------------------------- 2 fixtures
   section('2 fixtures');
-  const { rows: [t1] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T1','a1-t1') RETURNING id`);
-  const { rows: [t2] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T2','a1-t2') RETURNING id`);
-  const { rows: [b1] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1','a1-b1') RETURNING id`, [t1.id]);
-  const { rows: [admin] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'admin@t.local','Admin','x') RETURNING id`, [t1.id]);
-  const { rows: [agent] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'agent@t.local','Agent','x') RETURNING id`, [t1.id]);
-  const { rows: [outsider] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'out@t2.local','Out','x') RETURNING id`, [t2.id]);
-  await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Company Admin',$2::jsonb)`, [t1.id, JSON.stringify(['role.read','role.create','role.update','role.disable','role.delete','user.read','user.create'])]);
-  await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Supervisor',$2::jsonb)`, [t1.id, JSON.stringify(['role.read','conversation.read'])]);
-  await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Agent',$2::jsonb)`, [t1.id, JSON.stringify(['conversation.read'])]);
-  await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Escalation Manager',$2::jsonb)`, [t1.id, JSON.stringify(['escalation.resolve'])]);
+  const { rows: [{ id: t1 }] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T1','a1-t1') RETURNING id`);
+  const { rows: [{ id: t2 }] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T2','a1-t2') RETURNING id`);
+  const { rows: [{ id: b1 }] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1','a1-b1') RETURNING id`, [t1]);
+  const { rows: [{ id: admin }] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'admin@t.local','Admin','x') RETURNING id`, [t1]);
+  const { rows: [{ id: agent }] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'agent@t.local','Agent','x') RETURNING id`, [t1]);
+  const { rows: [{ id: outsider }] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'out@t2.local','Out','x') RETURNING id`, [t2]);
+  await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Company Admin',$2::jsonb)`, [t1, JSON.stringify(['role.read','role.create','role.update','role.disable','role.delete','user.read','user.create'])]);
+  await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Supervisor',$2::jsonb)`, [t1, JSON.stringify(['role.read','conversation.read'])]);
+  await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Agent',$2::jsonb)`, [t1, JSON.stringify(['conversation.read'])]);
+  await q(`INSERT INTO roles (tenant_id,name,permissions) VALUES ($1,'Escalation Manager',$2::jsonb)`, [t1, JSON.stringify(['escalation.resolve'])]);
   // Assign admin the Company Admin role
-  const { rows: [adminRole] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t1.id]);
+  const { rows: [adminRole] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t1]);
   await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2)`, [admin, adminRole.id]);
-  const { rows: [supRole] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Supervisor'`, [t1.id]);
+  const { rows: [supRole] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Supervisor'`, [t1]);
   await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2)`, [agent, supRole.id]);
 
   const { createRole, updateRole, setRoleStatus, deleteRole, listRoles, getRoleUsers, ROLE_ERRORS } =
@@ -93,7 +93,7 @@ try {
   // ---------------------------------------------------------------- 3 CRUD
   section('3 create');
   {
-    const r = await createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+    const r = await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
       actorCustomAbilities: ['role.create','role.read','role.update','role.disable','role.delete','user.read','user.create'],
       name: 'Custom Manager', permissions: ['conversation.read', 'conversation.reply'], db: client });
     check('a custom role is created', r.name === 'Custom Manager');
@@ -102,43 +102,43 @@ try {
     eq('and permissions are deduplicated', r.permissions.length, 2);
 
     await rejects('a duplicate name is refused', ROLE_ERRORS.NAME_TAKEN,
-      () => createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.create'], name: 'Custom Manager', permissions: [], db: client }));
 
     await rejects('a blank name is refused', ROLE_ERRORS.NAME_INVALID,
-      () => createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.create'], name: '   ', permissions: [], db: client }));
 
     await rejects('a reserved name is refused', ROLE_ERRORS.SYSTEM,
-      () => createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.create','role.read'], name: 'Company Admin', permissions: [], db: client }));
 
     await rejects('Platform Super Admin name is reserved', ROLE_ERRORS.SYSTEM,
-      () => createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.create'], name: 'Platform Super Admin', permissions: [], db: client }));
 
     await rejects('a wildcard is refused', ROLE_ERRORS.INVALID,
-      () => createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.create','conversation.read'], name: 'Wildcard', permissions: ['*'], db: client }));
 
     await rejects('a partial wildcard is refused', ROLE_ERRORS.INVALID,
-      () => createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.create','conversation.read'], name: 'Partial Wildcard', permissions: ['conversation.*'], db: client }));
 
     await rejects('an unknown ability is refused', ROLE_ERRORS.INVALID,
-      () => createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.create'], name: 'Unknown', permissions: ['nonexistent.ability'], db: client }));
 
     await rejects('privilege escalation is refused', ROLE_ERRORS.NOT_DELEGABLE,
-      () => createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.create','role.read'], name: 'Escalated', permissions: ['user.disable', 'brand.grant_all'], db: client }));
 
     await rejects('cross-tenant creation is refused', ROLE_ERRORS.FORBIDDEN,
-      () => createRole({ tenantId: t2.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => createRole({ tenantId: t2, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.create'], name: 'Foreign', permissions: [], db: client }));
 
     // Verify the role exists in the DB
-    const { rows: [r1] } = await q("SELECT name, permissions, status FROM roles WHERE tenant_id=$1 AND name='Custom Manager'", [t1.id]);
+    const { rows: [r1] } = await q("SELECT name, permissions, status FROM roles WHERE tenant_id=$1 AND name='Custom Manager'", [t1]);
     check('the role is persisted', r1.name === 'Custom Manager');
     check('with active status', r1.status === 'active');
   }
@@ -146,27 +146,27 @@ try {
   // ---------------------------------------------------------------- 4 edit
   section('4 edit');
   {
-    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Custom Manager'`, [t1.id]);
+    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Custom Manager'`, [t1]);
     const updated = await updateRole({
-      tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
       actorCustomAbilities: ['role.create','role.read','role.update','role.disable','role.delete','user.read','user.create'],
       roleId: role.id, name: 'Renamed Manager', permissions: ['conversation.read'], db: client
     });
     check('a role can be renamed', updated.name === 'Renamed Manager');
     check('and its permissions updated', JSON.stringify(updated.permissions) === JSON.stringify(['conversation.read']));
 
-    const sysRoleId = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1.id])).rows[0].id;
+    const sysRoleId = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1])).rows[0].id;
     await rejects('editing a system role is refused', ROLE_ERRORS.SYSTEM,
-      () => updateRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => updateRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.update'], roleId: sysRoleId,
         name: 'Hacked', permissions: ['*'], db: client }));
     await rejects('editing a non-existent role is refused', ROLE_ERRORS.NOT_FOUND,
-      () => updateRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+      () => updateRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.update'], roleId: '00000000-0000-0000-0000-000000000000',
         name: 'Ghost', permissions: [], db: client }));
 
     await rejects('cross-tenant edit is refused', ROLE_ERRORS.NOT_FOUND,
-      () => updateRole({ tenantId: t2.id, actorUserId: outsider, actorRoles: ['Company Admin'],
+      () => updateRole({ tenantId: t2, actorUserId: outsider, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.update'], roleId: role.id, name: 'Stolen', permissions: [], db: client }));
 
     // Verify audit was written
@@ -176,17 +176,17 @@ try {
 
   section('5 disable / enable');
   {
-    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Renamed Manager'`, [t1.id]);
-    const disabled = await setRoleStatus({ tenantId: t1.id, actorUserId: admin, roleId: role.id, status: 'disabled', db: client });
+    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Renamed Manager'`, [t1]);
+    const disabled = await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'disabled', db: client });
     check('a role can be disabled', disabled.status === 'disabled');
 
-    const sysRoleId2 = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1.id])).rows[0].id;
+    const sysRoleId2 = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1])).rows[0].id;
     await rejects('disabling a system role is refused', ROLE_ERRORS.SYSTEM,
-      () => setRoleStatus({ tenantId: t1.id, actorUserId: admin, roleId: sysRoleId2, status: 'disabled', db: client }));
+      () => setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: sysRoleId2, status: 'disabled', db: client }));
     await rejects('disabling a non-existent role is refused', ROLE_ERRORS.NOT_FOUND,
-      () => setRoleStatus({ tenantId: t1.id, actorUserId: admin, roleId: '00000000-0000-0000-0000-000000000000', status: 'disabled', db: client }));
+      () => setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: '00000000-0000-0000-0000-000000000000', status: 'disabled', db: client }));
 
-    const enabled = await setRoleStatus({ tenantId: t1.id, actorUserId: admin, roleId: role.id, status: 'active', db: client });
+    const enabled = await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'active', db: client });
     check('a role can be re-enabled', enabled.status === 'active');
 
     const { rows: [audit] } = await q(`SELECT action FROM audit_logs WHERE object_id=$1 AND action='role.enabled'`, [role.id]);
@@ -195,61 +195,61 @@ try {
 
   section('6 delete (soft)');
   {
-    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Renamed Manager'`, [t1.id]);
+    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Renamed Manager'`, [t1]);
     await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [agent, role.id]);
     await rejects('deleting a role with holders is refused', ROLE_ERRORS.NOT_DELEGABLE,
-      () => deleteRole({ tenantId: t1.id, actorUserId: admin, roleId: role.id, db: client }));
+      () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: client }));
     await q(`DELETE FROM user_roles WHERE role_id=$1`, [role.id]);
-    const deleted = await deleteRole({ tenantId: t1.id, actorUserId: admin, roleId: role.id, db: client });
+    const deleted = await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: client });
     check('a role can be soft-deleted', deleted.status === 'disabled');
-    const sysRoleId2 = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1.id])).rows[0].id;
+    const sysRoleId2 = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1])).rows[0].id;
     await rejects('deleting a system role is refused', ROLE_ERRORS.SYSTEM,
-      () => deleteRole({ tenantId: t1.id, actorUserId: admin, roleId: sysRoleId2, db: client }));
+      () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: sysRoleId2, db: client }));
     await rejects('deleting a non-existent role is refused', ROLE_ERRORS.NOT_FOUND,
-      () => deleteRole({ tenantId: t1.id, actorUserId: admin, roleId: '00000000-0000-0000-0000-000000000000', db: client }));
+      () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: '00000000-0000-0000-0000-000000000000', db: client }));
     await rejects('cross-tenant delete is refused', ROLE_ERRORS.NOT_FOUND,
-      () => deleteRole({ tenantId: t2.id, actorUserId: outsider, roleId: role.id, db: client }));
+      () => deleteRole({ tenantId: t2, actorUserId: outsider, roleId: role.id, db: client }));
     const { rows: [audit] } = await q(`SELECT action FROM audit_logs WHERE object_id=$1 AND action='role.deleted'`, [role.id]);
     check('an audit row was written for the delete', audit?.action === 'role.deleted');
   }
 
   section('7 list');
   {
-    const roles = await listRoles({ tenantId: t1.id, db: client });
+    const roles = await listRoles({ tenantId: t1, db: client });
     check('list returns roles', roles.length > 0);
     check('system roles are included (read-only)', roles.some((r) => r.name === 'Company Admin'));
     check('deleted role is excluded from the default list', !roles.some((r) => r.name === 'Renamed Manager'));
-    const rolesWithDeleted = await listRoles({ tenantId: t1.id, db: client, includeDeleted: true });
+    const rolesWithDeleted = await listRoles({ tenantId: t1, db: client, includeDeleted: true });
     check('deleted role is present when explicitly requested', rolesWithDeleted.some((r) => r.name === 'Renamed Manager' && r.status === 'deleted'));
 
-    const t2Roles = await listRoles({ tenantId: t2.id, db: client });
-    const caRoleId = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1.id])).rows[0].id;
+    const t2Roles = await listRoles({ tenantId: t2, db: client });
+    const caRoleId = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1])).rows[0].id;
     check('list is tenant-scoped', !t2Roles.some((r) => r.name === 'Company Admin' && r.id === caRoleId));
   }
 
   // ---------------------------------------------------------------- 8 getRoleUsers
   section('8 getRoleUsers');
   {
-    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t1.id]);
-    const users = await getRoleUsers({ tenantId: t1.id, roleId: role.id, db: client });
+    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t1]);
+    const users = await getRoleUsers({ tenantId: t1, roleId: role.id, db: client });
     check('returns users holding the role', users.length >= 1);
     check('with correct shape', users[0].email !== undefined);
 
     await rejects('non-existent role is refused', ROLE_ERRORS.NOT_FOUND,
-      () => getRoleUsers({ tenantId: t1.id, roleId: '00000000-0000-0000-0000-000000000000', db: client }));
+      () => getRoleUsers({ tenantId: t1, roleId: '00000000-0000-0000-0000-000000000000', db: client }));
 
     await rejects('cross-tenant access is refused', ROLE_ERRORS.NOT_FOUND,
-      () => getRoleUsers({ tenantId: t2.id, roleId: role.id, db: client }));
+      () => getRoleUsers({ tenantId: t2, roleId: role.id, db: client }));
   }
 
   // ---------------------------------------------------------------- 9 assignment
   section('9 role assignment via user_roles');
   {
     // Create a fresh custom role for assignment testing
-    const r = await createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+    const r = await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
       actorCustomAbilities: ['role.create','role.read','role.update','role.disable','role.delete','user.read','user.create'],
       name: 'Assignable Role', permissions: ['conversation.read'], db: client });
-    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Assignable Role'`, [t1.id]);
+    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Assignable Role'`, [t1]);
 
     // Assign to agent
     await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2)`, [agent, role.id]);
@@ -263,22 +263,22 @@ try {
 
     // Clean up
     await q(`DELETE FROM user_roles WHERE role_id=$1`, [role.id]);
-    await deleteRole({ tenantId: t1.id, actorUserId: admin, roleId: role.id, db: client });
+    await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: client });
   }
 
   // ---------------------------------------------------------------- 10 disabled role grants zero
   section('10 disabled role grants nothing');
   {
-    const r = await createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+    const r = await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
       actorCustomAbilities: ['role.create','role.read','role.update','role.disable','role.delete','user.read','user.create'],
       name: 'Disable Test', permissions: ['conversation.read', 'conversation.reply'], db: client });
-    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Disable Test'`, [t1.id]);
+    const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Disable Test'`, [t1]);
 
     // Assign to agent
     await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2)`, [agent, role.id]);
 
     // Disable the role
-    await setRoleStatus({ tenantId: t1.id, actorUserId: admin, roleId: role.id, status: 'disabled', db: client });
+    await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'disabled', db: client });
 
     // Verify the role is disabled
     const { rows: [disabled] } = await q(`SELECT status FROM roles WHERE id=$1`, [role.id]);
@@ -288,13 +288,13 @@ try {
     // Note: in test DB there may be no sessions, so this is a no-op check
 
     // Re-enable
-    await setRoleStatus({ tenantId: t1.id, actorUserId: admin, roleId: role.id, status: 'active', db: client });
+    await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'active', db: client });
     const { rows: [enabled] } = await q(`SELECT status FROM roles WHERE id=$1`, [role.id]);
     check('role can be re-enabled', enabled.status === 'active');
 
     // Clean up
     await q(`DELETE FROM user_roles WHERE role_id=$1`, [role.id]);
-    await deleteRole({ tenantId: t1.id, actorUserId: admin, roleId: role.id, db: client });
+    await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: client });
   }
 
   // ---------------------------------------------------------------- 11 transaction rollback
@@ -303,10 +303,10 @@ try {
     await rejects('a failed create does not leave a partial row', ROLE_ERRORS.NAME_TAKEN, async () => {
       await q('BEGIN');
       try {
-        await createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+        await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
           actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test', permissions: [], db: client });
         // Force a failure by creating a duplicate
-        await createRole({ tenantId: t1.id, actorUserId: admin, actorRoles: ['Company Admin'],
+        await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
           actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test', permissions: [], db: client });
         await q('COMMIT');
       } catch (e) {
@@ -315,7 +315,7 @@ try {
       }
     });
     // Verify no row was left
-    const { rows } = await q(`SELECT count(*)::int n FROM roles WHERE tenant_id=$1 AND name='Rollback Test'`, [t1.id]);
+    const { rows } = await q(`SELECT count(*)::int n FROM roles WHERE tenant_id=$1 AND name='Rollback Test'`, [t1]);
     check('no partial row left after rollback', rows[0].n === 0);
   }
 
@@ -331,7 +331,7 @@ try {
       const router = createApiV1Router({
         pool,
         validateSessionFn: async () => ({
-          tenantId: t1.id, user: { id: admin, email: 'admin@t.local', name: 'A' },
+          tenantId: t1, user: { id: admin, email: 'admin@t.local', name: 'A' },
           roles, customAbilities
         }),
         verifyPasswordFn: async () => false,
@@ -387,7 +387,7 @@ try {
     eq('Agent cannot create', (await send(ag.base, agAuth, 'POST', '/roles', { name: 'Nope', permissions: [] })).status, 403);
 
     // System role protection
-    const sysRoleId = (await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t1.id])).rows[0].id;
+    const sysRoleId = (await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t1])).rows[0].id;
     eq('editing a system role is refused', (await send(ca.base, caAuth, 'PATCH', `/roles/${sysRoleId}`, { name: 'Hacked' })).status, 409);
     eq('disabling a system role is refused', (await send(ca.base, caAuth, 'POST', `/roles/${sysRoleId}/status`, { status: 'disabled' })).status, 409);
     eq('deleting a system role is refused', (await send(ca.base, caAuth, 'DELETE', `/roles/${sysRoleId}`)).status, 409);
@@ -406,7 +406,7 @@ try {
     eq('privilege escalation is refused', (await send(ca.base, caAuth, 'POST', '/roles', { name: 'Escalated', permissions: ['user.disable', 'brand.grant_all'] })).status, 403);
 
     // Cross-tenant
-    eq('cross-tenant access is refused', (await send(ca.base, caAuth, 'GET', `/roles/${(await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t2.id])).rows[0].id}`)).status, 404);
+    eq('cross-tenant access is refused', (await send(ca.base, caAuth, 'GET', `/roles/${(await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t2])).rows[0].id}`)).status, 404);
 
     // Disable/enable
     const disable = await send(ca.base, caAuth, 'POST', `/roles/${roleId}/status`, { status: 'disabled' });
@@ -481,7 +481,7 @@ try {
     const router = createApiV1Router({
       pool,
       validateSessionFn: async () => ({
-        tenantId: t1.id, user: { id: admin, email: 'admin@t.local', name: 'A' },
+        tenantId: t1, user: { id: admin, email: 'admin@t.local', name: 'A' },
         roles: ['Company Admin'], customAbilities: ['role.read','role.create','role.update','role.disable','role.delete','user.read','user.create']
       }),
       verifyPasswordFn: async () => false,
@@ -510,25 +510,32 @@ try {
     await pool.end();
   }
 
-  console.log(`\n${'='.repeat(64)}`);
-  console.log(`  ${pass} passed, ${failures.length} failed`);
-  if (failures.length) {
-    console.log('\n  FAILURES:');
-    for (const f of failures) console.log(`   - ${f}`);
-  }
-  console.log('='.repeat(64));
-  if (pass === 0 && failures.length === 0) {
-    console.log('  ERROR: zero assertions executed - this is NOT a pass');
-    process.exit(1);
-  }
-  process.exit(failures.length ? 1 : 0);
-
 } catch (e) {
   failures.push(`fatal: ${e?.code ?? ''} ${e?.message}`);
   console.error('\nfatal:', e?.code, e?.message);
 } finally {
   await client.end().catch(() => {});
 }
+
+// The summary and the exit code live HERE, outside the try.
+//
+// They used to sit at the end of the try block, which meant any thrown error
+// jumped straight to the catch and the process fell out with code 0. A fatal -
+// including "the migration ledger does not apply" - was therefore reported as a
+// SUCCESSFUL CI step while asserting nothing. The summary of run 39193539197
+// claimed a passing PostgreSQL suite; it had never executed a single assertion.
+console.log(`\n${'='.repeat(64)}`);
+console.log(`  ${pass} passed, ${failures.length} failed`);
+if (failures.length) {
+  console.log('\n  FAILURES:');
+  for (const f of failures) console.log(`   - ${f}`);
+}
+console.log('='.repeat(64));
+if (pass === 0) {
+  console.log('  ERROR: zero assertions executed - this is NOT a pass');
+  process.exit(1);
+}
+process.exit(failures.length ? 1 : 0);
 
 
 

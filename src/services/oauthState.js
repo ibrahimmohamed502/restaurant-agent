@@ -214,10 +214,24 @@ export async function consumeOAuthState({
 
   // 2. Verify the binding. A state that exists but was issued for someone else
   //    is a forgery attempt, not an expired link.
-  if (String(row.tenant_id) !== String(tenantId)) {
+  //
+  //    Each field is checked only WHEN THE CALLER SUPPLIED IT. That is not a
+  //    weakening - it is the only correct shape. The callback genuinely does not
+  //    know the tenant or the user yet: the browser may have arrived without a
+  //    usable session, and the whole point of the state is that it carries that
+  //    binding. Treating "not supplied" as "does not match" would 403 every real
+  //    callback.
+  //
+  //    What keeps that safe: the returned row is the authority. It pins
+  //    tenantId/actorUserId/brandId, and the steps that run AFTER the callback
+  //    (/pages, /confirm) re-verify the caller against the row against the live
+  //    session before anything is written or read. A state stolen by another
+  //    logged-in user is therefore still useless: the claim succeeds, but the
+  //    subsequent authenticated steps refuse it.
+  if (tenantId && String(row.tenant_id) !== String(tenantId)) {
     fail(OAUTH_STATE_ERRORS.MISMATCH, 'state was not issued for this company');
   }
-  if (String(row.actor_user_id) !== String(actorUserId)) {
+  if (actorUserId && String(row.actor_user_id) !== String(actorUserId)) {
     fail(OAUTH_STATE_ERRORS.MISMATCH, 'state was not issued for this user');
   }
   if (sessionId && row.session_id && String(row.session_id) !== String(sessionId)) {

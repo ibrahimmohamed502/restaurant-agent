@@ -246,6 +246,13 @@ try {
 
     const first = await state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB });
     check('the state can be consumed once', typeof first.id === 'string');
+    // The callback cannot know the tenant or the user yet: it authenticates BY
+    // the state. It must therefore receive the row's own binding rather than a
+    // mismatch. (This is the path a real Facebook redirect takes.)
+    eq('and it returns the tenant the state was issued for', String(first.tenantId), t1);
+    eq('and the user it was issued for', String(first.actorUserId), admin1);
+    eq('and the brand chosen before authorizing', String(first.brandId), b1);
+
     await rejects('replaying the same state is refused', state.OAUTH_STATE_ERRORS.ALREADY_USED,
       () => state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB }));
 
@@ -805,4 +812,8 @@ if (failures.length) {
   for (const f of failures) console.log(`   - ${f}`);
 }
 console.log('='.repeat(64));
+if (pass === 0) {
+  console.log('  ERROR: zero assertions executed - this is NOT a pass');
+  process.exit(1);
+}
 process.exit(failures.length ? 1 : 0);
