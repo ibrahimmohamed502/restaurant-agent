@@ -91,12 +91,52 @@ jobs:
       - name: Install root dependencies
         run: npm ci
 
-      - name: Run PG integration tests (A1 roles + B1 Meta OAuth)
+      - name: Run A1 role suite
+        env:
+          TEST_DATABASE_URL: postgresql://test:test@localhost:5432/test_db
+        run: node scripts/test-roles-pg.mjs
+
+  pg-tests-b1:
+    name: B1 Facebook OAuth (PG, mocked Meta)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        # pgvector, not stock postgres. migrations/001_init.sql does
+        # `CREATE EXTENSION IF NOT EXISTS vector`, so a stock image cannot apply
+        # the migration ledger at all - a green run against it would be testing a
+        # schema that does not match production. pgvector/pgvector:pg16 is the
+        # same Postgres 16 with that extension, matching the production server.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Run B1 Meta OAuth suite
         env:
           TEST_DATABASE_URL: postgresql://test:test@localhost:5432/test_db
         run: |
-          node scripts/test-roles-pg.mjs
-          echo
           echo "================================================================"
           echo " B1 - Facebook Page Self-Service OAuth"
           echo " Real PostgreSQL, MOCKED Meta. A pass here proves OUR logic"
@@ -106,8 +146,7 @@ jobs:
           echo "================================================================"
           node scripts/test-meta-oauth-pg.mjs
 
-      - name: Verify migrations 021, 022 and 023
+      - name: Verify migration 023
         run: |
-          echo "Migration verification is performed inside the test suites."
-          echo "Check the output above for the '021 shape', '022 shape'"
-          echo " and '1 023 shape' sections."
+          echo "Migration verification is performed inside the suite."
+          echo "Check the output above for the '1 023 shape' section."
