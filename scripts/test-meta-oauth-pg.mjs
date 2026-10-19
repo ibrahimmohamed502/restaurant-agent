@@ -572,14 +572,10 @@ try {
     // a consumed state with nothing parked yet is exactly the callback's normal
     // starting position.
     eq('the first stash on a consumed state is accepted',
-      await state.stashUserToken({ stateId: claimed.id, userToken: 'x', db: DB }), 1);
+      await state.stashUserToken({ stateId: claimed.id, userToken: 'EAA-secret-user-token', db: DB }), 1);
     eq('a second stash on the same state is refused',
-      await state.stashUserToken({ stateId: claimed.id, userToken: 'y', db: DB }), 0);
-    eq('and the second value never overwrote the first',
-      await state.takeUserToken({ stateId: claimed.id, db: DB }), 'x');
-
-    await state.stashUserToken({ stateId: claimed.id, userToken: 'EAA-secret-user-token', db: DB });
-    eq('the parked token round-trips',
+      await state.stashUserToken({ stateId: claimed.id, userToken: 'EAA-overwritten', db: DB }), 0);
+    eq('and the refused value never overwrote the parked one',
       await state.takeUserToken({ stateId: claimed.id, db: DB }), 'EAA-secret-user-token');
 
     const { rows: [enc] } = await q(`SELECT user_token_encrypted FROM oauth_states WHERE id=$1`, [claimed.id]);
