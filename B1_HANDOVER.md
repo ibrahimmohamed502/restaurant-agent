@@ -1,8 +1,8 @@
-# B1 — Facebook Page Self-Service OAuth · Handover
+﻿# B1 — Facebook Page Self-Service OAuth · Handover
 
 **Branch:** `b1-facebook-oauth`
 **Base:** `05d0c0c` (A1, owner-accepted)
-**Head at time of writing:** `b8a6ed0`
+**Head at time of writing:** see git log; CI run `39212007748`
 **CI run:** `39200973618`
 **Status:** code complete, CI green, **NOT deployed, NOT merged, NOT verified against real Meta**
 
@@ -199,12 +199,13 @@ proxy and access log on the path.
 
 ---
 
-## 7. Finding: the A1 PostgreSQL suite was reporting success without running
+## 7. The A1 PostgreSQL suite was reporting success without running — RESOLVED
 
-This is **not a B1 change** and it needs an owner decision. It surfaced because
-B1 needed a working PostgreSQL job.
+This was **not** a B1 change. It surfaced because B1 needed a working
+PostgreSQL job. **A1's official acceptance is unaffected** — what was broken was
+test *reliability*, not A1 behaviour.
 
-Three independent defects:
+### The three defects
 
 1. The CI service ran stock `postgres:16`, which has no pgvector, while
    `migrations/001_init.sql` does `CREATE EXTENSION IF NOT EXISTS vector`. The
@@ -216,29 +217,108 @@ Three independent defects:
    which throws on the `connect()` the services use for transactions.
 
 **Consequence: run `39193539197`, reported as "PostgreSQL suite success", had
-executed zero assertions.** The A1 PostgreSQL coverage should be treated as
-**unverified**.
+executed zero assertions.** A1's PostgreSQL coverage was unverified.
 
-### Current state of that suite (expected red, left red deliberately)
+### What it was hiding
 
-With pgvector fixed it runs, and **164 A1 assertions now execute; 5 fail**. I
-did not change A1's expectations — three are wrong expectations, one may be a
-real gap, and that judgement is the owner's.
+Once the mechanics were fixed, the suite ran — and a **count floor** (see below)
+revealed that the first abort had been masking further defects. **Seven** test
+defects in total were found and corrected. **No A1 production code was changed:**
+no RBAC, no permission ceiling, no tenant isolation, no behaviour.
 
-| Failing assertion | Assessment |
+| # | Assertion | Root cause | Kind |
+|---|---|---|---|
+| 1 | `a duplicate name is refused` | Sent `permissions: []`; `canDelegateRole` fail-closes on an empty ability list, so `NOT_DELEGABLE` fired before the name check | Test |
+| 2 | `privilege escalation is refused` | Asked Company Admin for `user.disable` + `brand.grant_all`. **Company Admin holds both** (verified against `ROLE_ABILITIES`), so the ceiling was right to allow it | Test |
+| 3 | `cross-tenant creation is refused` | Expected a service-level `ROLE_FORBIDDEN` that does not exist. The guarantee lives at the route, and the test never tested it | Test |
+| 4 | `a role can be soft-deleted` | Expected `'disabled'`; migration 022 made soft delete set `'deleted'` | Test |
+| 5 | `fatal: check is not a function` | `const { rows: [check] } = …` shadowed the assertion helper, aborting the suite — sections 10+ never ran | Test |
+| 6 | `no partial row left after rollback` | Wrapped service calls in the caller's `BEGIN/ROLLBACK`, but `acquire()` borrows its own pooled client, so the caller's rollback could never affect it | Test |
+| 7 | `brand.grant_all in custom role is refused` | Expected a write-time 422. The control is **read-time stripping** (see below) | Test |
+
+### Findings that are *not* defects
+
+- **Cross-tenant role creation — no hole.** Every route in `api/v1/roles.js`
+  takes `tenantId` from `scope(req, res)` → `req.v1`/`req.auth`, never from the
+  body. The service correctly does not re-check what the route guarantees. A new
+  test now proves a `tenantId` smuggled into the body never lands a role in the
+  other company.
+- **`brand.grant_all` in a custom role — inert, not exploitable.** The control is
+  `CUSTOM_ROLE_FORBIDDEN_ABILITIES`, stripped by `normalizeCustomAbilities`, which
+  every session passes through (`sessions.js` → `effectiveCustomAbilities`).
+  Verified: storing it yields effective abilities `[]` and `can()` is `false`.
+  Read-time placement is the *stronger* one — it holds even for a row written
+  directly to the database. Every consumer of `roles.permissions` was checked;
+  the session loader is the only one that converts the column into abilities.
+
+### One integrity finding, deliberately not fixed
+
+`GET /roles` returns the **stored** permissions, so a role can display
+`brand.grant_all` in the UI while not actually possessing it. Misleading, not a
+vulnerability. Changing the API response is A1 production behaviour and needs
+owner approval.
+
+### CI hardening
+
+- **Assertion count floor**, not just a zero check. `pass > 0` is too weak: a
+  suite that dies halfway still has passes — exactly how the broken ledger hid.
+  **A1 floor 111, B1 floor 178** (both the verified counts). The floor found
+  defects 6 and 7 immediately.
+- Summary and exit code moved outside the `try` block, so a thrown error can no
+  longer exit 0.
+- A1 and B1 run in **separate CI jobs**, so B1's green is B1's.
+
+---
+
+## 7a. OAuth security review — findings
+
+Reviewed against the implementation, not the handover.
+
+### Verified sound
+
+| Area | Basis |
 |---|---|
-| `a duplicate name is refused` | **Test bug.** Sends `permissions: []`; `canDelegateRole` fail-closes on an empty ability list, so `NOT_DELEGABLE` fires before the name check. |
-| `cross-tenant creation is refused` | **Test bug, no hole.** Same cause. Separately verified: every roles route takes `tenantId` from `req.v1`/`req.auth`, never from the body, so a client cannot name another company. The service correctly does not re-check what the route already guarantees. |
-| `privilege escalation is refused` | **Test bug.** Asks Company Admin for `user.disable` + `brand.grant_all`. Verified against `ROLE_ABILITIES`: Company Admin holds **both**. The ceiling is right to allow it. |
-| `a role can be soft-deleted` | **Undiagnosed.** |
-| `fatal: check is not a function` | **Undiagnosed** helper misuse. |
+| State cannot be forged | Only SHA-256 is stored; a DB read yields no usable token |
+| State cannot be replayed | Single conditional `UPDATE … WHERE consumed_at IS NULL`; 3 concurrent consumes → exactly 1 wins |
+| State bound to identity | tenant, user, session and redirect URI each verified; each verified **only when supplied**, because a callback cannot know them yet |
+| No session confusion | The callback creates no session and never authenticates anyone; it only resolves a grant |
+| Cross-tenant / cross-brand | State usable only by its own user+tenant; brand scope re-checked inside the connect transaction |
+| Tokens never in responses | `/connect`, `/pages`, `/confirm`, `/connections` — no token in any body; `/pages` re-projects to six safe fields |
+| Tokens never in URLs | App secret, user token and page token all asserted absent |
+| Grants expire | 10-minute TTL; expired, spent and unknown states are three distinct refusals |
+| Uniqueness enforced | Pre-existing global index + `channels_meta_tenant_owner_uidx`; the concurrent race resolves to 409, not 500 |
+| Open redirect | Origin comes from an allowlisted URI, path and parameter names are fixed configuration |
+| No token logging | No `console.*` in any B1 module |
 
-**Recommended:** correct the three wrong expectations (use an ability Company
-Admin does *not* hold, e.g. `company.metrics`), and investigate the last two.
-I have not done this — it is A1 scope, it is a security-posture judgement, and
-A1 is owner-accepted.
+### Two items worth the owner's attention
 
-The A1 and B1 suites now run in **separate CI jobs**, so B1's green is B1's.
+**1. The code exchange uses POST, which Meta does not document.**
+Meta's guide documents `/oauth/access_token` as a **GET** with `client_secret` in
+the query string; it does not document POST for this endpoint. B1 defaulted to
+POST on the reasoning that a GET puts the app secret into every proxy and access
+log on the path. **That is a security preference, not a claim of documented
+support, and it was never verified.** It is now switchable —
+`META_OAUTH_EXCHANGE_METHOD=GET` restores the documented form without a code
+change, and an unsupported value is refused rather than guessed.
+
+**2. `brandId` at confirm comes from the request body, not the state.**
+The state pins a `brand_id`, but `/confirm` uses the body value. **Not
+exploitable**: `connectPage` re-checks the brand against the tenant and the
+caller's brand scope inside the transaction, so a caller can only target a brand
+they are already entitled to. The state's brand is therefore a *default* for the
+UI (pre-selected before the consent screen), not an authority — which matches the
+product behaviour of allowing a Page to be moved between brands. Documented rather
+than changed.
+
+### Task threshold — reviewed, documented, not changed
+
+Required Page Tasks default to `MANAGE + CREATE_CONTENT + MODERATE`. B1 does not
+yet post, reply or moderate, so the gate is forward-looking: refusing a Page the
+agent could not act on is a louder failure than accepting it and breaking later.
+Least-privilege alternatives are documented and configurable via
+`META_OAUTH_REQUIRED_TASKS` — `MANAGE` alone, or `MANAGE,MODERATE`.
+`READ_CONTENT` alone is explicitly **not** recommended: it reintroduces silent
+failure. **Default behaviour is unchanged pending owner decision.**
 
 ---
 

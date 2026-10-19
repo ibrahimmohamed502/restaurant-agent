@@ -726,7 +726,7 @@ console.log('='.repeat(64));
 // and that is exactly how this suite hid a broken migration ledger for a long
 // time. If the assertion count falls below the floor, something was silently
 // skipped, so the run fails even when every executed assertion passed.
-const MIN_ASSERTIONS = 80;
+const MIN_ASSERTIONS = 111;
 if (pass < MIN_ASSERTIONS) {
   console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
   console.log('  This is NOT a pass - sections were almost certainly skipped.');
