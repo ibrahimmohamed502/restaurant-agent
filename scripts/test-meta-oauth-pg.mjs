@@ -484,11 +484,26 @@ try {
   ];
   // Real discovery normalises the Meta response shape; the mock returns it raw so
   // the normalisation itself is under test rather than bypassed.
+  //
+  // Path-aware because the code exchange uses the documented GET form, so BOTH
+  // /oauth/access_token and /me/accounts arrive through the same GET transport.
+  // A single-shape mock would silently return the wrong body for one of them.
   metaOAuth.setGraphTransport({
-    get: async (path) => (path === '/me/accounts'
-      ? { data: PAGES.map((p) => ({ id: p.id, name: p.name, category: p.category, tasks: p.tasks, access_token: p.access_token, picture: { data: { url: `https://cdn/${p.id}.jpg` } } })) }
-      : {}),
-    post: async () => ({ access_token: 'EAA-user-token', expires_in: 5184000 })
+    get: async (path) => {
+      if (path === '/oauth/access_token') return { access_token: 'EAA-user-token', expires_in: 5184000 };
+      if (path !== '/me/accounts') return {};
+      return {
+        data: PAGES.map((p) => ({
+          id: p.id, name: p.name, category: p.category, tasks: p.tasks,
+          access_token: p.access_token, picture: { data: { url: `https://cdn/${p.id}.jpg` } }
+        }))
+      };
+    },
+    // Retained so the suite still exercises the opt-in POST path if the method
+    // is switched back during the Real Meta Spike.
+    post: async (path) => (path === '/oauth/access_token'
+      ? { access_token: 'EAA-user-token', expires_in: 5184000 }
+      : {})
   });
 
   const discovered = () => conn.listAvailablePages({ db: DB, userAccessToken: 'u' });
