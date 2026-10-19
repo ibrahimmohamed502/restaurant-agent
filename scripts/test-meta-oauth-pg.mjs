@@ -193,11 +193,18 @@ try {
 
       // The injectable transport must actually be honoured. A direct call to the
       // private graphPost/graphGet would bypass it and hit Meta for real.
+      // Path-aware, because the code exchange now uses GET and therefore goes
+      // through transport.get rather than transport.post.
       const originalFetch = globalThis.fetch;
       let transportUsed = 0;
       metaOAuth.setGraphTransport({
         post: async () => { transportUsed++; return { access_token: 'EAA-mock' }; },
-        get: async () => { transportUsed++; return { data: [] }; }
+        get: async (path) => {
+          transportUsed++;
+          return path === '/oauth/access_token'
+            ? { access_token: 'EAA-mock' }
+            : { data: [] };
+        }
       });
       await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI });
       await metaOAuth.discoverPages({ userAccessToken: 'U' });
