@@ -1031,174 +1031,179 @@ try {
     eq('disconnecting an unknown channel is a 404',
       (await send(ca.base, caAuth, 'DELETE',
         '/integrations/facebook/connections/00000000-0000-0000-0000-000000000000')).status, 404);
-  }
+    // ============================================ 15 PKCE round trip + config_id
+    // Added after the review defect: B1 sent `code_challenge` to Meta but stored
+    // only SHA-256(verifier) and never sent `code_verifier` back at the exchange.
+    // Since PKCE requires the RAW verifier, every REAL connect would fail at token
+    // exchange - while all 196 prior assertions stayed green, because the suite
+    // only ever asserted the challenge went OUT. A mock that only COUNTS calls
+    // cannot see a missing parameter; the mock below RECORDS them.
+    section('15 PKCE verifier round trip and config_id');
 
-  // ============================================ 15 PKCE round trip + config_id
-  // Added after the review defect: B1 sent `code_challenge` to Meta but stored
-  // only SHA-256(verifier) and never sent `code_verifier` back at the exchange.
-  // Since PKCE requires the RAW verifier, every REAL connect would fail at token
-  // exchange - while all 196 prior assertions stayed green, because the suite
-  // only ever asserted the challenge went OUT. A mock that only COUNTS calls
-  // cannot see a missing parameter; the mock below RECORDS them.
-  section('15 PKCE verifier round trip and config_id');
+    {
+      const nodeCrypto = await import('node:crypto');
+      const NR = { redirect: 'manual' };
+      const REAL_FETCH = globalThis.fetch;
+      let capturedExchange = null;
 
-  {
-    const nodeCrypto = await import('node:crypto');
-    const NR = { redirect: 'manual' };
-    const REAL_FETCH = globalThis.fetch;
-    let capturedExchange = null;
-
-    metaOAuth.setGraphTransport({
-      post: async () => ({ access_token: 'EAA-mock' }),
-      get: async (path, params) => {
-        if (path === '/oauth/access_token') { capturedExchange = { ...params }; return { access_token: 'EAA-mock' }; }
-        return { data: [] };
-      }
-    });
-
-    try {
-      // ---------------------------------------------------------- challenge
-      const pk = state.generatePkce();
-      check('a PKCE verifier is generated', typeof pk.verifier === 'string' && pk.verifier.length >= 43);
-      eq('the challenge is the base64url S256 of the verifier',
-        pk.challenge, nodeCrypto.createHash('sha256').update(pk.verifier, 'utf8').digest('base64url'));
-      check('two verifiers are never equal', state.generatePkce().verifier !== state.generatePkce().verifier);
-
-      // ------------------------------------------- encrypted persistence
-      const issued = await state.issueOAuthState({
-        tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1,
-        redirectUri: URI, pkceVerifier: pk.verifier, db: DB
+      metaOAuth.setGraphTransport({
+        post: async () => ({ access_token: 'EAA-mock' }),
+        get: async (path, params) => {
+          if (path === '/oauth/access_token') { capturedExchange = { ...params }; return { access_token: 'EAA-mock' }; }
+          return { data: [] };
+        }
       });
-      const { rows: vr } = await q(
-        `SELECT code_verifier_hash, code_verifier_encrypted, code_verifier_iv
-           FROM oauth_states WHERE state_hash = $1`,
-        [state.hashState(issued.state)]
-      );
-      check('the RAW verifier is stored, not only its digest', Boolean(vr[0].code_verifier_encrypted));
-      check('the ciphertext does not contain the plaintext verifier',
-        !vr[0].code_verifier_encrypted.toString('binary').includes(pk.verifier.slice(0, 24)));
-      eq('the verifier is stored with a 12-byte IV', vr[0].code_verifier_iv.length, 12);
-      eq('the integrity digest is also stored', vr[0].code_verifier_hash.length, 32);
 
-      // ------------------------------------------- claim does not release it
-      const claimedPk = await state.consumeOAuthState({ state: issued.state, redirectUri: URI, db: DB });
-      check('the claim reports that a verifier exists', claimedPk.hasCodeVerifier === true);
-      check('the claim does NOT hand back the ciphertext', claimedPk.codeVerifierEncrypted === undefined);
-      check('the claim does NOT hand back the plaintext verifier',
-        JSON.stringify(claimedPk).includes(pk.verifier) === false);
-
-      // ------------------------------------------- release + destroy on read
-      const released = await state.takePkceVerifier({
-        stateId: claimedPk.id, expectedHash: claimedPk.codeVerifierHash, db: DB
-      });
-      eq('the released verifier is byte-identical to the generated one', released, pk.verifier);
-
-      const { rows: gone } = await q(
-        `SELECT code_verifier_encrypted, code_verifier_iv FROM oauth_states WHERE id = $1`, [claimedPk.id]);
-      check('the verifier ciphertext is destroyed on read', gone[0].code_verifier_encrypted === null);
-      check('the verifier IV is destroyed on read', gone[0].code_verifier_iv === null);
-      eq('a second read returns nothing', await state.takePkceVerifier({ stateId: claimedPk.id, db: DB }), null);
-
-      // ------------------------------------------- corrupt ciphertext refused
-      const corrupt = await state.issueOAuthState({
-        tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1,
-        redirectUri: URI, pkceVerifier: pk.verifier, db: DB
-      });
-      const corruptClaim = await state.consumeOAuthState({ state: corrupt.state, redirectUri: URI, db: DB });
-      await q(`UPDATE oauth_states SET code_verifier_encrypted = $2 WHERE id = $1`,
-        [corruptClaim.id, Buffer.concat([Buffer.alloc(16), Buffer.from('tampered-value')])]);
-      await rejects('a tampered verifier ciphertext is refused, never returned',
-        state.OAUTH_STATE_ERRORS.CRYPTO_UNAVAILABLE,
-        () => state.takePkceVerifier({ stateId: corruptClaim.id, db: DB }));
-
-      // ------------------------------- THE assertion the old suite lacked
-      capturedExchange = null;
-      await metaOAuth.exchangeCode({ code: 'CODE', redirectUri: URI, codeVerifier: pk.verifier });
-      check('code_verifier IS sent on the code exchange', Boolean(capturedExchange?.code_verifier));
-      eq('the code_verifier sent is the released one', capturedExchange.code_verifier, pk.verifier);
-
-      capturedExchange = null;
-      await metaOAuth.exchangeCode({ code: 'CODE', redirectUri: URI, codeVerifier: null });
-      check('no code_verifier is sent when PKCE is off', !capturedExchange?.code_verifier);
-
-      // ------------------------------------------- end to end over HTTP
-      const e2e = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
-      const e2eHash = nodeCrypto.createHash('sha256').update(e2e.body.data.state, 'utf8').digest();
-      capturedExchange = null;
-      const e2eCb = await fetch(
-        `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(e2e.body.data.state)}`, NR);
-      eq('the end-to-end callback still redirects into the app', e2eCb.status, 303);
-      check('THE DEFECT: the callback sends code_verifier on the exchange', Boolean(capturedExchange?.code_verifier));
-
-      const { rows: e2eRow } = await q(
-        `SELECT code_verifier_encrypted FROM oauth_states WHERE state_hash = $1`, [e2eHash]);
-      check('the verifier is not left behind after a completed callback', e2eRow[0].code_verifier_encrypted === null);
-
-      eq('the state cannot be replayed after a successful exchange',
-        (await fetch(`${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(e2e.body.data.state)}`, NR)).status, 400);
-
-      // ------------------------------------------- concurrency
-      const cs = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
-      const csUrl = `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(cs.body.data.state)}`;
-      const conc = await Promise.all([fetch(csUrl, NR), fetch(csUrl, NR), fetch(csUrl, NR)]);
-      eq('exactly one of three concurrent callbacks succeeds', conc.filter((r) => r.status === 303).length, 1);
-
-      // ------------------------------------------- PKCE off, end to end
-      const savedPkce = process.env.META_OAUTH_PKCE;
-      process.env.META_OAUTH_PKCE = 'false';
       try {
-        const np = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
-        check('with PKCE off there is no code_challenge in the authorize URL',
-          !np.body.data.authorizeUrl.includes('code_challenge'));
+        // ---------------------------------------------------------- challenge
+        const pk = state.generatePkce();
+        check('a PKCE verifier is generated', typeof pk.verifier === 'string' && pk.verifier.length >= 43);
+        eq('the challenge is the base64url S256 of the verifier',
+          pk.challenge, nodeCrypto.createHash('sha256').update(pk.verifier, 'utf8').digest('base64url'));
+        check('two verifiers are never equal', state.generatePkce().verifier !== state.generatePkce().verifier);
+
+        // ------------------------------------------- encrypted persistence
+        const issued = await state.issueOAuthState({
+          tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1,
+          redirectUri: URI, pkceVerifier: pk.verifier, db: DB
+        });
+        const { rows: vr } = await q(
+          `SELECT code_verifier_hash, code_verifier_encrypted, code_verifier_iv
+             FROM oauth_states WHERE state_hash = $1`,
+          [state.hashState(issued.state)]
+        );
+        check('the RAW verifier is stored, not only its digest', Boolean(vr[0].code_verifier_encrypted));
+        check('the ciphertext does not contain the plaintext verifier',
+          !vr[0].code_verifier_encrypted.toString('binary').includes(pk.verifier.slice(0, 24)));
+        eq('the verifier is stored with a 12-byte IV', vr[0].code_verifier_iv.length, 12);
+        eq('the integrity digest is also stored', vr[0].code_verifier_hash.length, 32);
+
+        // ------------------------------------------- claim does not release it
+        const claimedPk = await state.consumeOAuthState({ state: issued.state, redirectUri: URI, db: DB });
+        check('the claim reports that a verifier exists', claimedPk.hasCodeVerifier === true);
+        check('the claim does NOT hand back the ciphertext', claimedPk.codeVerifierEncrypted === undefined);
+        check('the claim does NOT hand back the plaintext verifier',
+          JSON.stringify(claimedPk).includes(pk.verifier) === false);
+
+        // ------------------------------------------- release + destroy on read
+        const released = await state.takePkceVerifier({
+          stateId: claimedPk.id, expectedHash: claimedPk.codeVerifierHash, db: DB
+        });
+        eq('the released verifier is byte-identical to the generated one', released, pk.verifier);
+        // Regression for a real bug found by this section: PostgreSQL's
+        // `UPDATE ... RETURNING` yields the NEW row, so destroying the ciphertext
+        // in the same statement returned NULL on every call. A destroy-and-return
+        // helper must read the OLD value, via a CTE.
+        check('destroy-on-read returns the value it destroyed, not the NULL it wrote',
+          released !== null && released !== undefined && released === pk.verifier);
+
+        const { rows: gone } = await q(
+          `SELECT code_verifier_encrypted, code_verifier_iv FROM oauth_states WHERE id = $1`, [claimedPk.id]);
+        check('the verifier ciphertext is destroyed on read', gone[0].code_verifier_encrypted === null);
+        check('the verifier IV is destroyed on read', gone[0].code_verifier_iv === null);
+        eq('a second read returns nothing', await state.takePkceVerifier({ stateId: claimedPk.id, db: DB }), null);
+
+        // ------------------------------------------- corrupt ciphertext refused
+        const corrupt = await state.issueOAuthState({
+          tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1,
+          redirectUri: URI, pkceVerifier: pk.verifier, db: DB
+        });
+        const corruptClaim = await state.consumeOAuthState({ state: corrupt.state, redirectUri: URI, db: DB });
+        await q(`UPDATE oauth_states SET code_verifier_encrypted = $2 WHERE id = $1`,
+          [corruptClaim.id, Buffer.concat([Buffer.alloc(16), Buffer.from('tampered-value')])]);
+        await rejects('a tampered verifier ciphertext is refused, never returned',
+          state.OAUTH_STATE_ERRORS.CRYPTO_UNAVAILABLE,
+          () => state.takePkceVerifier({ stateId: corruptClaim.id, db: DB }));
+
+        // ------------------------------- THE assertion the old suite lacked
         capturedExchange = null;
-        await fetch(`${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(np.body.data.state)}`, NR);
-        check('with PKCE off no code_verifier is sent', !capturedExchange?.code_verifier);
+        await metaOAuth.exchangeCode({ code: 'CODE', redirectUri: URI, codeVerifier: pk.verifier });
+        check('code_verifier IS sent on the code exchange', Boolean(capturedExchange?.code_verifier));
+        eq('the code_verifier sent is the released one', capturedExchange.code_verifier, pk.verifier);
+
+        capturedExchange = null;
+        await metaOAuth.exchangeCode({ code: 'CODE', redirectUri: URI, codeVerifier: null });
+        check('no code_verifier is sent when PKCE is off', !capturedExchange?.code_verifier);
+
+        // ------------------------------------------- end to end over HTTP
+        const e2e = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
+        const e2eHash = nodeCrypto.createHash('sha256').update(e2e.body.data.state, 'utf8').digest();
+        capturedExchange = null;
+        const e2eCb = await fetch(
+          `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(e2e.body.data.state)}`, NR);
+        eq('the end-to-end callback still redirects into the app', e2eCb.status, 303);
+        check('THE DEFECT: the callback sends code_verifier on the exchange', Boolean(capturedExchange?.code_verifier));
+
+        const { rows: e2eRow } = await q(
+          `SELECT code_verifier_encrypted FROM oauth_states WHERE state_hash = $1`, [e2eHash]);
+        check('the verifier is not left behind after a completed callback', e2eRow[0].code_verifier_encrypted === null);
+
+        eq('the state cannot be replayed after a successful exchange',
+          (await fetch(`${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(e2e.body.data.state)}`, NR)).status, 400);
+
+        // ------------------------------------------- concurrency
+        const cs = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
+        const csUrl = `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(cs.body.data.state)}`;
+        const conc = await Promise.all([fetch(csUrl, NR), fetch(csUrl, NR), fetch(csUrl, NR)]);
+        eq('exactly one of three concurrent callbacks succeeds', conc.filter((r) => r.status === 303).length, 1);
+
+        // ------------------------------------------- PKCE off, end to end
+        const savedPkce = process.env.META_OAUTH_PKCE;
+        process.env.META_OAUTH_PKCE = 'false';
+        try {
+          const np = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
+          check('with PKCE off there is no code_challenge in the authorize URL',
+            !np.body.data.authorizeUrl.includes('code_challenge'));
+          capturedExchange = null;
+          await fetch(`${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(np.body.data.state)}`, NR);
+          check('with PKCE off no code_verifier is sent', !capturedExchange?.code_verifier);
+        } finally {
+          process.env.META_OAUTH_PKCE = savedPkce;
+        }
+
+        // ------------------------------------------- config_id
+        const savedCid = process.env.META_OAUTH_CONFIG_ID;
+        try {
+          delete process.env.META_OAUTH_CONFIG_ID;
+          eq('without config_id the authorize URL is unchanged',
+            metaOAuth.configId(), null);
+          check('no config_id parameter appears when unset',
+            !metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' }).includes('config_id'));
+
+          process.env.META_OAUTH_CONFIG_ID = '1673966207646736';
+          eq('configId() reads the configured value', metaOAuth.configId(), '1673966207646736');
+          check('config_id is present in the authorize URL when configured',
+            metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' }).includes('config_id=1673966207646736'));
+
+          process.env.META_OAUTH_CONFIG_ID = 'abc&evil=1';
+          let threw = null;
+          try { metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' }); } catch (e) { threw = e.code; }
+          eq('a config_id carrying URL syntax is refused', threw, metaOAuth.META_OAUTH_ERRORS.MISSING_CONFIG);
+        } finally {
+          if (savedCid === undefined) delete process.env.META_OAUTH_CONFIG_ID;
+          else process.env.META_OAUTH_CONFIG_ID = savedCid;
+        }
+
+        // ------------------------------------------- redaction
+        const PROBE = 'PROBE-VERIFIER-abcdefghijklmnopqrst';
+        const probeState = await state.issueOAuthState({
+          tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1,
+          redirectUri: URI, pkceVerifier: PROBE, db: DB
+        });
+        const { rows: probeRow } = await q(
+          `SELECT code_verifier_encrypted::text AS enc FROM oauth_states WHERE state_hash = $1`,
+          [state.hashState(probeState.state)]
+        );
+        check('the verifier is never stored in the clear', !probeRow[0].enc.includes('abcdefghijklmnopqrst'));
+        const { rows: probeCol } = await q(
+          `SELECT count(*)::int n FROM oauth_states WHERE code_verifier_encrypted IS NOT NULL AND state_hash = $1`,
+          [state.hashState(probeState.state)]
+        );
+        eq('the probe row still holds exactly one encrypted verifier', probeCol[0].n, 1);
       } finally {
-        process.env.META_OAUTH_PKCE = savedPkce;
+        globalThis.fetch = REAL_FETCH;
+        metaOAuth.resetGraphTransport();
       }
-
-      // ------------------------------------------- config_id
-      const savedCid = process.env.META_OAUTH_CONFIG_ID;
-      try {
-        delete process.env.META_OAUTH_CONFIG_ID;
-        eq('without config_id the authorize URL is unchanged',
-          metaOAuth.configId(), null);
-        check('no config_id parameter appears when unset',
-          !metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' }).includes('config_id'));
-
-        process.env.META_OAUTH_CONFIG_ID = '1673966207646736';
-        eq('configId() reads the configured value', metaOAuth.configId(), '1673966207646736');
-        check('config_id is present in the authorize URL when configured',
-          metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' }).includes('config_id=1673966207646736'));
-
-        process.env.META_OAUTH_CONFIG_ID = 'abc&evil=1';
-        let threw = null;
-        try { metaOAuth.buildAuthorizationUrl({ redirectUri: URI, state: 'S' }); } catch (e) { threw = e.code; }
-        eq('a config_id carrying URL syntax is refused', threw, metaOAuth.META_OAUTH_ERRORS.MISSING_CONFIG);
-      } finally {
-        if (savedCid === undefined) delete process.env.META_OAUTH_CONFIG_ID;
-        else process.env.META_OAUTH_CONFIG_ID = savedCid;
-      }
-
-      // ------------------------------------------- redaction
-      const PROBE = 'PROBE-VERIFIER-abcdefghijklmnopqrst';
-      const probeState = await state.issueOAuthState({
-        tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1,
-        redirectUri: URI, pkceVerifier: PROBE, db: DB
-      });
-      const { rows: probeRow } = await q(
-        `SELECT code_verifier_encrypted::text AS enc FROM oauth_states WHERE state_hash = $1`,
-        [state.hashState(probeState.state)]
-      );
-      check('the verifier is never stored in the clear', !probeRow[0].enc.includes('abcdefghijklmnopqrst'));
-      const { rows: probeCol } = await q(
-        `SELECT count(*)::int n FROM oauth_states WHERE code_verifier_encrypted IS NOT NULL AND state_hash = $1`,
-        [state.hashState(probeState.state)]
-      );
-      eq('the probe row still holds exactly one encrypted verifier', probeCol[0].n, 1);
-    } finally {
-      globalThis.fetch = REAL_FETCH;
-      metaOAuth.resetGraphTransport();
     }
   }
 
@@ -1224,10 +1229,10 @@ console.log('='.repeat(64));
 // the remaining sections never run - the run must fail rather than report a
 // short pass. This number is the verified count as of run 39218882467; raise it
 // when adding coverage, never lower it.
-// Raised 196 -> 227 for the PKCE/config_id section. The floor is precisely what
+// Raised 196 -> 228 for the PKCE/config_id section. The floor is precisely what
 // would have caught the original defect: the suite could report 196 passing
 // while never once asserting that code_verifier is sent at the exchange.
-const MIN_ASSERTIONS = 227;
+const MIN_ASSERTIONS = 228;
 if (pass < MIN_ASSERTIONS) {
   console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
   console.log('  This is NOT a pass - sections were almost certainly skipped.');

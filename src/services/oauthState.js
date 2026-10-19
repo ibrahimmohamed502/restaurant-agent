@@ -336,13 +336,33 @@ export async function takePkceVerifier({ stateId, expectedHash = null, db = pool
   if (!stateId) return null;
   const { decrypt } = await import('../db/crypto.js');
 
-  // Destroy on read, in one statement, so two concurrent callbacks cannot both
+  // Destroy on read, in ONE statement, so two concurrent callbacks cannot both
   // obtain the verifier even if they somehow both reached this line.
+  //
+  // THE CTE IS NOT COSMETIC. In PostgreSQL, `UPDATE ... RETURNING` yields the
+  // NEW row values, so a plain
+  //     UPDATE ... SET code_verifier_encrypted = NULL
+  //              RETURNING code_verifier_encrypted
+  // returns NULL - it would report the ciphertext it just destroyed. The first
+  // version of this function did exactly that and returned null on every call.
+  //
+  // `taken` snapshots the row under FOR UPDATE, and RETURNING reads the value
+  // from that CTE rather than from the updated row, so the old ciphertext is
+  // what comes back. Still one statement, so it is still atomic.
   const { rows } = await db.query(
-    `UPDATE oauth_states
-        SET code_verifier_encrypted = NULL, code_verifier_iv = NULL
-      WHERE id = $1 AND code_verifier_encrypted IS NOT NULL
-      RETURNING code_verifier_encrypted, code_verifier_iv, code_verifier_hash`,
+    `WITH taken AS (
+       SELECT id, code_verifier_encrypted, code_verifier_iv, code_verifier_hash
+         FROM oauth_states
+        WHERE id = $1
+          AND code_verifier_encrypted IS NOT NULL
+        FOR UPDATE
+     )
+     UPDATE oauth_states AS o
+        SET code_verifier_encrypted = NULL,
+            code_verifier_iv        = NULL
+       FROM taken AS t
+      WHERE o.id = t.id
+     RETURNING t.code_verifier_encrypted, t.code_verifier_iv, t.code_verifier_hash`,
     [stateId]
   );
   if (!rows.length) return null;
