@@ -473,6 +473,10 @@ try {
     for (const f of failures) console.log(`   - ${f}`);
   }
   console.log('='.repeat(64));
+  if (pass === 0 && failures.length === 0) {
+    console.log('  ERROR: zero assertions executed - this is NOT a pass');
+    process.exit(1);
+  }
   process.exit(failures.length ? 1 : 0);
 
 } catch (e) {
@@ -481,5 +485,6 @@ try {
 } finally {
   await client.end().catch(() => {});
 }
+
 
 
