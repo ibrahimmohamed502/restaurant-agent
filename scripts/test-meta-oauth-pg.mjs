@@ -430,6 +430,9 @@ try {
     eq('and the undocumented POST form is then used', calls, ['post']);
 
     // The reason POST exists: it keeps client_secret out of the URL entirely.
+    // The transport must be reset first, or exchangeCode would use the mock
+    // instead of the stubbed fetch and nothing would be captured.
+    metaOAuth.resetGraphTransport();
     const realFetch2 = globalThis.fetch;
     try {
       let seenPost = null;
