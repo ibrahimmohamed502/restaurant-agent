@@ -204,17 +204,28 @@ async function graphPost(path, params, accessToken = null) {
   return data;
 }
 
-/** Same as graphPost but GET, for read-only discovery calls. */
+/**
+ * GET against Graph, for read-only discovery calls.
+ *
+ * The one exception is /oauth/access_token, which legitimately carries NO
+ * bearer token: it authenticates with client_id/client_secret as parameters,
+ * because that is the documented shape when META_OAUTH_EXCHANGE_METHOD=GET.
+ * Every other read still requires a token, so this cannot become a way to call
+ * Graph unauthenticated.
+ */
 async function graphGet(path, params, accessToken) {
-  if (!accessToken) {
+  const isCodeExchange = path === '/oauth/access_token';
+  if (!accessToken && !isCodeExchange) {
     throw new MetaOAuthError(META_OAUTH_ERRORS.MISSING_CONFIG, 'access token required');
   }
   const url = new URL(`${META_GRAPH_BASE}${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
+  const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+
   let res;
   try {
-    res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    res = await fetch(url, { headers });
   } catch {
     throw new MetaOAuthError(META_OAUTH_ERRORS.UPSTREAM_UNAVAILABLE, 'Meta Graph API is unreachable');
   }
@@ -246,6 +257,41 @@ async function graphGet(path, params, accessToken) {
  * persists it and never logs it: storage is the connection service's job, and
  * only after a Page has been chosen and validated.
  */
+/**
+ * HTTP method for the code exchange.
+ *
+ * Meta's guide documents this endpoint as a GET with client_secret in the query
+ * string. It does NOT document POST for this endpoint. B1 defaults to POST
+ * because a GET puts the app secret - which Meta calls "the core of the security
+ * of your app" - into every proxy log and access log on the path, and because
+ * Graph accepts the same parameters over POST.
+ *
+ * That reasoning is a security preference, NOT a claim of documented support, and
+ * it has never been verified against the live API. So the method is explicit and
+ * switchable: META_OAUTH_EXCHANGE_METHOD=GET restores the documented form
+ * without a code change if the real-Meta Spike shows POST is refused.
+ *
+ *   POST (default) - secret in the request body; never in a URL.
+ *   GET            - documented; secret necessarily travels in the query string.
+ */
+export function exchangeMethod() {
+  const m = String(process.env.META_OAUTH_EXCHANGE_METHOD || 'POST').toUpperCase();
+  if (m !== 'GET' && m !== 'POST') {
+    throw new MetaOAuthError(
+      META_OAUTH_ERRORS.MISSING_CONFIG,
+      'META_OAUTH_EXCHANGE_METHOD must be GET or POST'
+    );
+  }
+  return m;
+}
+
+/**
+ * Trade the authorization code for a short-lived User Access Token.
+ *
+ * Returns the token to the caller for immediate use. This function never
+ * persists it and never logs it: storage is the connection service's job, and
+ * only after a Page has been chosen and validated.
+ */
 export async function exchangeCode({ code, redirectUri, codeVerifier = null }) {
   if (!code) throw new MetaOAuthError(META_OAUTH_ERRORS.CODE_EXCHANGE_FAILED, 'authorization code is required');
   assertAllowedRedirectUri(redirectUri);
@@ -259,7 +305,9 @@ export async function exchangeCode({ code, redirectUri, codeVerifier = null }) {
   };
   if (codeVerifier) params.code_verifier = codeVerifier;
 
-  const data = await transport.post('/oauth/access_token', params);
+  const data = exchangeMethod() === 'GET'
+    ? await transport.get('/oauth/access_token', params, null)
+    : await transport.post('/oauth/access_token', params);
   if (!data?.access_token) {
     throw new MetaOAuthError(META_OAUTH_ERRORS.CODE_EXCHANGE_FAILED, 'Meta did not return an access token');
   }
@@ -303,23 +351,53 @@ export async function discoverPages({ userAccessToken, limit = 100 } = {}) {
 }
 
 /**
- * Decide whether a discovered Page can be connected by B1.
+ * Which Page Tasks a connection must carry.
  *
- * Tasks that permit reading content and replying to comments are sufficient for
- * B1's connection semantics. Read-only access is explicitly NOT treated as
- * sufficient: a Page the app can see but not act on would connect successfully and
- * then fail silently on the first real use, which is worse than refusing.
+ * DEFAULT: MANAGE + CREATE_CONTENT + MODERATE.
+ *
+ * WHY THAT IS THE DEFAULT. B1 itself only connects and lists; it does not post,
+ * reply or moderate yet. The gate is forward-looking: it refuses a Page the agent
+ * could not actually work on, rather than accepting it and failing silently on
+ * first use. Refusing loudly is the safer failure.
+ *
+ * THE LEAST-PRIVILEGE ALTERNATIVE, and why it is not the default.
+ *   - `MANAGE` alone is the smallest set that proves real Page administration.
+ *     It is what to use if legitimate Pages turn out to be refused under the
+ *     default. Set META_OAUTH_REQUIRED_TASKS=MANAGE.
+ *   - `MANAGE,MODERATE` covers comment replies without asking for posting rights.
+ *     Set META_OAUTH_REQUIRED_TASKS=MANAGE,MODERATE.
+ *   - `READ_CONTENT` alone would accept Pages the app can see but not act on.
+ *     That is NOT recommended: it reintroduces the silent-failure failure mode.
+ *
+ * META-Dependent uncertainty: the exact task names Meta returns for this app in
+ * this configuration are UNVERIFIED. If they differ, every Page is reported as
+ * not connectable with the missing names listed, which is visible rather than
+ * silent - but it is the first thing to check during the Real Meta Spike.
+ *
+ * Configured rather than hard-coded so the threshold can be corrected from the
+ * Spike without a code change and without silently loosening anything.
  */
-export const B1_REQUIRED_TASKS = Object.freeze(['MANAGE', 'CREATE_CONTENT', 'MODERATE']);
+export const B1_DEFAULT_REQUIRED_TASKS = Object.freeze(['MANAGE', 'CREATE_CONTENT', 'MODERATE']);
+
+export function requiredPageTasks() {
+  const raw = process.env.META_OAUTH_REQUIRED_TASKS;
+  if (!raw) return B1_DEFAULT_REQUIRED_TASKS;
+  const list = raw.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+  return list.length ? Object.freeze(list) : B1_DEFAULT_REQUIRED_TASKS;
+}
 
 export function assessPagePermissions(tasks = []) {
+  const required = requiredPageTasks();
   const upper = new Set(tasks.map((t) => String(t).toUpperCase()));
-  const granted = B1_REQUIRED_TASKS.filter((t) => upper.has(t));
-  const missing = B1_REQUIRED_TASKS.filter((t) => !upper.has(t));
+  const granted = required.filter((t) => upper.has(t));
+  const missing = required.filter((t) => !upper.has(t));
   return {
     connectable: missing.length === 0,
     grantedTasks: granted,
-    missingTasks: missing
+    missingTasks: missing,
+    // Reported so the UI can explain the ACTUAL tasks held, not just the
+    // requirement, when the threshold is configured.
+    requiredTasks: required
   };
 }
 

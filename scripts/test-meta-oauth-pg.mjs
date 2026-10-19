@@ -338,17 +338,71 @@ try {
   // ---------------------------------------------------------------- 7 page permissions
   section('7 page permission assessment');
   {
+    const DEFAULT = ['MANAGE', 'CREATE_CONTENT', 'MODERATE'];
     check('the full task set is connectable',
-      metaOAuth.assessPagePermissions(['MANAGE', 'CREATE_CONTENT', 'MODERATE']).connectable === true);
+      metaOAuth.assessPagePermissions(DEFAULT).connectable === true);
     const readOnly = metaOAuth.assessPagePermissions(['READ_CONTENT']);
     check('read-only is NOT connectable', readOnly.connectable === false);
-    eq('and every missing task is reported', readOnly.missingTasks, ['MANAGE', 'CREATE_CONTENT', 'MODERATE']);
+    eq('and every missing task is reported', readOnly.missingTasks, DEFAULT);
     check('a partial task set is not connectable',
       metaOAuth.assessPagePermissions(['MANAGE']).connectable === false);
     check('task comparison is case-insensitive',
       metaOAuth.assessPagePermissions(['manage', 'create_content', 'moderate']).connectable === true);
     check('an empty task list is not connectable',
       metaOAuth.assessPagePermissions([]).connectable === false);
+
+    // The threshold is configuration, not hard-coded policy, so the Real Meta
+    // Spike can correct it without a code change and without silently loosening.
+    eq('the default threshold is the full set', metaOAuth.requiredPageTasks(), DEFAULT);
+    eq('and it is reported back to the caller', metaOAuth.assessPagePermissions(['MANAGE']).requiredTasks, DEFAULT);
+
+    process.env.META_OAUTH_REQUIRED_TASKS = 'manage';
+    eq('the threshold can be lowered to MANAGE alone', metaOAuth.requiredPageTasks(), ['MANAGE']);
+    check('MANAGE alone then makes a MANAGE-only page connectable',
+      metaOAuth.assessPagePermissions(['MANAGE']).connectable === true);
+    check('but still refuses a read-only page',
+      metaOAuth.assessPagePermissions(['READ_CONTENT']).connectable === false);
+
+    process.env.META_OAUTH_REQUIRED_TASKS = 'MANAGE, MODERATE';
+    eq('a comma-separated list is honoured',
+      metaOAuth.requiredPageTasks(), ['MANAGE', 'MODERATE']);
+    check('and a page missing one of them is refused',
+      metaOAuth.assessPagePermissions(['MANAGE']).connectable === false);
+
+    process.env.META_OAUTH_REQUIRED_TASKS = '   ';
+    eq('a blank value falls back to the default, never to "no tasks"',
+      metaOAuth.requiredPageTasks(), DEFAULT);
+    delete process.env.META_OAUTH_REQUIRED_TASKS;
+    eq('and deleting it restores the default', metaOAuth.requiredPageTasks(), DEFAULT);
+  }
+
+  // ---------------------------------------------------------------- 7b exchange method
+  section('7b code exchange method (POST is a security preference, not documented support)');
+  {
+    eq('the exchange method defaults to POST', metaOAuth.exchangeMethod(), 'POST');
+
+    const calls = [];
+    metaOAuth.setGraphTransport({
+      post: async (p) => { calls.push('post'); return { access_token: 'EAA-mock' }; },
+      get: async (p) => { calls.push('get'); return { access_token: 'EAA-mock' }; }
+    });
+
+    await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI });
+    eq('POST is used by default', calls, ['post']);
+
+    calls.length = 0;
+    process.env.META_OAUTH_EXCHANGE_METHOD = 'get';
+    eq('GET is selectable without a code change', metaOAuth.exchangeMethod(), 'GET');
+    await metaOAuth.exchangeCode({ code: 'C', redirectUri: URI });
+    eq('and the documented GET form is then used', calls, ['get']);
+
+    process.env.META_OAUTH_EXCHANGE_METHOD = 'PUT';
+    await rejects('an unsupported method is refused rather than guessed',
+      metaOAuth.META_OAUTH_ERRORS.MISSING_CONFIG,
+      async () => metaOAuth.exchangeCode({ code: 'C', redirectUri: URI }));
+    delete process.env.META_OAUTH_EXCHANGE_METHOD;
+
+    metaOAuth.resetGraphTransport();
   }
 
   // ---------------------------------------------------------------- 8 connect + isolation
