@@ -19,6 +19,15 @@ if (!url) {
   process.exit(0);
 }
 
+// src/db/pg.js exposes `pool = null` when DATABASE_URL is unset, and several
+// legacy route handlers (src/routes/users.js among them) use that module-level
+// pool rather than the injected one. Without this, mounting the full v1 router
+// and exercising a user endpoint crashed the process with
+// "Cannot read properties of null (reading 'connect')" - an unhandled rejection
+// that aborted the run before any summary was printed.
+process.env.DATABASE_URL ||= url;
+process.env.ENCRYPTION_KEY ||= 'b'.repeat(64);
+
 const client = new pg.Client({ connectionString: url });
 const q = (sql, params) => client.query(sql, params);
 
