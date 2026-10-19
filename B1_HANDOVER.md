@@ -292,33 +292,52 @@ Reviewed against the implementation, not the handover.
 
 ### Two items worth the owner's attention
 
-**1. The code exchange uses POST, which Meta does not document.**
-Meta's guide documents `/oauth/access_token` as a **GET** with `client_secret` in
-the query string; it does not document POST for this endpoint. B1 defaulted to
-POST on the reasoning that a GET puts the app secret into every proxy and access
-log on the path. **That is a security preference, not a claim of documented
-support, and it was never verified.** It is now switchable —
-`META_OAUTH_EXCHANGE_METHOD=GET` restores the documented form without a code
-change, and an unsupported value is refused rather than guessed.
+**1. The code exchange now defaults to GET — the documented form.**
+Researched 2026-10-19 across every official Meta page that shows
+`/oauth/access_token`: the manual login flow guide, the long-lived token guide,
+"Access Tokens for Meta Technologies" and Marketing API authentication **all use
+GET**. POST appears only in community threads where developers report it works —
+evidence of *tolerance*, not of documented support.
 
-**2. `brandId` at confirm comes from the request body, not the state.**
-The state pins a `brand_id`, but `/confirm` uses the body value. **Not
-exploitable**: `connectPage` re-checks the brand against the tenant and the
-caller's brand scope inside the transaction, so a caller can only target a brand
-they are already entitled to. The state's brand is therefore a *default* for the
-UI (pre-selected before the consent screen), not an authority — which matches the
-product behaviour of allowing a Page to be moved between brands. Documented rather
-than changed.
+The default therefore flipped from POST to GET. Betting the whole connect flow
+on undocumented tolerance was the wrong call for a first real integration.
+`META_OAUTH_EXCHANGE_METHOD=POST` remains available; its advantage (the app
+secret never touches a URL) is preserved and tested. Because the documented GET
+form *does* carry `client_secret` in the query string, the guarantee is now
+explicitly that **the URL is never logged and no failure path can echo it** —
+asserted for network errors and non-JSON error bodies.
 
-### Task threshold — reviewed, documented, not changed
+**2. `/confirm` takes `brandId` from the body, not the state — NOW ENFORCED.**
+The state pins a `brand_id`, but `/confirm` previously used the body value, so
+the binding recorded at issuance was decorative. It was never exploitable —
+`connectPage` re-checks the brand against the tenant and the caller's brand scope
+inside the transaction — but the one moment the user was shown "you are
+connecting this page to THIS brand" was not the moment the database recorded it.
 
-Required Page Tasks default to `MANAGE + CREATE_CONTENT + MODERATE`. B1 does not
-yet post, reply or moderate, so the gate is forward-looking: refusing a Page the
-agent could not act on is a louder failure than accepting it and breaking later.
-Least-privilege alternatives are documented and configurable via
-`META_OAUTH_REQUIRED_TASKS` — `MANAGE` alone, or `MANAGE,MODERATE`.
-`READ_CONTENT` alone is explicitly **not** recommended: it reintroduces silent
-failure. **Default behaviour is unchanged pending owner decision.**
+`/confirm` now compares the request brand against the grant's brand and returns
+`409 BRAND_DOES_NOT_MATCH_GRANT` on a mismatch. Changing brand is still possible,
+but only by starting a **new** connect flow with the new brand selected, which
+re-authorizes and re-binds the state. There is deliberately no override flag: an
+explicit re-selection flow would have to be designed and reviewed, not bolted on
+as an escape hatch.
+
+### Task threshold — connect scope, not feature scope
+
+Required Page Tasks default to **`MANAGE` only**. Conflating *"may this Page be
+linked?"* with *"may the agent post / reply / moderate?"* was what made the
+original `MANAGE + CREATE_CONTENT + MODERATE` wrong: it demanded capability for
+features that do not exist yet and refused legitimate Pages on their behalf.
+
+`MANAGE` is the smallest task that establishes genuine Page administration rather
+than visibility, so it remains a real gate. `READ_CONTENT` stays refused — a Page
+the app can see but not act on would connect and then fail silently.
+
+`PAGE_TASK_LADDER` documents the progression: `connectOnly` (default) →
+`withPublishing` when publishing ships → `withModeration` after Inbox. Raising it
+for a later batch is one env var, not a code change.
+
+**The actual task names Meta returns for this App are still unverified** and are
+item 5 of `META_INSPECTION.md`.
 
 ---
 
@@ -568,3 +587,4 @@ webhooks, AI behaviour, token refresh. Those are later batches.
 **Security note raised by §7:** `docker compose config` prints every secret in
 plaintext. Not changed — noted so it is a deliberate decision rather than an
 oversight.
+
