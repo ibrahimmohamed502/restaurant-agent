@@ -204,6 +204,22 @@ try {
 
     eq('B1 pins the current Graph API version', metaOAuth.META_GRAPH_VERSION, 'v26.0');
     eq('B1 requests only the discovery baseline scopes', metaOAuth.B1_SCOPES, ['pages_show_list', 'pages_read_engagement']);
+
+    // Open-redirect safety, by construction: origin comes from the allowlisted
+    // callback URI, the path is fixed configuration, and params are fixed keys.
+    const built = metaOAuth.buildPostLoginRedirect({
+      origin: new URL(URI).origin, params: { stateId: 'abc-123', error: '' }
+    });
+    eq('the post-login redirect is built from the allowlisted origin',
+      built, 'https://social.universalfoodco.com/integrations/facebook?stateId=abc-123');
+    check('an absolute attacker URL cannot escape the origin',
+      new URL(metaOAuth.buildPostLoginRedirect({
+        origin: new URL(URI).origin,
+        path: '/integrations/facebook',
+        params: { next: 'https://evil.example' }
+      })).origin === 'https://social.universalfoodco.com');
+    await rejects('building a redirect with no origin throws', metaOAuth.META_OAUTH_ERRORS.INVALID_REDIRECT_URI,
+      async () => metaOAuth.buildPostLoginRedirect({ origin: '' }));
   }
 
   // The exact shapes brandScopeFromSession() produces.
@@ -655,31 +671,50 @@ try {
     eq('an admin with zero brand grants cannot connect anything',
       (await send(noBrands.base, noBrandsAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id })).status, 403);
 
-    // Callback negatives.
-    eq('a callback with no state is a 400', (await fetch(`${ca.base}/integrations/facebook/callback?code=abc`)).status, 400);
-    const denied = await fetch(`${ca.base}/integrations/facebook/callback?state=x&error=access_denied`);
-    eq('a denied callback is a 400', denied.status, 400);
-    check('and reports access denied', JSON.stringify(await denied.json()).includes('META_ACCESS_DENIED'));
+    // Callback negatives. The callback redirects into the app rather than
+    // rendering JSON, so these are inspected with redirect: 'manual'.
+    const noRedirect = { redirect: 'manual' };
+    eq('a callback with no state is a 400',
+      (await fetch(`${ca.base}/integrations/facebook/callback?code=abc`, noRedirect)).status, 400);
+
+    const denied = await fetch(`${ca.base}/integrations/facebook/callback?state=x&error=access_denied`, noRedirect);
+    eq('a denied callback is a 303 into the app', denied.status, 303);
+    const deniedLoc = denied.headers.get('location') || '';
+    check('the denial redirect names our own error code, not Meta text',
+      deniedLoc.includes('error=META_ACCESS_DENIED') && !/facebook\.com/.test(deniedLoc));
+    check('the denial redirect stays on the app origin', deniedLoc.startsWith('https://social.universalfoodco.com/'));
+
     eq('a callback with an unknown state is refused',
-      (await fetch(`${ca.base}/integrations/facebook/callback?code=abc&state=not-a-real-state`)).status, 400);
+      (await fetch(`${ca.base}/integrations/facebook/callback?code=abc&state=not-a-real-state`, noRedirect)).status, 400);
 
     // Full round trip with the mocked exchange.
     const started2 = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id });
     const st2 = started2.body?.data?.state;
-    const cb = await fetch(`${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(st2)}`);
-    const cbBody = await cb.json().catch(() => ({}));
-    eq('a valid callback succeeds', cb.status, 200);
-    check('and returns a state id', typeof cbBody?.data?.stateId === 'string');
-    check('and returns no token', !JSON.stringify(cbBody).includes('EAA-user-token'));
-    eq('and the discovered page list', cbBody.data.pages.length, 3);
-    check('read-only pages are flagged as not connectable',
-      cbBody.data.pages.find((p) => p.pageId === '333')?.connectable === false);
-    check('connectable pages are flagged as such',
-      cbBody.data.pages.find((p) => p.pageId === '111')?.connectable === true);
-    check('the page list carries no page tokens',
-      !JSON.stringify(cbBody.data.pages).includes('EAA-page'));
+    const cb = await fetch(
+      `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(st2)}`, noRedirect);
+    eq('a valid callback redirects', cb.status, 303);
+    const loc = cb.headers.get('location') || '';
+    check('the success redirect goes to the app', loc.startsWith('https://social.universalfoodco.com/integrations/facebook'));
+    check('and carries no token', !/EAA-/.test(loc));
 
-    const sid = cbBody.data.stateId;
+    const sid = new URL(loc).searchParams.get('stateId');
+    check('the success redirect carries a state id', /^[0-9a-f-]{36}$/.test(sid || ''));
+
+    // The page list is fetched by the app over an authenticated call.
+    const pagesRes = await send(ca.base, caAuth, 'GET', `/integrations/facebook/pages?stateId=${sid}`);
+    eq('the owner can list the discovered pages', pagesRes.status, 200);
+    const pageList = pagesRes.body?.data?.pages ?? [];
+    eq('all three discovered pages come back', pageList.length, 3);
+    check('read-only pages are flagged as not connectable',
+      pageList.find((p) => p.pageId === '333')?.connectable === false);
+    check('connectable pages are flagged as such',
+      pageList.find((p) => p.pageId === '111')?.connectable === true);
+    check('the page list carries no page tokens', !JSON.stringify(pageList).includes('EAA-page'));
+
+    // A malformed state id never reaches the database.
+    eq('listing pages with a malformed stateId is a 400',
+      (await send(ca.base, caAuth, 'GET', '/integrations/facebook/pages?stateId=nope')).status, 400);
+
     eq('confirm without a stateId is a 400',
       (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm', { brandId: b1.id, pageId: '111' })).status, 400);
     eq('confirm with a malformed stateId is a 400',
@@ -704,11 +739,15 @@ try {
     eq('the grant is one-shot: a second confirm is refused',
       (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
         { brandId: b1.id, pageId: '222', stateId: sid })).status, 410);
+    eq('and re-listing through the spent grant is a 410',
+      (await send(ca.base, caAuth, 'GET', `/integrations/facebook/pages?stateId=${sid}`)).status, 410);
 
     // Confirming a read-only page is refused at the HTTP edge too.
     const started3 = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id });
-    const cb3 = await fetch(`${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(started3.body.data.state)}`);
-    const sid3 = (await cb3.json()).data.stateId;
+    const cb3 = await fetch(
+      `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(started3.body.data.state)}`,
+      noRedirect);
+    const sid3 = new URL(cb3.headers.get('location')).searchParams.get('stateId');
     eq('confirming a read-only page is a 422',
       (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
         { brandId: b1.id, pageId: '333', stateId: sid3 })).status, 422);

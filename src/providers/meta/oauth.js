@@ -142,6 +142,27 @@ export function buildAuthorizationUrl({ redirectUri, state, scopes = B1_SCOPES, 
 }
 
 /**
+ * Build the URL the browser is sent back to in the web app after the callback.
+ *
+ * OPEN-REDIRECT SAFETY BY CONSTRUCTION: the destination is the ORIGIN of an
+ * already-allowlisted redirect URI plus a fixed PATH plus a fixed set of query
+ * parameters. No part of it is ever taken from the request, so no attacker-
+ * controlled host, scheme or path can reach here. `stateId` is a uuid, not a
+ * secret: reading it requires the caller's own session, the same tenant and the
+ * same user, so putting it in a URL exposes nothing. The access token is NOT in
+ * this URL, which is the entire point.
+ */
+export function buildPostLoginRedirect({ origin, path = '/integrations/facebook', params = {} } = {}) {
+  if (!origin) throw new MetaOAuthError(META_OAUTH_ERRORS.INVALID_REDIRECT_URI, 'no allowlisted origin');
+  const url = new URL(path, origin);
+  for (const [k, v] of Object.entries(params)) {
+    if (v === null || v === undefined || v === '') continue;
+    url.searchParams.set(k, String(v));
+  }
+  return url.toString();
+}
+
+/**
  * POST to Graph and normalise failures.
  *
  * The token is sent in the Authorization header. A Graph error body is reduced

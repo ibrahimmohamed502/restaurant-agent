@@ -48,6 +48,7 @@ import {
 } from '../../services/facebookConnections.js';
 import {
   buildAuthorizationUrl,
+  buildPostLoginRedirect,
   exchangeCode,
   isAllowedRedirectUri,
   mapCallbackError,
@@ -73,6 +74,20 @@ function pkceEnabled() {
 /** The one place the app declares its own callback. Never read from a request. */
 function configuredRedirectUri() {
   return process.env.META_OAUTH_REDIRECT_URI || '';
+}
+
+/**
+ * Where the browser lands after the callback: the app, inside the origin of the
+ * allowlisted callback URL. Path-only by construction, so this cannot become an
+ * open redirect no matter what a request supplies.
+ */
+function postLoginUrl(params) {
+  const origin = new URL(configuredRedirectUri()).origin;
+  return buildPostLoginRedirect({
+    origin,
+    path: process.env.META_OAUTH_APP_PATH || '/integrations/facebook',
+    params
+  });
 }
 
 function statusForServiceError(code) {
@@ -219,7 +234,9 @@ export function createMetaOAuthRouter({ pool }) {
         // description is deliberately not read at all.
         metadata: { upstream: error ?? null, reason: error_reason ?? null }
       });
-      return apiError(res, 400, mapped.code, mapped.message);
+      // Back into the app so the user sees a real message instead of JSON. The
+      // code is ours, never Meta's text.
+      return res.redirect(303, postLoginUrl({ error: mapped.code }));
     }
 
     // --- Authorization-code path. `code` is never logged. -------------------
@@ -279,20 +296,11 @@ export function createMetaOAuthRouter({ pool }) {
       metadata: { pageCount: pages.length }
     });
 
-    return res.json({
-      data: {
-        stateId: claimed.id,
-        brandId: claimed.brandId,
-        pages: pages.map((p) => ({
-          pageId: p.pageId,
-          name: p.name,
-          category: p.category,
-          tasks: p.tasks,
-          connectable: p.connectable,
-          missingTasks: p.missingTasks
-        }))
-      }
-    });
+    // The browser is a person who just clicked through a consent screen, not an
+    // API client, so it is redirected into the app rather than shown raw JSON.
+    // It receives a state id and nothing else - the page list is fetched by the
+    // app over an authenticated call, so no token crosses this redirect.
+    return res.redirect(303, postLoginUrl({ stateId: claimed.id }));
   });
 
   /**
