@@ -22,6 +22,13 @@ if (!url) {
 const client = new pg.Client({ connectionString: url });
 const q = (sql, params) => client.query(sql, params);
 
+// The role services call db.connect() to take a dedicated client inside a
+// transaction. A pg.Client cannot be reused that way - its connect() throws once
+// it is already connected - so the suite hands the services a pool.
+// It previously passed the single already-connected Client, which could never
+// have worked; the suite simply had not been able to run at all.
+const dbPool = new pg.Pool({ connectionString: url, max: 6 });
+
 let pass = 0, failures = [];
 function check(name, ok, detail = '') {
   if (ok) { pass++; console.log(`  PASS  ${name}`); }
@@ -95,7 +102,7 @@ try {
   {
     const r = await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
       actorCustomAbilities: ['role.create','role.read','role.update','role.disable','role.delete','user.read','user.create'],
-      name: 'Custom Manager', permissions: ['conversation.read', 'conversation.reply'], db: client });
+      name: 'Custom Manager', permissions: ['conversation.read', 'conversation.reply'], db: dbPool });
     check('a custom role is created', r.name === 'Custom Manager');
     check('and starts active', r.status === 'active');
     check('with the requested permissions', JSON.stringify(r.permissions) === JSON.stringify(['conversation.read','conversation.reply']));
@@ -103,39 +110,39 @@ try {
 
     await rejects('a duplicate name is refused', ROLE_ERRORS.NAME_TAKEN,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create'], name: 'Custom Manager', permissions: [], db: client }));
+        actorCustomAbilities: ['role.create'], name: 'Custom Manager', permissions: [], db: dbPool }));
 
     await rejects('a blank name is refused', ROLE_ERRORS.NAME_INVALID,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create'], name: '   ', permissions: [], db: client }));
+        actorCustomAbilities: ['role.create'], name: '   ', permissions: [], db: dbPool }));
 
     await rejects('a reserved name is refused', ROLE_ERRORS.SYSTEM,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create','role.read'], name: 'Company Admin', permissions: [], db: client }));
+        actorCustomAbilities: ['role.create','role.read'], name: 'Company Admin', permissions: [], db: dbPool }));
 
     await rejects('Platform Super Admin name is reserved', ROLE_ERRORS.SYSTEM,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create'], name: 'Platform Super Admin', permissions: [], db: client }));
+        actorCustomAbilities: ['role.create'], name: 'Platform Super Admin', permissions: [], db: dbPool }));
 
     await rejects('a wildcard is refused', ROLE_ERRORS.INVALID,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create','conversation.read'], name: 'Wildcard', permissions: ['*'], db: client }));
+        actorCustomAbilities: ['role.create','conversation.read'], name: 'Wildcard', permissions: ['*'], db: dbPool }));
 
     await rejects('a partial wildcard is refused', ROLE_ERRORS.INVALID,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create','conversation.read'], name: 'Partial Wildcard', permissions: ['conversation.*'], db: client }));
+        actorCustomAbilities: ['role.create','conversation.read'], name: 'Partial Wildcard', permissions: ['conversation.*'], db: dbPool }));
 
     await rejects('an unknown ability is refused', ROLE_ERRORS.INVALID,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create'], name: 'Unknown', permissions: ['nonexistent.ability'], db: client }));
+        actorCustomAbilities: ['role.create'], name: 'Unknown', permissions: ['nonexistent.ability'], db: dbPool }));
 
     await rejects('privilege escalation is refused', ROLE_ERRORS.NOT_DELEGABLE,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create','role.read'], name: 'Escalated', permissions: ['user.disable', 'brand.grant_all'], db: client }));
+        actorCustomAbilities: ['role.create','role.read'], name: 'Escalated', permissions: ['user.disable', 'brand.grant_all'], db: dbPool }));
 
     await rejects('cross-tenant creation is refused', ROLE_ERRORS.FORBIDDEN,
       () => createRole({ tenantId: t2, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create'], name: 'Foreign', permissions: [], db: client }));
+        actorCustomAbilities: ['role.create'], name: 'Foreign', permissions: [], db: dbPool }));
 
     // Verify the role exists in the DB
     const { rows: [r1] } = await q("SELECT name, permissions, status FROM roles WHERE tenant_id=$1 AND name='Custom Manager'", [t1]);
@@ -150,7 +157,7 @@ try {
     const updated = await updateRole({
       tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
       actorCustomAbilities: ['role.create','role.read','role.update','role.disable','role.delete','user.read','user.create'],
-      roleId: role.id, name: 'Renamed Manager', permissions: ['conversation.read'], db: client
+      roleId: role.id, name: 'Renamed Manager', permissions: ['conversation.read'], db: dbPool
     });
     check('a role can be renamed', updated.name === 'Renamed Manager');
     check('and its permissions updated', JSON.stringify(updated.permissions) === JSON.stringify(['conversation.read']));
@@ -159,15 +166,15 @@ try {
     await rejects('editing a system role is refused', ROLE_ERRORS.SYSTEM,
       () => updateRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.update'], roleId: sysRoleId,
-        name: 'Hacked', permissions: ['*'], db: client }));
+        name: 'Hacked', permissions: ['*'], db: dbPool }));
     await rejects('editing a non-existent role is refused', ROLE_ERRORS.NOT_FOUND,
       () => updateRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.update'], roleId: '00000000-0000-0000-0000-000000000000',
-        name: 'Ghost', permissions: [], db: client }));
+        name: 'Ghost', permissions: [], db: dbPool }));
 
     await rejects('cross-tenant edit is refused', ROLE_ERRORS.NOT_FOUND,
       () => updateRole({ tenantId: t2, actorUserId: outsider, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.update'], roleId: role.id, name: 'Stolen', permissions: [], db: client }));
+        actorCustomAbilities: ['role.update'], roleId: role.id, name: 'Stolen', permissions: [], db: dbPool }));
 
     // Verify audit was written
     const { rows: [audit] } = await q(`SELECT action FROM audit_logs WHERE object_id=$1 AND action='role.updated'`, [role.id]);
@@ -177,16 +184,16 @@ try {
   section('5 disable / enable');
   {
     const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Renamed Manager'`, [t1]);
-    const disabled = await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'disabled', db: client });
+    const disabled = await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'disabled', db: dbPool });
     check('a role can be disabled', disabled.status === 'disabled');
 
     const sysRoleId2 = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1])).rows[0].id;
     await rejects('disabling a system role is refused', ROLE_ERRORS.SYSTEM,
-      () => setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: sysRoleId2, status: 'disabled', db: client }));
+      () => setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: sysRoleId2, status: 'disabled', db: dbPool }));
     await rejects('disabling a non-existent role is refused', ROLE_ERRORS.NOT_FOUND,
-      () => setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: '00000000-0000-0000-0000-000000000000', status: 'disabled', db: client }));
+      () => setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: '00000000-0000-0000-0000-000000000000', status: 'disabled', db: dbPool }));
 
-    const enabled = await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'active', db: client });
+    const enabled = await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'active', db: dbPool });
     check('a role can be re-enabled', enabled.status === 'active');
 
     const { rows: [audit] } = await q(`SELECT action FROM audit_logs WHERE object_id=$1 AND action='role.enabled'`, [role.id]);
@@ -198,31 +205,31 @@ try {
     const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Renamed Manager'`, [t1]);
     await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [agent, role.id]);
     await rejects('deleting a role with holders is refused', ROLE_ERRORS.NOT_DELEGABLE,
-      () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: client }));
+      () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: dbPool }));
     await q(`DELETE FROM user_roles WHERE role_id=$1`, [role.id]);
-    const deleted = await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: client });
+    const deleted = await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: dbPool });
     check('a role can be soft-deleted', deleted.status === 'disabled');
     const sysRoleId2 = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1])).rows[0].id;
     await rejects('deleting a system role is refused', ROLE_ERRORS.SYSTEM,
-      () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: sysRoleId2, db: client }));
+      () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: sysRoleId2, db: dbPool }));
     await rejects('deleting a non-existent role is refused', ROLE_ERRORS.NOT_FOUND,
-      () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: '00000000-0000-0000-0000-000000000000', db: client }));
+      () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: '00000000-0000-0000-0000-000000000000', db: dbPool }));
     await rejects('cross-tenant delete is refused', ROLE_ERRORS.NOT_FOUND,
-      () => deleteRole({ tenantId: t2, actorUserId: outsider, roleId: role.id, db: client }));
+      () => deleteRole({ tenantId: t2, actorUserId: outsider, roleId: role.id, db: dbPool }));
     const { rows: [audit] } = await q(`SELECT action FROM audit_logs WHERE object_id=$1 AND action='role.deleted'`, [role.id]);
     check('an audit row was written for the delete', audit?.action === 'role.deleted');
   }
 
   section('7 list');
   {
-    const roles = await listRoles({ tenantId: t1, db: client });
+    const roles = await listRoles({ tenantId: t1, db: dbPool });
     check('list returns roles', roles.length > 0);
     check('system roles are included (read-only)', roles.some((r) => r.name === 'Company Admin'));
     check('deleted role is excluded from the default list', !roles.some((r) => r.name === 'Renamed Manager'));
-    const rolesWithDeleted = await listRoles({ tenantId: t1, db: client, includeDeleted: true });
+    const rolesWithDeleted = await listRoles({ tenantId: t1, db: dbPool, includeDeleted: true });
     check('deleted role is present when explicitly requested', rolesWithDeleted.some((r) => r.name === 'Renamed Manager' && r.status === 'deleted'));
 
-    const t2Roles = await listRoles({ tenantId: t2, db: client });
+    const t2Roles = await listRoles({ tenantId: t2, db: dbPool });
     const caRoleId = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1])).rows[0].id;
     check('list is tenant-scoped', !t2Roles.some((r) => r.name === 'Company Admin' && r.id === caRoleId));
   }
@@ -231,15 +238,15 @@ try {
   section('8 getRoleUsers');
   {
     const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t1]);
-    const users = await getRoleUsers({ tenantId: t1, roleId: role.id, db: client });
+    const users = await getRoleUsers({ tenantId: t1, roleId: role.id, db: dbPool });
     check('returns users holding the role', users.length >= 1);
     check('with correct shape', users[0].email !== undefined);
 
     await rejects('non-existent role is refused', ROLE_ERRORS.NOT_FOUND,
-      () => getRoleUsers({ tenantId: t1, roleId: '00000000-0000-0000-0000-000000000000', db: client }));
+      () => getRoleUsers({ tenantId: t1, roleId: '00000000-0000-0000-0000-000000000000', db: dbPool }));
 
     await rejects('cross-tenant access is refused', ROLE_ERRORS.NOT_FOUND,
-      () => getRoleUsers({ tenantId: t2, roleId: role.id, db: client }));
+      () => getRoleUsers({ tenantId: t2, roleId: role.id, db: dbPool }));
   }
 
   // ---------------------------------------------------------------- 9 assignment
@@ -248,7 +255,7 @@ try {
     // Create a fresh custom role for assignment testing
     const r = await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
       actorCustomAbilities: ['role.create','role.read','role.update','role.disable','role.delete','user.read','user.create'],
-      name: 'Assignable Role', permissions: ['conversation.read'], db: client });
+      name: 'Assignable Role', permissions: ['conversation.read'], db: dbPool });
     const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Assignable Role'`, [t1]);
 
     // Assign to agent
@@ -263,7 +270,7 @@ try {
 
     // Clean up
     await q(`DELETE FROM user_roles WHERE role_id=$1`, [role.id]);
-    await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: client });
+    await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: dbPool });
   }
 
   // ---------------------------------------------------------------- 10 disabled role grants zero
@@ -271,14 +278,14 @@ try {
   {
     const r = await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
       actorCustomAbilities: ['role.create','role.read','role.update','role.disable','role.delete','user.read','user.create'],
-      name: 'Disable Test', permissions: ['conversation.read', 'conversation.reply'], db: client });
+      name: 'Disable Test', permissions: ['conversation.read', 'conversation.reply'], db: dbPool });
     const { rows: [role] } = await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Disable Test'`, [t1]);
 
     // Assign to agent
     await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2)`, [agent, role.id]);
 
     // Disable the role
-    await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'disabled', db: client });
+    await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'disabled', db: dbPool });
 
     // Verify the role is disabled
     const { rows: [disabled] } = await q(`SELECT status FROM roles WHERE id=$1`, [role.id]);
@@ -288,13 +295,13 @@ try {
     // Note: in test DB there may be no sessions, so this is a no-op check
 
     // Re-enable
-    await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'active', db: client });
+    await setRoleStatus({ tenantId: t1, actorUserId: admin, roleId: role.id, status: 'active', db: dbPool });
     const { rows: [enabled] } = await q(`SELECT status FROM roles WHERE id=$1`, [role.id]);
     check('role can be re-enabled', enabled.status === 'active');
 
     // Clean up
     await q(`DELETE FROM user_roles WHERE role_id=$1`, [role.id]);
-    await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: client });
+    await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: dbPool });
   }
 
   // ---------------------------------------------------------------- 11 transaction rollback
@@ -304,10 +311,10 @@ try {
       await q('BEGIN');
       try {
         await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-          actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test', permissions: [], db: client });
+          actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test', permissions: [], db: dbPool });
         // Force a failure by creating a duplicate
         await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-          actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test', permissions: [], db: client });
+          actorCustomAbilities: ['role.create','role.read'], name: 'Rollback Test', permissions: [], db: dbPool });
         await q('COMMIT');
       } catch (e) {
         await q('ROLLBACK');
@@ -514,6 +521,7 @@ try {
   failures.push(`fatal: ${e?.code ?? ''} ${e?.message}`);
   console.error('\nfatal:', e?.code, e?.message);
 } finally {
+  await dbPool.end().catch(() => {});
   await client.end().catch(() => {});
 }
 
