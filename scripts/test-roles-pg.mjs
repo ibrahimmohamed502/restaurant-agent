@@ -96,6 +96,7 @@ try {
 
   const { createRole, updateRole, setRoleStatus, deleteRole, listRoles, getRoleUsers, ROLE_ERRORS } =
     await import('../src/services/roles.js');
+  const { can } = await import('../src/auth/abilities.js');
 
   // ---------------------------------------------------------------- 3 CRUD
   section('3 create');
@@ -108,9 +109,15 @@ try {
     check('with the requested permissions', JSON.stringify(r.permissions) === JSON.stringify(['conversation.read','conversation.reply']));
     eq('and permissions are deduplicated', r.permissions.length, 2);
 
+    // A permission list is required to reach the name check. With `permissions:
+    // []`, canDelegateRole fail-closes on the empty ability list and raises
+    // NOT_DELEGABLE first (see "an empty permission set is refused" below).
+    // conversation.read is held by Company Admin, so the delegation ceiling is
+    // satisfied and the request reaches the uniqueness check as intended.
     await rejects('a duplicate name is refused', ROLE_ERRORS.NAME_TAKEN,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create'], name: 'Custom Manager', permissions: [], db: dbPool }));
+        actorCustomAbilities: ['role.create'], name: 'Custom Manager',
+        permissions: ['conversation.read'], db: dbPool }));
 
     await rejects('a blank name is refused', ROLE_ERRORS.NAME_INVALID,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
@@ -136,13 +143,60 @@ try {
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
         actorCustomAbilities: ['role.create'], name: 'Unknown', permissions: ['nonexistent.ability'], db: dbPool }));
 
+    // The escalation target must be an ability Company Admin does NOT already hold.
+    // The previous version asked for user.disable + brand.grant_all; verified
+    // against ROLE_ABILITIES, Company Admin holds BOTH, so the delegation
+    // ceiling was correct to permit it and the assertion was wrong.
+    // company.create is in KNOWN_ABILITIES and is held by no non-platform role,
+    // so handing it to a custom role is a genuine escalation attempt.
     await rejects('privilege escalation is refused', ROLE_ERRORS.NOT_DELEGABLE,
       () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create','role.read'], name: 'Escalated', permissions: ['user.disable', 'brand.grant_all'], db: dbPool }));
+        actorCustomAbilities: ['role.create', 'user.disable', 'brand.grant_all'],
+        name: 'Escalated', permissions: ['user.disable', 'company.create'], db: dbPool }));
 
-    await rejects('cross-tenant creation is refused', ROLE_ERRORS.FORBIDDEN,
-      () => createRole({ tenantId: t2, actorUserId: admin, actorRoles: ['Company Admin'],
-        actorCustomAbilities: ['role.create'], name: 'Foreign', permissions: [], db: dbPool }));
+    // Pinned explicitly, because the previous expectation depended on the actor
+    // NOT holding an ability it in fact holds.
+    check('Company Admin does hold user.disable and brand.grant_all',
+      can(['Company Admin'], 'user.disable', []) && can(['Company Admin'], 'brand.grant_all', []));
+    check('so those are not escalations', await (async () => {
+      try {
+        await createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
+          actorCustomAbilities: ['role.create', 'user.disable', 'brand.grant_all'],
+          name: 'Not Escalated', permissions: ['user.disable', 'brand.grant_all'], db: dbPool });
+        return true;
+      } catch { return false; }
+    })());
+
+    // An empty permission set is refused by the delegation ceiling, which
+    // fail-closes on "no abilities to compare". Documented here because it is
+    // fail-closed rather than permissive: an empty custom role cannot be created.
+    await rejects('an empty permission set is refused', ROLE_ERRORS.NOT_DELEGABLE,
+      () => createRole({ tenantId: t1, actorUserId: admin, actorRoles: ['Company Admin'],
+        actorCustomAbilities: ['role.create'], name: 'Empty Role', permissions: [], db: dbPool }));
+
+    // TENANT SCOPE IS ENFORCED AT THE ROUTE, NOT IN THE SERVICE.
+    //
+    // createRole() scopes every statement to the tenantId it is handed and never
+    // re-checks which tenant the actor belongs to, because the service has no
+    // way to know. That is deliberate: the API is the boundary. Every route in
+    // api/v1/roles.js takes tenantId from scope(req, res), which reads
+    // req.v1.tenantId / req.auth.tenantId, never from the request body - so a
+    // client cannot name another company at all.
+    //
+    // The previous assertion expected ROLE_FORBIDDEN from the service, which
+    // does not exist and never has; it only ever passed a coincidental
+    // NOT_DELEGABLE from the empty permission list. It asserted a guarantee
+    // that lived somewhere else and never tested it. The real guarantee is
+    // pinned in the HTTP section below, against a live route.
+    const serviceTrustsItsCaller = await (async () => {
+      try {
+        await createRole({ tenantId: t2, actorUserId: admin, actorRoles: ['Company Admin'],
+          actorCustomAbilities: ['role.create'], name: 'Foreign', permissions: ['conversation.read'], db: dbPool });
+        return true;
+      } catch { return false; }
+    })();
+    check('the service scopes to the tenantId it is given (it trusts its caller)', serviceTrustsItsCaller);
+    await q(`DELETE FROM roles WHERE tenant_id=$1 AND name='Foreign'`, [t2]);
 
     // Verify the role exists in the DB
     const { rows: [r1] } = await q("SELECT name, permissions, status FROM roles WHERE tenant_id=$1 AND name='Custom Manager'", [t1]);
@@ -208,7 +262,12 @@ try {
       () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: dbPool }));
     await q(`DELETE FROM user_roles WHERE role_id=$1`, [role.id]);
     const deleted = await deleteRole({ tenantId: t1, actorUserId: admin, roleId: role.id, db: dbPool });
-    check('a role can be soft-deleted', deleted.status === 'disabled');
+    // Migration 022 made soft delete set status='deleted' (distinct from
+    // 'disabled', so a deleted role cannot be re-enabled). This assertion still
+    // expected 'disabled' and had been failing silently while the suite could
+    // not execute. The HTTP section below already asserted 'deleted' correctly.
+    check('a role can be soft-deleted', deleted.status === 'deleted', `status=${deleted.status}`);
+    check('and it is not merely disabled', deleted.status !== 'disabled');
     const sysRoleId2 = (await q("SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'", [t1])).rows[0].id;
     await rejects('deleting a system role is refused', ROLE_ERRORS.SYSTEM,
       () => deleteRole({ tenantId: t1, actorUserId: admin, roleId: sysRoleId2, db: dbPool }));
@@ -260,8 +319,12 @@ try {
 
     // Assign to agent
     await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2)`, [agent, role.id]);
-    const { rows: [check] } = await q(`SELECT 1 FROM user_roles WHERE user_id=$1 AND role_id=$2`, [agent, role.id]);
-    check('role can be assigned to a user', !!check);
+    // `check` is the assertion helper. Naming a destructured row `check` shadowed
+    // it for the rest of the block, and the next call threw
+    // "check is not a function" - which aborted the whole suite, so sections 10
+    // onward never ran. Renamed.
+    const { rows: [assignment] } = await q(`SELECT 1 FROM user_roles WHERE user_id=$1 AND role_id=$2`, [agent, role.id]);
+    check('role can be assigned to a user', !!assignment);
 
     // Unassign
     await q(`DELETE FROM user_roles WHERE user_id=$1 AND role_id=$2`, [agent, role.id]);
@@ -410,7 +473,33 @@ try {
     eq('an unknown ability is refused', (await send(ca.base, caAuth, 'POST', '/roles', { name: 'Unknown', permissions: ['nonexistent.ability'] })).status, 422);
 
     // Privilege escalation
-    eq('privilege escalation is refused', (await send(ca.base, caAuth, 'POST', '/roles', { name: 'Escalated', permissions: ['user.disable', 'brand.grant_all'] })).status, 403);
+    eq('privilege escalation is refused', (await send(ca.base, caAuth, 'POST', '/roles', { name: 'Escalated', permissions: ['user.disable', 'company.create'] })).status, 403);
+
+    // TENANT SCOPE AT THE REAL BOUNDARY.
+    // The service trusts the tenantId it is given; this is the assertion that
+    // actually matters, because a client CAN try to name another company. The
+    // route must ignore any tenantId in the body and use the session's.
+    {
+      const smuggled = await send(ca.base, caAuth, 'POST', '/roles', {
+        name: 'Smuggled Tenant',
+        permissions: ['conversation.read'],
+        tenantId: t2
+      });
+      if (smuggled.status === 201) {
+        const { rows: [landed] } = await q(
+          `SELECT tenant_id FROM roles WHERE name='Smuggled Tenant' ORDER BY created_at DESC LIMIT 1`);
+        eq('a tenantId in the request body is ignored; the role lands in the session tenant',
+          String(landed.tenant_id), String(t1));
+        await q(`DELETE FROM roles WHERE id=(SELECT id FROM roles WHERE name='Smuggled Tenant' ORDER BY created_at DESC LIMIT 1)`);
+      } else {
+        // Refusing outright is also a correct outcome; it must simply never land
+        // in the other company.
+        const { rows: [elsewhere] } = await q(`SELECT 1 FROM roles WHERE name='Smuggled Tenant' AND tenant_id=$1`, [t2]);
+        check('a smuggled tenantId never creates a role in another company', !elsewhere);
+      }
+      const { rows: [crossTenant] } = await q(`SELECT 1 FROM roles WHERE name='Smuggled Tenant' AND tenant_id=$1`, [t2]);
+      check('no role was created in the other company', !crossTenant);
+    }
 
     // Cross-tenant
     eq('cross-tenant access is refused', (await send(ca.base, caAuth, 'GET', `/roles/${(await q(`SELECT id FROM roles WHERE tenant_id=$1 AND name='Company Admin'`, [t2])).rows[0].id}`)).status, 404);
@@ -539,10 +628,21 @@ if (failures.length) {
   for (const f of failures) console.log(`   - ${f}`);
 }
 console.log('='.repeat(64));
-if (pass === 0) {
-  console.log('  ERROR: zero assertions executed - this is NOT a pass');
+
+// A COUNT FLOOR, not just a zero check.
+//
+// "pass > 0" is too weak: a suite that dies halfway through still has passes,
+// and that is exactly how this suite hid a broken migration ledger for a long
+// time. If the assertion count falls below the floor, something was silently
+// skipped, so the run fails even when every executed assertion passed.
+const MIN_ASSERTIONS = 80;
+if (pass < MIN_ASSERTIONS) {
+  console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
+  console.log('  This is NOT a pass - sections were almost certainly skipped.');
   process.exit(1);
 }
+console.log(`  assertion floor satisfied (${pass} >= ${MIN_ASSERTIONS})`);
+
 process.exit(failures.length ? 1 : 0);
 
 

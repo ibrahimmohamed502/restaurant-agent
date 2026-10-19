@@ -828,6 +828,19 @@ if (failures.length) {
   for (const f of failures) console.log(`   - ${f}`);
 }
 console.log('='.repeat(64));
+
+// A COUNT FLOOR, not just a zero check. If a section throws, the suite dies and
+// the remaining sections never run - the run must fail rather than report a
+// short pass. This number is the verified count as of run 39200973618; raise it
+// when adding coverage, never lower it.
+const MIN_ASSERTIONS = 164;
+if (pass < MIN_ASSERTIONS) {
+  console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
+  console.log('  This is NOT a pass - sections were almost certainly skipped.');
+  process.exit(1);
+}
+console.log(`  assertion floor satisfied (${pass} >= ${MIN_ASSERTIONS})`);
+
 if (pass === 0) {
   console.log('  ERROR: zero assertions executed - this is NOT a pass');
   process.exit(1);
