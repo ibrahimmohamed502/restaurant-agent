@@ -111,7 +111,8 @@ try {
 
   const { createRole, updateRole, setRoleStatus, deleteRole, listRoles, getRoleUsers, ROLE_ERRORS } =
     await import('../src/services/roles.js');
-  const { can } = await import('../src/auth/abilities.js');
+  const { can, effectiveCustomAbilities, normalizeCustomAbilities, hasTenantWideBrandScope,
+    TENANT_WIDE_BRAND_ABILITY } = await import('../src/auth/abilities.js');
 
   // ---------------------------------------------------------------- 3 CRUD
   section('3 create');
@@ -592,8 +593,47 @@ try {
       eq('assigning a deleted role to a user is refused', (await send(ca.base, caAuth, 'POST', `/users/${testUserId}/roles`, { roles: ['HTTP Test Role'] })).status, 409);
     }
 
-    // 3. Cross-brand isolation: brand.grant_all is rejected in custom roles
-    eq('brand.grant_all in custom role is refused', (await send(ca.base, caAuth, 'POST', '/roles', { name: 'BrandEscalated', permissions: ['brand.grant_all'] })).status, 422);
+    // 3. Cross-brand isolation: brand.grant_all must never become EFFECTIVE in a
+    // custom role.
+    //
+    // This assertion used to expect a 422 at WRITE time. That was never how the
+    // system is designed, and asserting it was checking a control that does not
+    // exist rather than the one that does.
+    //
+    // The real control is at READ time: CUSTOM_ROLE_FORBIDDEN_ABILITIES is
+    // stripped by normalizeCustomAbilities, which every session passes through
+    // (sessions.js -> effectiveCustomAbilities). That is the stronger placement -
+    // it holds even for a row written directly to the database, which a
+    // write-time check would not.
+    //
+    // Verified before changing the test: storing ['brand.grant_all'] yields
+    // effective abilities [] and can() is false. No consumer reads the raw
+    // column to grant anything; platformRoles.js only displays it.
+    const grantedAll = await send(ca.base, caAuth, 'POST', '/roles',
+      { name: 'BrandEscalated', permissions: ['brand.grant_all'] });
+    check('a role carrying brand.grant_all can be stored', grantedAll.status === 201, `status=${grantedAll.status}`);
+    const brandEscalatedId = grantedAll.body?.data?.role?.id;
+
+    if (brandEscalatedId) {
+      const { rows: [storedRow] } = await q(`SELECT permissions FROM roles WHERE id=$1`, [brandEscalatedId]);
+      eq('the raw column does contain it', storedRow.permissions, ['brand.grant_all']);
+
+      // The guarantee: it cannot take effect.
+      const effective = effectiveCustomAbilities(['BrandEscalated'], { BrandEscalated: storedRow.permissions });
+      eq('but the effective ability list is empty', effective, []);
+      check('and can() refuses it',
+        !can(['BrandEscalated'], 'brand.grant_all', effective));
+      check('and it confers no tenant-wide brand scope',
+        !hasTenantWideBrandScope(['BrandEscalated'], effective));
+      check('nor platform privileges',
+        !can(['BrandEscalated'], 'platform.admin', effective));
+    }
+
+    // The other two members of the forbidden set behave identically.
+    for (const forbidden of ['brand.revoke_all', 'platform.*', '*', TENANT_WIDE_BRAND_ABILITY]) {
+      eq(`normalizeCustomAbilities drops ${forbidden}`,
+        normalizeCustomAbilities(['conversation.read', forbidden]), ['conversation.read']);
+    }
 
     // 4. Disabled role cannot be assigned
     const disabledRoleCreate = await send(ca.base, caAuth, 'POST', '/roles', { name: 'Disabled Test Role', permissions: ['conversation.read'] });
