@@ -1,4 +1,4 @@
-﻿// B1 - Facebook Page Self-Service OAuth test suite.
+// B1 - Facebook Page Self-Service OAuth test suite.
 //
 // REAL-POSTGRESQL, MOCKED META.
 //
@@ -118,14 +118,14 @@ try {
 
   // ---------------------------------------------------------------- 2 fixtures
   section('2 fixtures');
-  ({ rows: [t1] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T1','b1-t1') RETURNING id`));
-  ({ rows: [t2] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T2','b1-t2') RETURNING id`));
-  ({ rows: [b1] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1','b1-b1') RETURNING id`, [t1.id]));
-  ({ rows: [b1b] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1 second','b1-b1b') RETURNING id`, [t1.id]));
-  ({ rows: [b1c] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1 third','b1-b1c') RETURNING id`, [t1.id]));
-  ({ rows: [b2] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B2','b1-b2') RETURNING id`, [t2.id]));
-  ({ rows: [admin1] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'a1@b1.local','A1','x') RETURNING id`, [t1.id]));
-  ({ rows: [admin2] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'a2@b2.local','A2','x') RETURNING id`, [t2.id]));
+  ({ rows: [{ id: t1 }] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T1','b1-t1') RETURNING id`));
+  ({ rows: [{ id: t2 }] } = await q(`INSERT INTO tenants (name,slug) VALUES ('T2','b1-t2') RETURNING id`));
+  ({ rows: [{ id: b1 }] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1','b1-b1') RETURNING id`, [t1]));
+  ({ rows: [{ id: b1b }] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1 second','b1-b1b') RETURNING id`, [t1]));
+  ({ rows: [{ id: b1c }] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B1 third','b1-b1c') RETURNING id`, [t1]));
+  ({ rows: [{ id: b2 }] } = await q(`INSERT INTO brands (tenant_id,name,slug) VALUES ($1,'B2','b1-b2') RETURNING id`, [t2]));
+  ({ rows: [{ id: admin1 }] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'a1@b1.local','A1','x') RETURNING id`, [t1]));
+  ({ rows: [{ id: admin2 }] } = await q(`INSERT INTO users (tenant_id,email,name,password_hash) VALUES ($1,'a2@b2.local','A2','x') RETURNING id`, [t2]));
   check('two companies, three brands on the first and one on the second', true);
 
   const state = await import('../src/services/oauthState.js');
@@ -226,16 +226,16 @@ try {
 
   // The exact shapes brandScopeFromSession() produces.
   const TENANT_SCOPE = { mode: 'tenant', brandIds: null };
-  const FIRST_BRAND_ONLY = { mode: 'restricted', brandIds: [b1.id] };
-  const T1_BOTH_BRANDS = { mode: 'restricted', brandIds: [b1.id, b1b.id] };
-  const T2_BRAND_ONLY = { mode: 'restricted', brandIds: [b2.id] };
+  const FIRST_BRAND_ONLY = { mode: 'restricted', brandIds: [b1] };
+  const T1_BOTH_BRANDS = { mode: 'restricted', brandIds: [b1, b1b] };
+  const T2_BRAND_ONLY = { mode: 'restricted', brandIds: [b2] };
   const NO_BRANDS = { mode: 'restricted', brandIds: [] };
 
   // ---------------------------------------------------------------- 3 oauth state
   section('3 oauth state');
   {
     const s = await state.issueOAuthState({
-      tenantId: t1.id, actorUserId: admin1, provider: 'meta', brandId: b1.id, redirectUri: URI, db: DB
+      tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1, redirectUri: URI, db: DB
     });
     check('a state is issued', typeof s.state === 'string' && s.state.length >= 32);
 
@@ -253,22 +253,22 @@ try {
       () => state.consumeOAuthState({ state: 'never-issued-at-all', redirectUri: URI, db: DB }));
 
     // Binding.
-    const s2 = await state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB });
+    const s2 = await state.issueOAuthState({ tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB });
     await rejects('a state issued for one user is refused for another', state.OAUTH_STATE_ERRORS.MISMATCH,
-      () => state.consumeOAuthState({ state: s2.state, tenantId: t1.id, actorUserId: admin2, redirectUri: URI, db: DB }));
+      () => state.consumeOAuthState({ state: s2.state, tenantId: t1, actorUserId: admin2, redirectUri: URI, db: DB }));
 
-    const s3 = await state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB });
+    const s3 = await state.issueOAuthState({ tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB });
     await rejects('a state issued for one company is refused for another', state.OAUTH_STATE_ERRORS.MISMATCH,
-      () => state.consumeOAuthState({ state: s3.state, tenantId: t2.id, actorUserId: admin1, redirectUri: URI, db: DB }));
+      () => state.consumeOAuthState({ state: s3.state, tenantId: t2, actorUserId: admin1, redirectUri: URI, db: DB }));
 
-    const s4 = await state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB });
+    const s4 = await state.issueOAuthState({ tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB });
     await rejects('a state is refused when the redirect uri differs', state.OAUTH_STATE_ERRORS.MISMATCH,
       () => state.consumeOAuthState({ state: s4.state, redirectUri: 'https://evil.example/callback', db: DB }));
 
     // Session binding.
     const s4b = await state.issueOAuthState({
-      tenantId: t1.id, actorUserId: admin1, sessionId: '11111111-1111-1111-1111-111111111111',
-      brandId: b1.id, redirectUri: URI, db: DB
+      tenantId: t1, actorUserId: admin1, sessionId: '11111111-1111-1111-1111-111111111111',
+      brandId: b1, redirectUri: URI, db: DB
     });
     await rejects('a state issued in another session is refused', state.OAUTH_STATE_ERRORS.MISMATCH,
       () => state.consumeOAuthState({
@@ -277,13 +277,13 @@ try {
 
     // Expiry.
     const s5 = await state.issueOAuthState({
-      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB, ttlSeconds: -1
+      tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB, ttlSeconds: -1
     });
     await rejects('an expired state is refused', state.OAUTH_STATE_ERRORS.EXPIRED,
       () => state.consumeOAuthState({ state: s5.state, redirectUri: URI, db: DB }));
 
     await rejects('an unsupported provider is refused', state.OAUTH_STATE_ERRORS.UNSUPPORTED_PROVIDER,
-      () => state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, provider: 'instagram', redirectUri: URI, db: DB }));
+      () => state.issueOAuthState({ tenantId: t1, actorUserId: admin1, provider: 'instagram', redirectUri: URI, db: DB }));
 
     // State entropy.
     const a = state.generateStateToken();
@@ -295,7 +295,7 @@ try {
   section('4 concurrent replay');
   {
     const s = await state.issueOAuthState({
-      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB
+      tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB
     });
     const results = await Promise.allSettled([
       state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB }),
@@ -309,8 +309,8 @@ try {
   // ---------------------------------------------------------------- 5 in-flight guard
   section('5 in-flight guard');
   {
-    await state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB });
-    await state.issueOAuthState({ tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB });
+    await state.issueOAuthState({ tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB });
+    await state.issueOAuthState({ tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB });
     const { rows } = await q(
       `SELECT count(*)::int n FROM oauth_states WHERE actor_user_id=$1 AND consumed_at IS NULL`, [admin1]
     );
@@ -365,7 +365,7 @@ try {
 
   {
     const r = await conn.connectPage({
-      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, brandScope: TENANT_SCOPE,
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: TENANT_SCOPE,
       availablePages: await discovered(), pageId: '111', scopes: ['pages_show_list'], db: DB
     });
     channelOne = r.channelId;
@@ -382,26 +382,26 @@ try {
 
     await rejects('a page outside the grant is refused', conn.CONNECTION_ERRORS.PAGE_NOT_IN_ACCOUNT,
       async () => conn.connectPage({
-        tenantId: t1.id, actorUserId: admin1, brandId: b1.id, brandScope: TENANT_SCOPE,
+        tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: TENANT_SCOPE,
         availablePages: await discovered(), pageId: '999', db: DB
       }));
 
     await rejects('a read-only page is refused', conn.CONNECTION_ERRORS.PAGE_NOT_CONNECTABLE,
       async () => conn.connectPage({
-        tenantId: t1.id, actorUserId: admin1, brandId: b1.id, brandScope: TENANT_SCOPE,
+        tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: TENANT_SCOPE,
         availablePages: await discovered(), pageId: '333', db: DB
       }));
 
     // Cross-BRAND: a brand of the same company that the caller was not granted.
     await rejects('a brand outside the caller brand scope is refused', conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
       async () => conn.connectPage({
-        tenantId: t1.id, actorUserId: admin1, brandId: b1c.id, brandScope: FIRST_BRAND_ONLY,
+        tenantId: t1, actorUserId: admin1, brandId: b1c, brandScope: FIRST_BRAND_ONLY,
         availablePages: await discovered(), pageId: '222', db: DB
       }));
 
     await rejects('a caller with zero brand grants is refused', conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
       async () => conn.connectPage({
-        tenantId: t1.id, actorUserId: admin1, brandId: b1.id, brandScope: NO_BRANDS,
+        tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: NO_BRANDS,
         availablePages: await discovered(), pageId: '222', db: DB
       }));
 
@@ -409,14 +409,14 @@ try {
     await rejects('a page already owned by another company is refused',
       conn.CONNECTION_ERRORS.PAGE_OWNED_BY_ANOTHER_TENANT,
       async () => conn.connectPage({
-        tenantId: t2.id, actorUserId: admin2, brandId: b2.id, brandScope: T2_BRAND_ONLY,
+        tenantId: t2, actorUserId: admin2, brandId: b2, brandScope: T2_BRAND_ONLY,
         availablePages: await discovered(), pageId: '111', db: DB
       }));
 
     // Cross-TENANT: a brand that belongs to somebody else.
     await rejects('a brand belonging to another company is refused', conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
       async () => conn.connectPage({
-        tenantId: t2.id, actorUserId: admin2, brandId: b1.id, brandScope: TENANT_SCOPE,
+        tenantId: t2, actorUserId: admin2, brandId: b1, brandScope: TENANT_SCOPE,
         availablePages: await discovered(), pageId: '222', db: DB
       }));
 
@@ -430,13 +430,13 @@ try {
 
     // Reconnect inside the SAME company is allowed, and re-points the brand.
     const again = await conn.connectPage({
-      tenantId: t1.id, actorUserId: admin1, brandId: b1b.id, brandScope: T1_BOTH_BRANDS,
+      tenantId: t1, actorUserId: admin1, brandId: b1b, brandScope: T1_BOTH_BRANDS,
       availablePages: await discovered(), pageId: '111', mode: 'reconnect', db: DB
     });
     check('reconnecting within the same company succeeds', again.pageId === '111');
     eq('and it reuses the same channel row', again.channelId, channelOne);
     const { rows: [moved] } = await q(`SELECT brand_id FROM channels WHERE id=$1`, [channelOne]);
-    eq('and the page now points at the second brand', String(moved.brand_id), String(b1b.id));
+    eq('and the page now points at the second brand', String(moved.brand_id), String(b1b));
 
     const { rows: [dup] } = await q(`SELECT count(*)::int n FROM channels WHERE external_id='111'`);
     eq('reconnect did not create a duplicate channel', dup.n, 1);
@@ -447,41 +447,61 @@ try {
   {
     const settled = await Promise.allSettled([
       conn.connectPage({
-        tenantId: t1.id, actorUserId: admin1, brandId: b1.id, brandScope: TENANT_SCOPE,
+        tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: TENANT_SCOPE,
         availablePages: await discovered(), pageId: '222', db: DB
       }),
       conn.connectPage({
-        tenantId: t1.id, actorUserId: admin1, brandId: b1b.id, brandScope: T1_BOTH_BRANDS,
+        tenantId: t1, actorUserId: admin1, brandId: b1b, brandScope: T1_BOTH_BRANDS,
         availablePages: await discovered(), pageId: '222', db: DB
       })
     ]);
     const { rows: [counted] } = await q(`SELECT count(*)::int n FROM channels WHERE external_id='222'`);
     eq('concurrent connects of one page still produce exactly one channel', counted.n, 1);
-    check('at least one of the concurrent attempts succeeded',
-      settled.some((r) => r.status === 'fulfilled'));
+    eq('exactly one concurrent connect succeeds',
+      settled.filter((r) => r.status === 'fulfilled').length, 1);
+    // The loser must surface as a CONFLICT, never as a raw database error.
+    const loser = settled.find((r) => r.status === 'rejected');
+    check('the losing concurrent connect is refused with a connection error',
+      loser?.reason?.name === 'ConnectionError',
+      `name=${loser?.reason?.name} code=${loser?.reason?.code}`);
+    check('and with a code the API maps to 409',
+      loser?.reason?.code === conn.CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED
+      || loser?.reason?.code === conn.CONNECTION_ERRORS.PAGE_OWNED_BY_ANOTHER_TENANT,
+      `code=${loser?.reason?.code}`);
   }
 
   // ---------------------------------------------------------------- 10 list + disconnect
   section('10 list and disconnect');
   {
-    const list = await conn.listConnections({ db: DB, tenantId: t1.id, scope: TENANT_SCOPE });
+    const list = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
     eq('two connections are listed', list.length, 2);
     check('no token value appears anywhere in the listing', !JSON.stringify(list).includes('EAA-page'));
     check('credential presence is reported', list.every((c) => c.credentialPresent === true));
     check('expiry is surfaced as-is (null means unknown, not eternal)',
       list.every((c) => 'credentialExpiresAt' in c));
 
-    const scoped = await conn.listConnections({ db: DB, tenantId: t1.id, scope: { mode: 'restricted', brandIds: [b1.id] } });
-    eq('a brand-scoped listing returns only that brand', scoped.length, 1);
-    eq('and it is the right one', scoped[0].brand.id, b1.id);
+    // Section 8 left the Page '111' channel pointing at b1b, so scoping to b1 MUST
+    // hide it. That is a deterministic assertion; the COUNT is not, because the
+    // concurrent connect in section 9 decides which brand '222' wins.
+    const scoped = await conn.listConnections({ db: DB, tenantId: t1, scope: { mode: 'restricted', brandIds: [b1] } });
+    check('a brand-scoped listing never returns a connection outside the scope',
+      scoped.every((c) => c.brand?.id === b1));
+    check('a brand-scoped listing hides a connection on a brand outside the scope',
+      !scoped.some((c) => c.id === channelOne));
+
+    const tenantWide = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
+    check('a brand-scoped listing is a subset of the tenant-wide one',
+      scoped.length <= tenantWide.length);
 
     eq('a caller with zero brand grants sees nothing',
-      (await conn.listConnections({ db: DB, tenantId: t1.id, scope: NO_BRANDS })).length, 0);
+      (await conn.listConnections({ db: DB, tenantId: t1, scope: NO_BRANDS })).length, 0);
+    eq('an absent scope resolves to zero brands, never to everything',
+      (await conn.listConnections({ db: DB, tenantId: t1, scope: undefined })).length, 0);
 
     eq('another company sees none of it',
-      (await conn.listConnections({ db: DB, tenantId: t2.id, scope: TENANT_SCOPE })).length, 0);
+      (await conn.listConnections({ db: DB, tenantId: t2, scope: TENANT_SCOPE })).length, 0);
 
-    await conn.disconnectPage({ db: DB, tenantId: t1.id, actorUserId: admin1, channelId: channelOne });
+    await conn.disconnectPage({ db: DB, tenantId: t1, actorUserId: admin1, channelId: channelOne });
 
     const { rows: [gone] } = await q(
       `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1`, [channelOne]
@@ -492,9 +512,9 @@ try {
     eq('the channel row is kept, disabled, for history', kept.status, 'disabled');
 
     await rejects('disconnecting another company channel is refused', conn.CONNECTION_ERRORS.CHANNEL_NOT_FOUND,
-      () => conn.disconnectPage({ db: DB, tenantId: t2.id, actorUserId: admin2, channelId: channelOne }));
+      () => conn.disconnectPage({ db: DB, tenantId: t2, actorUserId: admin2, channelId: channelOne }));
 
-    const afterDisconnect = await conn.listConnections({ db: DB, tenantId: t1.id, scope: TENANT_SCOPE });
+    const afterDisconnect = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
     check('a disconnected page is no longer reported as connected',
       afterDisconnect.filter((c) => c.credentialPresent).length === 1);
   }
@@ -521,14 +541,14 @@ try {
       `SELECT metadata, object_id FROM audit_logs WHERE action='integrations.facebook.connect.conflict'`
     );
     check('the conflict audit records the page, not its real owner',
-      conflictRow[0].object_id === '111' && !JSON.stringify(conflictRow[0].metadata).includes(String(t2.id)));
+      conflictRow[0].object_id === '111' && !JSON.stringify(conflictRow[0].metadata).includes(String(t2)));
   }
 
   // ---------------------------------------------------------------- 12 parked user token
   section('12 parked user token handoff');
   {
     const s = await state.issueOAuthState({
-      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB
+      tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB
     });
     const claimed = await state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB });
 
@@ -548,15 +568,15 @@ try {
 
     // Cross-user / cross-tenant read of a consumed state.
     const s2 = await state.issueOAuthState({
-      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB
+      tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB
     });
     const claimed2 = await state.consumeOAuthState({ state: s2.state, redirectUri: URI, db: DB });
     await rejects('a consumed state cannot be read by a different user', state.OAUTH_STATE_ERRORS.NOT_FOUND,
-      () => state.readConsumedState({ stateId: claimed2.id, tenantId: t1.id, actorUserId: admin2, db: DB }));
+      () => state.readConsumedState({ stateId: claimed2.id, tenantId: t1, actorUserId: admin2, db: DB }));
     await rejects('a consumed state cannot be read from a different company', state.OAUTH_STATE_ERRORS.NOT_FOUND,
-      () => state.readConsumedState({ stateId: claimed2.id, tenantId: t2.id, actorUserId: admin1, db: DB }));
+      () => state.readConsumedState({ stateId: claimed2.id, tenantId: t2, actorUserId: admin1, db: DB }));
     check('its owner can read it', Boolean(await state.readConsumedState({
-      stateId: claimed2.id, tenantId: t1.id, actorUserId: admin1, db: DB
+      stateId: claimed2.id, tenantId: t1, actorUserId: admin1, db: DB
     })));
   }
 
@@ -564,7 +584,7 @@ try {
   section('13 purge');
   {
     await state.issueOAuthState({
-      tenantId: t1.id, actorUserId: admin1, brandId: b1.id, redirectUri: URI, db: DB, ttlSeconds: -100000
+      tenantId: t1, actorUserId: admin1, brandId: b1, redirectUri: URI, db: DB, ttlSeconds: -100000
     });
     const before = await q(`SELECT count(*)::int n FROM oauth_states WHERE expires_at < now() - interval '1 hour'`);
     const removed = await state.purgeExpiredOAuthStates({ db: DB, olderThanSeconds: 3600 });
@@ -577,7 +597,7 @@ try {
     const express = (await import('express')).default;
     const { createApiV1Router } = await import('../src/api/v1/index.js');
 
-    const appFor = ({ roles, customAbilities = [], tenant = t1.id, brandIds = undefined, allBrands = false, userId = admin1 }) => {
+    const appFor = ({ roles, customAbilities = [], tenant = t1, brandIds = undefined, allBrands = false, userId = admin1 }) => {
       const app = express();
       const router = createApiV1Router({
         pool,
@@ -627,7 +647,7 @@ try {
       (await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect',
         { brandId: '00000000-0000-0000-0000-000000000000' })).status, 403);
 
-    const started = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id });
+    const started = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
     eq('an admin can start a connect', started.status, 200);
     const body = started.body?.data || {};
     check('an authorize url is returned', String(body.authorizeUrl).includes('facebook.com'));
@@ -641,7 +661,7 @@ try {
     const noCsrf = await fetch(`${ca.base}/integrations/facebook/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: caAuth.cookie },
-      body: JSON.stringify({ brandId: b1.id })
+      body: JSON.stringify({ brandId: b1 })
     });
     eq('a POST without a CSRF token is refused', noCsrf.status, 403);
 
@@ -649,7 +669,7 @@ try {
     const agent = await appFor({ roles: ['Agent'], brandIds: null, allBrands: true });
     const agentAuth = await authFor(agent.base);
     eq('a role without brand.integration.connect cannot start a connect',
-      (await send(agent.base, agentAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id })).status, 403);
+      (await send(agent.base, agentAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 })).status, 403);
     eq('but the same role can read integration status',
       (await send(agent.base, agentAuth, 'GET', '/integrations/facebook/connections')).status, 200);
 
@@ -658,20 +678,20 @@ try {
     eq('a role with no integration abilities cannot list connections',
       (await send(viewer.base, viewerAuth, 'GET', '/integrations/facebook/connections')).status, 403);
     eq('nor can it start a connect',
-      (await send(viewer.base, viewerAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id })).status, 403);
+      (await send(viewer.base, viewerAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 })).status, 403);
 
     // Brand scope at the HTTP edge.
-    const restricted = await appFor({ roles: ['Company Admin'], brandIds: [b1.id] });
+    const restricted = await appFor({ roles: ['Company Admin'], brandIds: [b1] });
     const restrictedAuth = await authFor(restricted.base);
     eq('a brand-scoped admin cannot start a connect for a brand outside their scope',
-      (await send(restricted.base, restrictedAuth, 'POST', '/integrations/facebook/connect', { brandId: b1c.id })).status, 403);
+      (await send(restricted.base, restrictedAuth, 'POST', '/integrations/facebook/connect', { brandId: b1c })).status, 403);
     eq('but can for a brand inside their scope',
-      (await send(restricted.base, restrictedAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id })).status, 200);
+      (await send(restricted.base, restrictedAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 })).status, 200);
 
     const noBrands = await appFor({ roles: ['Company Admin'], brandIds: [] });
     const noBrandsAuth = await authFor(noBrands.base);
     eq('an admin with zero brand grants cannot connect anything',
-      (await send(noBrands.base, noBrandsAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id })).status, 403);
+      (await send(noBrands.base, noBrandsAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 })).status, 403);
 
     // Callback negatives. The callback redirects into the app rather than
     // rendering JSON, so these are inspected with redirect: 'manual'.
@@ -690,7 +710,7 @@ try {
       (await fetch(`${ca.base}/integrations/facebook/callback?code=abc&state=not-a-real-state`, noRedirect)).status, 400);
 
     // Full round trip with the mocked exchange.
-    const started2 = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id });
+    const started2 = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
     const st2 = started2.body?.data?.state;
     const cb = await fetch(
       `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(st2)}`, noRedirect);
@@ -718,41 +738,41 @@ try {
       (await send(ca.base, caAuth, 'GET', '/integrations/facebook/pages?stateId=nope')).status, 400);
 
     eq('confirm without a stateId is a 400',
-      (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm', { brandId: b1.id, pageId: '111' })).status, 400);
+      (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm', { brandId: b1, pageId: '111' })).status, 400);
     eq('confirm with a malformed stateId is a 400',
       (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
-        { brandId: b1.id, pageId: '111', stateId: 'nope' })).status, 400);
+        { brandId: b1, pageId: '111', stateId: 'nope' })).status, 400);
 
     // Cross-tenant: another company must not be able to use this state id.
-    const other = await appFor({ roles: ['Company Admin'], brandIds: null, allBrands: true, tenant: t2.id, userId: admin2 });
+    const other = await appFor({ roles: ['Company Admin'], brandIds: null, allBrands: true, tenant: t2, userId: admin2 });
     const otherAuth = await authFor(other.base);
     eq('another company cannot read the pages of this grant',
       (await send(other.base, otherAuth, 'GET', `/integrations/facebook/pages?stateId=${sid}`)).status, 400);
     eq('nor confirm with it',
       (await send(other.base, otherAuth, 'POST', '/integrations/facebook/confirm',
-        { brandId: b2.id, pageId: '222', stateId: sid })).status, 400);
+        { brandId: b2, pageId: '222', stateId: sid })).status, 400);
 
     // Owner confirms.
     const confirmed = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
-      { brandId: b1.id, pageId: '111', stateId: sid });
+      { brandId: b1, pageId: '111', stateId: sid });
     eq('the owner can confirm', confirmed.status, 201);
     check('and the response carries no token', !JSON.stringify(confirmed.body).includes('EAA-'));
 
     eq('the grant is one-shot: a second confirm is refused',
       (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
-        { brandId: b1.id, pageId: '222', stateId: sid })).status, 410);
+        { brandId: b1, pageId: '222', stateId: sid })).status, 410);
     eq('and re-listing through the spent grant is a 410',
       (await send(ca.base, caAuth, 'GET', `/integrations/facebook/pages?stateId=${sid}`)).status, 410);
 
     // Confirming a read-only page is refused at the HTTP edge too.
-    const started3 = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1.id });
+    const started3 = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
     const cb3 = await fetch(
       `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(started3.body.data.state)}`,
       noRedirect);
     const sid3 = new URL(cb3.headers.get('location')).searchParams.get('stateId');
     eq('confirming a read-only page is a 422',
       (await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
-        { brandId: b1.id, pageId: '333', stateId: sid3 })).status, 422);
+        { brandId: b1, pageId: '333', stateId: sid3 })).status, 422);
 
     // Listing at the HTTP edge.
     const listed = await send(ca.base, caAuth, 'GET', '/integrations/facebook/connections');

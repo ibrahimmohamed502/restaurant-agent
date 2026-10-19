@@ -39,6 +39,7 @@ export const CONNECTION_ERRORS = {
   PAGE_NOT_IN_ACCOUNT: 'PAGE_NOT_IN_ACCOUNT',
   PAGE_NOT_CONNECTABLE: 'PAGE_NOT_CONNECTABLE',
   PAGE_OWNED_BY_ANOTHER_TENANT: 'PAGE_OWNED_BY_ANOTHER_TENANT',
+  PAGE_ALREADY_CONNECTED: 'PAGE_ALREADY_CONNECTED',
   CHANNEL_NOT_FOUND: 'CHANNEL_NOT_FOUND',
   CREDENTIAL_MISSING: 'CREDENTIAL_MISSING',
   UPSTREAM_ERROR: 'CONNECTION_UPSTREAM_ERROR'
@@ -312,6 +313,18 @@ async function runConnectTransaction({
     return { channelId, brandId, pageId: chosen.pageId, name: chosen.name, mode };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
+
+    // A concurrent connect of the SAME page can pass the ownership check and
+    // still lose the insert to the unique index. That is the index doing its job,
+    // not a server fault, so it is translated into the same conflict the caller
+    // would have got from the pre-check instead of escaping as a raw 500.
+    if (e?.code === '23505') {
+      throw new ConnectionError(
+        CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED,
+        'this Facebook page is already connected',
+        { pageId: chosen.pageId }
+      );
+    }
     throw e;
   } finally {
     client.release();
