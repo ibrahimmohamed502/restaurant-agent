@@ -339,8 +339,19 @@ export function createMetaOAuthRouter({ pool }) {
     }
 
     try {
-      const pages = await listAvailablePages({ db: req.db, userAccessToken: userToken });
-      return res.json({ data: { pages, brandId: claimed.brand_id } });
+      const discovered = await listAvailablePages({ db: req.db, userAccessToken: userToken });
+      // Re-project, never pass through. listAvailablePages() carries the per-Page
+      // access token because the server needs it to store the credential; that
+      // object must not be handed to a browser. Only the fields the chooser needs
+      // leave this function.
+      return res.json({
+        data: {
+          brandId: claimed.brand_id,
+          pages: discovered.map(({ pageId, name, category, tasks, connectable, missingTasks }) => ({
+            pageId, name, category, tasks, connectable, missingTasks
+          }))
+        }
+      });
     } catch (e) {
       const sent = sendServiceError(res, e);
       if (sent) return sent;

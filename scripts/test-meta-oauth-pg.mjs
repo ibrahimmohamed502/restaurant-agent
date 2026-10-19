@@ -568,8 +568,15 @@ try {
     });
     const claimed = await state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB });
 
-    eq('stashing an already-consumed token is refused',
-      await state.stashUserToken({ stateId: claimed.id, userToken: 'x', db: DB }), 0);
+    // The guard is "stash at most once per state", NOT "refuse a consumed state":
+    // a consumed state with nothing parked yet is exactly the callback's normal
+    // starting position.
+    eq('the first stash on a consumed state is accepted',
+      await state.stashUserToken({ stateId: claimed.id, userToken: 'x', db: DB }), 1);
+    eq('a second stash on the same state is refused',
+      await state.stashUserToken({ stateId: claimed.id, userToken: 'y', db: DB }), 0);
+    eq('and the second value never overwrote the first',
+      await state.takeUserToken({ stateId: claimed.id, db: DB }), 'x');
 
     await state.stashUserToken({ stateId: claimed.id, userToken: 'EAA-secret-user-token', db: DB });
     eq('the parked token round-trips',
@@ -748,6 +755,10 @@ try {
     check('connectable pages are flagged as such',
       pageList.find((p) => p.pageId === '111')?.connectable === true);
     check('the page list carries no page tokens', !JSON.stringify(pageList).includes('EAA-page'));
+    check('the page list carries no pageAccessToken field at all',
+      pageList.every((p) => !('pageAccessToken' in p)));
+    check('and no field value looks like a token',
+      pageList.every((p) => Object.values(p).every((v) => !/EAA-/.test(String(v)))));
 
     // A malformed state id never reaches the database.
     eq('listing pages with a malformed stateId is a 400',
