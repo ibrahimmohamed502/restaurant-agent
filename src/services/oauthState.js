@@ -526,3 +526,126 @@ export async function readConsumedState({ stateId, tenantId, actorUserId, db = p
   }
   return rows[0];
 }
+
+/**
+ * Load a consumed state for the PAGE-LISTING step, but ONLY while the grant is
+ * still UNSPENT, and release the parked user token in the same read.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * The page listing used to be gated on the PRESENCE OF THE PARKED TOKEN: the
+ * state was read, then the token was taken, and a missing token meant "the
+ * authorization is gone". That made the one-shot guarantee depend on the
+ * cleanup of the parked token having landed - and the cleanup runs in a
+ * `finally` block, asynchronously with respect to the response. A client that
+ * re-read the listing in that window was served the page list for a grant
+ * that had ALREADY been spent.
+ *
+ * The gate is now the PERSISTED GRANT STATE, not the token.
+ *
+ * THE AUTHORITATIVE READ
+ * ----------------------
+ * One statement. The predicate that decides whether this grant may still be
+ * used - `confirmed_at IS NULL` - lives IN THE SQL, so the decision and the
+ * data come from the SAME snapshot. There is no "check, then use" gap to race
+ * in, and no in-memory flag that could disagree with the row.
+ *
+ * `confirmed_at` is set by the atomic one-shot claim, so it is the
+ * authoritative record of "this grant has been spent" - not a guess, and not a
+ * side effect of cleanup.
+ *
+ * WHAT THIS DOES AND DOES NOT GUARANTEE
+ * --------------------------------------
+ * It guarantees that a grant which is ALREADY spent when the read begins is
+ * never served, whatever the cleanup is doing. A grant spent CONCURRENTLY with
+ * the read is not retroactively invalidated: the listing was authorised at the
+ * instant it was read, by the same tenant and the same user who spent it.
+ *
+ * The binding is unchanged and is still enforced: same tenant, same user, not
+ * expired. A state belonging to another company or another user is reported
+ * exactly like one that does not exist.
+ *
+ * @returns {Promise<
+ *   {ok: true, state: object, userToken: ?string}
+ *   | {ok: false, reason: 'not_found'|'expired'|'spent'}
+ * >}
+ */
+export async function readUnspentState({ stateId, tenantId, actorUserId, db = pool }) {
+  if (!stateId || !tenantId || !actorUserId) {
+    fail(OAUTH_STATE_ERRORS.NOT_FOUND, 'stateId, tenantId and actorUserId are required');
+  }
+  const { decrypt } = await import('../db/crypto.js');
+
+  // THE AUTHORITATIVE READ. One statement, one snapshot.
+  const { rows } = await db.query(
+    `SELECT id, tenant_id, actor_user_id, session_id, provider, brand_id,
+            redirect_uri, expires_at, consumed_at, confirmed_at,
+            user_token_encrypted, user_token_iv
+       FROM oauth_states
+      WHERE id = $1
+        AND consumed_at IS NOT NULL
+        AND confirmed_at IS NULL
+        AND expires_at > now()
+        AND tenant_id = $2
+        AND actor_user_id = $3`,
+    [stateId, tenantId, actorUserId]
+  );
+
+  if (!rows.length) {
+    // WHY. One diagnostic read, used ONLY to choose the error code. It returns
+    // no token, it grants nothing, and it is NOT consulted to decide whether
+    // the grant may be used - that decision was already made above, by the
+    // authoritative statement. The same pattern is used by consumeOAuthState().
+    const { rows: dead } = await db.query(
+      `SELECT consumed_at IS NOT NULL AS consumed,
+              confirmed_at IS NOT NULL AS spent,
+              expires_at <= now() AS expired,
+              tenant_id, actor_user_id
+         FROM oauth_states WHERE id = $1 LIMIT 1`,
+      [stateId]
+    );
+    if (!dead.length) return { ok: false, reason: 'not_found' };
+    const row = dead[0];
+    // The binding is checked FIRST. A state that belongs to another company or
+    // another user must look exactly like one that does not exist.
+    if (String(row.tenant_id) !== String(tenantId)
+      || String(row.actor_user_id) !== String(actorUserId)) {
+      return { ok: false, reason: 'not_found' };
+    }
+    if (row.spent) return { ok: false, reason: 'spent' };
+    if (row.expired) return { ok: false, reason: 'expired' };
+    return { ok: false, reason: 'not_found' };
+  }
+
+  const row = rows[0];
+
+  // The token is released from the SAME snapshot as the decision, never from a
+  // second read that could observe a different state.
+  //
+  // A DECRYPTION FAILURE IS NOT SWALLOWED. A wrong or missing ENCRYPTION_KEY
+  // is a server misconfiguration, and it must be loud: swallowing it here
+  // would answer "the authorization expired" for what is really a broken
+  // deployment, and the misconfiguration would stay hidden. The error carries
+  // no token material - it is a cipher failure, not the ciphertext.
+  let userToken = null;
+  if (row.user_token_encrypted && row.user_token_iv) {
+    userToken = decrypt(row.user_token_encrypted, row.user_token_iv);
+  }
+
+  return {
+    ok: true,
+    state: {
+      id: row.id,
+      tenant_id: row.tenant_id,
+      actor_user_id: row.actor_user_id,
+      session_id: row.session_id,
+      provider: row.provider,
+      brand_id: row.brand_id,
+      redirect_uri: row.redirect_uri,
+      expires_at: row.expires_at,
+      consumed_at: row.consumed_at,
+      confirmed_at: row.confirmed_at
+    },
+    userToken
+  };
+}

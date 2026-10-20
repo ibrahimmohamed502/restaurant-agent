@@ -1020,6 +1020,36 @@ try {
     eq('and re-listing through the spent grant is a 410',
       (await send(ca.base, caAuth, 'GET', `/integrations/facebook/pages?stateId=${sid}`)).status, 410);
 
+    // ---- THE POST-CONFIRM WINDOW, DETERMINISTICALLY -----------------------
+    //
+    // The listing used to be gated on the PRESENCE OF THE PARKED TOKEN, so a
+    // grant that had already been spent could still be listed in the window
+    // before the cleanup landed. That was a race between the response and the
+    // cleanup, and it made the one-shot guarantee timing-dependent.
+    //
+    // The gate is now the PERSISTED GRANT STATE (`confirmed_at`). To prove that
+    // deterministically, the parked token is put BACK on the spent grant -
+    // exactly as if the cleanup had not run - and the listing must still be
+    // refused.
+    const { encrypt: encForPark } = await import('../src/db/crypto.js');
+    const reparked = encForPark('EAA-reparked-secret');
+    await q(
+      `UPDATE oauth_states SET user_token_encrypted=$2, user_token_iv=$3 WHERE id=$1`,
+      [sid, reparked.value, reparked.iv]
+    );
+    const { rows: parkedCheck } = await q(
+      `SELECT user_token_encrypted IS NOT NULL AS parked FROM oauth_states WHERE id=$1`, [sid]
+    );
+    eq('the parked token really is back on the spent grant', parkedCheck[0].parked, true);
+    const relist = await send(ca.base, caAuth, 'GET', `/integrations/facebook/pages?stateId=${sid}`);
+    eq('a spent grant is refused even with a token still parked', relist.status, 410);
+    check('and the refusal carries no page data', !JSON.stringify(relist.body).includes('pageId'));
+    check('and no token of any kind', !/EAA-/.test(JSON.stringify(relist.body)));
+    // Clean up the re-parked token so no later assertion sees it.
+    await q(
+      `UPDATE oauth_states SET user_token_encrypted=NULL, user_token_iv=NULL WHERE id=$1`, [sid]
+    );
+
     // Confirming a read-only page is refused at the HTTP edge too.
     const started3 = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
     const cb3 = await fetch(
@@ -1521,16 +1551,44 @@ try {
         return {};
       }
     });
-    const outcomes = await Promise.allSettled([
-      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
-        availablePages: concPages, pageId: CONC_PAGE, db: DB }),
-      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
-        availablePages: concPages, pageId: CONC_PAGE, db: DB }),
-      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
-        availablePages: concPages, pageId: CONC_PAGE, db: DB })
-    ]);
+    // ---- concurrency: the INVARIANTS, not the race ------------------------
+    //
+    // The service contract EXPLICITLY permits a same-tenant, same-brand,
+    // same-Page reconnect: the routing channel is found by an explicit
+    // provider='meta' + tenant_id predicate, and a late arrival REPLACES the
+    // credential (facebookConnections.js: "Same tenant, same routing channel:
+    // reconnect, or move to a different brand of the same company").
+    //
+    // So "how many of the three won" is a TIMING question, not a security
+    // property: a late arrival may find the routing channel and replace the
+    // credential, or may lose the unique-index race and be refused. What the
+    // service DOES guarantee - and what is asserted here - is the OUTCOME:
+    //
+    //   exactly one routing channel
+    //   at most one active OAuth credential
+    //   the surviving credential is one of the AUTHORIZED tokens
+    //   the surviving channel is on the brand the connects were authorized for
+    //
+    // Each connect uses a DIFFERENT authorized token, so the surviving
+    // credential can be attributed to one of them instead of being
+    // indistinguishable.
+    const concTokens = ['EAA-conc-A', 'EAA-conc-B', 'EAA-conc-C'];
+    const outcomes = await Promise.allSettled(concTokens.map((tok) => conn.connectPage({
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+      availablePages: [{ ...concPages[0], pageAccessToken: tok }],
+      pageId: CONC_PAGE, db: DB
+    })));
     const won = outcomes.filter((o) => o.status === 'fulfilled').length;
-    check('concurrent connects never produce more than one winner', won <= 1);
+    const lost = outcomes.filter((o) => o.status === 'rejected').length;
+    eq('every concurrent connect reached a definite outcome', won + lost, 3);
+    check('at least one concurrent connect succeeded', won >= 1);
+    for (const o of outcomes) {
+      if (o.status === 'rejected') {
+        check('a refused concurrent connect carries one of OUR error codes',
+          o.reason?.code === conn.CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED
+          || o.reason?.code === conn.CONNECTION_ERRORS.PAGE_OWNED_BY_ANOTHER_TENANT);
+      }
+    }
     const { rows: concChannels } = await q(
       `SELECT count(*)::int n FROM channels WHERE external_id=$1 AND provider='meta'`, [CONC_PAGE]
     );
@@ -1540,6 +1598,25 @@ try {
         WHERE c.external_id=$1 AND pc.kind=$2`, [CONC_PAGE, OAUTH]
     );
     eq('exactly one OAuth credential exists after concurrent connects', concCreds[0].n, 1);
+
+    // The surviving credential must be one of the AUTHORIZED ones, and the
+    // surviving channel must be on the brand the connects were authorized for.
+    const { decrypt } = await import('../src/db/crypto.js');
+    const { rows: concFinal } = await q(
+      `SELECT pc.value_encrypted, pc.iv FROM provider_credentials pc
+         JOIN channels c ON c.id = pc.channel_id
+        WHERE c.external_id=$1 AND c.provider='meta' AND pc.kind=$2`, [CONC_PAGE, OAUTH]
+    );
+    eq('exactly one OAuth credential row survives', concFinal.length, 1);
+    const finalConcToken = decrypt(concFinal[0].value_encrypted, concFinal[0].iv);
+    check('the surviving credential is one of the AUTHORIZED tokens',
+      concTokens.includes(finalConcToken));
+    check('and it is not some other token', finalConcToken !== 'EAA-page-902');
+    const { rows: concBrand } = await q(
+      `SELECT brand_id FROM channels WHERE external_id=$1 AND provider='meta'`, [CONC_PAGE]
+    );
+    eq('the surviving channel is on the brand the connects were authorized for',
+      String(concBrand[0].brand_id), String(b1));
 
     // ---- brand authorization is still enforced ---------------------------
     // The transport is restored first: the concurrency block above installed a
@@ -2107,7 +2184,8 @@ try {
     eq('a future expiry is healthy', rowFuture.connectionHealthy, true);
     eq('a future expiry is NOT never-expiring', rowFuture.oauthCredentialNeverExpires, false);
     eq('a future expiry does not require a reconnect', rowFuture.oauthRequiresReconnect, false);
-    check('a future expiry IS surfaced as a date', typeof rowFuture.oauthCredentialExpiresAt === 'string');
+    check('a future expiry IS surfaced as a Date', rowFuture.oauthCredentialExpiresAt instanceof Date);
+    check('and that Date is in the future', rowFuture.oauthCredentialExpiresAt.getTime() > Date.now());
 
     // --- Meta says nothing about the expiry --------------------------------
     const rNone = await connectCase('932');
@@ -2132,6 +2210,11 @@ try {
     eq('the requested scopes are reported separately, as a request',
       JSON.stringify(rowNever.requestedScopes), JSON.stringify(['pages_show_list', 'pages_read_engagement']));
 
+    // The '933' fixture is DELIBERATELY configured with `scopes: undefined`,
+    // so the inspection carries no `scopes` field at all and Meta's answer is
+    // UNKNOWN rather than "confirmed empty". It has to be connected before it
+    // can be listed.
+    await connectCase('933');
     const rowNoScopes = await rowFor('933');
     eq('when Meta states no scopes, the granted scopes are null', rowNoScopes.grantedScopes, null);
     eq('and they are NOT verified', rowNoScopes.scopesVerified, false);
@@ -2278,6 +2361,103 @@ try {
     eq('the OAuth marker is cleared', bothCh[0].oauth_provider, null);
 
     metaOAuth.resetGraphTransport();
+  }
+
+  {
+    section('20 the one-shot grant is gated on persisted state');
+
+    // THE STATE LIFECYCLE
+    //   issueOAuthState       -> consumed_at = NULL, confirmed_at = NULL
+    //   consumeOAuthState     -> consumed_at = now()     (the callback claimed it)
+    //   stashUserToken       -> the encrypted user token is parked
+    //   claimGrantForConfirm -> confirmed_at = now()      (the atomic one-shot claim)
+    //   takeUserToken        -> the parked token is removed
+    //
+    // The page listing is gated on the PERSISTED GRANT STATE, not on whether
+    // the parked token happens to still be there. These assertions are
+    // deterministic: they set up the exact state the old gate could not see.
+    const mkGrant = async () => {
+      const s = await state.issueOAuthState({
+        tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1, redirectUri: URI, db: DB
+      });
+      const claimed = await state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB });
+      await state.stashUserToken({ stateId: claimed.id, userToken: 'EAA-parked-secret', db: DB });
+      return claimed;
+    };
+
+    // 1. An unspent grant with a parked token is usable.
+    const live = await mkGrant();
+    const gLive = await state.readUnspentState({
+      stateId: live.id, tenantId: t1, actorUserId: admin1, db: DB
+    });
+    eq('an unspent grant is usable', gLive.ok, true);
+    eq('and it releases the parked token', gLive.userToken, 'EAA-parked-secret');
+    eq('and it reports the brand the grant was issued for', String(gLive.state.brand_id), String(b1));
+
+    // 2. The binding is enforced, and a foreign grant is indistinguishable from
+    //    one that does not exist.
+    const gForeign = await state.readUnspentState({
+      stateId: live.id, tenantId: t2, actorUserId: admin2, db: DB
+    });
+    eq('a grant issued to another company is refused', gForeign.ok, false);
+    eq('and is indistinguishable from one that does not exist', gForeign.reason, 'not_found');
+    const gOtherUser = await state.readUnspentState({
+      stateId: live.id, tenantId: t1, actorUserId: admin2, db: DB
+    });
+    eq('a grant issued to another user is refused', gOtherUser.ok, false);
+    eq('and is indistinguishable from one that does not exist', gOtherUser.reason, 'not_found');
+
+    // 3. THE POST-CONFIRM WINDOW. Spend the grant and LEAVE THE PARKED TOKEN
+    //    IN PLACE - the exact state the old gate could not see.
+    const spent = await mkGrant();
+    const wonClaim = await state.claimGrantForConfirm({
+      stateId: spent.id, tenantId: t1, actorUserId: admin1, db: DB
+    });
+    eq('the one-shot claim succeeds exactly once', wonClaim, true);
+    const { rows: stillParked } = await q(
+      `SELECT user_token_encrypted IS NOT NULL AS parked, confirmed_at IS NOT NULL AS spent
+         FROM oauth_states WHERE id=$1`, [spent.id]
+    );
+    eq('the grant is recorded as spent', stillParked[0].spent, true);
+    eq('and the parked token is STILL THERE (the cleanup has not run)', stillParked[0].parked, true);
+    const gSpent = await state.readUnspentState({
+      stateId: spent.id, tenantId: t1, actorUserId: admin1, db: DB
+    });
+    eq('a SPENT grant is refused', gSpent.ok, false);
+    eq('and the reason is that it was spent', gSpent.reason, 'spent');
+    check('and NO token is released', !('userToken' in gSpent));
+
+    // 4. A spent grant cannot be claimed a second time.
+    const again = await state.claimGrantForConfirm({
+      stateId: spent.id, tenantId: t1, actorUserId: admin1, db: DB
+    });
+    eq('a spent grant cannot be claimed again', again, false);
+
+    // 5. An unspent grant whose token is gone is readable but yields no token.
+    const empty = await mkGrant();
+    await q(`UPDATE oauth_states SET user_token_encrypted=NULL, user_token_iv=NULL WHERE id=$1`, [empty.id]);
+    const gEmpty = await state.readUnspentState({
+      stateId: empty.id, tenantId: t1, actorUserId: admin1, db: DB
+    });
+    eq('an unspent grant with no token is still readable', gEmpty.ok, true);
+    eq('but it yields no token', gEmpty.userToken, null);
+
+    // 6. An expired grant is not usable.
+    const expiredState = await state.issueOAuthState({
+      tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1, redirectUri: URI, db: DB, ttlSeconds: -1
+    });
+    const gExpired = await state.readUnspentState({
+      stateId: expiredState.id, tenantId: t1, actorUserId: admin1, db: DB
+    });
+    eq('an expired grant is refused', gExpired.ok, false);
+    check('and the reason is expiry, not spending', gExpired.reason !== 'spent');
+
+    // 7. An unknown state id is refused.
+    const gUnknown = await state.readUnspentState({
+      stateId: '00000000-0000-0000-0000-000000000000', tenantId: t1, actorUserId: admin1, db: DB
+    });
+    eq('an unknown state id is refused', gUnknown.ok, false);
+    eq('and is reported as not found', gUnknown.reason, 'not_found');
   }
 
   metaOAuth.resetGraphTransport();

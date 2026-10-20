@@ -33,6 +33,7 @@ import {
   stashUserToken,
   takeUserToken,
   readConsumedState,
+  readUnspentState,
   claimGrantForConfirm,
   purgeExpiredOAuthStates,
   generatePkce,
@@ -354,9 +355,16 @@ export function createMetaOAuthRouter({ pool }) {
       return apiError(res, 400, 'VALIDATION_ERROR', 'stateId must be a uuid');
     }
 
-    let claimed;
+    // THE GRANT MUST STILL BE UNSPENT.
+    //
+    // The state and the parked token are read by ONE authoritative statement
+    // that requires `confirmed_at IS NULL`. A grant that has already been
+    // spent is refused here EVEN IF the parked token has not been cleaned up
+    // yet - the old gate depended on that cleanup having landed, which raced
+    // the response and could serve the page list for a spent grant.
+    let grant;
     try {
-      claimed = await readConsumedState({
+      grant = await readUnspentState({
         stateId,
         tenantId: req.v1?.tenantId,
         actorUserId: req.v1?.user?.id,
@@ -368,7 +376,19 @@ export function createMetaOAuthRouter({ pool }) {
       throw e;
     }
 
-    const userToken = await takeUserToken({ stateId, db: req.db });
+    if (!grant.ok) {
+      if (grant.reason === 'spent') {
+        // The authorization was already used. Same response as a cleaned-up
+        // grant, and now DETERMINISTIC instead of timing-dependent.
+        return apiError(res, 410, 'AUTHORIZATION_EXPIRED', 'the Facebook authorization is no longer available; please reconnect');
+      }
+      // Not found, expired, or issued to somebody else - all indistinguishable
+      // on purpose, so this cannot be used to probe for another user's grants.
+      return apiError(res, 400, OAUTH_STATE_ERRORS.NOT_FOUND, 'no active authorization for this user');
+    }
+
+    const claimed = grant.state;
+    const userToken = grant.userToken;
     if (!userToken) {
       return apiError(res, 410, 'AUTHORIZATION_EXPIRED', 'the Facebook authorization is no longer available; please reconnect');
     }
@@ -482,10 +502,12 @@ export function createMetaOAuthRouter({ pool }) {
       return apiError(res, 410, 'AUTHORIZATION_EXPIRED', 'this Facebook authorization has already been used; please connect again');
     }
 
+    let result = null;
+    let failure = null;
     try {
       const availablePages = await listAvailablePages({ db: req.db, userAccessToken: userToken });
 
-      const result = await connectPage({
+      result = await connectPage({
         tenantId,
         actorUserId,
         brandId: String(brandId),
@@ -499,17 +521,28 @@ export function createMetaOAuthRouter({ pool }) {
         mode: mode === 'reconnect' ? 'reconnect' : 'connect',
         db: pool
       });
-
-      return res.status(201).json({ data: { connection: result } });
     } catch (e) {
-      const sent = sendServiceError(res, e);
-      if (sent) return sent;
-      throw e;
+      failure = e;
     } finally {
-      // Best-effort hygiene only. The one-shot guarantee no longer depends on
-      // this - the grant was already claimed above.
+      // The parked grant is destroyed BEFORE any response is sent.
+      //
+      // The `finally` used to run AFTER `res.json(...)`, so the client could
+      // observe the response while the cleanup was still in flight. Every
+      // response is now sent after this block, so the cleanup always lands
+      // first.
+      //
+      // This is hygiene, NOT the guarantee. The one-shot guarantee is the
+      // atomic claim above, and the /pages gate is the persisted-state check
+      // in readUnspentState(). Nothing here is relied upon for security.
       await takeUserToken({ stateId: String(stateId), db: req.db, destroy: true }).catch(() => {});
     }
+
+    if (failure) {
+      const sent = sendServiceError(res, failure);
+      if (sent) return sent;
+      throw failure;
+    }
+    return res.status(201).json({ data: { connection: result } });
   });
 
   /**
