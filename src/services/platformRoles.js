@@ -128,6 +128,26 @@ function samePermissionSet(actual, expected) {
  * Read-only, brand-agnostic, and deliberately exposes the role's STORED
  * permissions so an operator can see what would be handed out rather than trusting
  * the UI to describe it.
+ *
+ * THE `u.id::text` CAST IS LOAD-BEARING
+ * ------------------------------------
+ * `audit_logs.object_id` is TEXT and `users.id` is UUID, and PostgreSQL has no
+ * `text = uuid` operator. The comparison was written as `a.object_id = u.id`,
+ * so this query could never succeed: it failed with
+ *   ERROR: operator does not exist: text = uuid
+ * which the API logged as "platform escalation list failed" and turned into a
+ * 500. The endpoint was therefore broken for every caller, not only for some.
+ *
+ * The cast is on the UUID side, NOT on the text side. `audit_logs.object_id`
+ * legitimately holds values that are not UUIDs - B1's own connect audit rows
+ * store a Facebook Page id there, which is a numeric string - so casting the
+ * column to uuid (`a.object_id::uuid`) would make the query fail with
+ * "invalid input syntax for type uuid" the moment the first Page is connected.
+ * Casting the user's id to text compares text with text, which is valid for
+ * every row the column can hold.
+ *
+ * The fix changes no authorisation and no tenant scoping: the same tenant, the
+ * same role and the same subquery are still what decide the result.
  */
 export async function listEscalationManagers({ tenantId, db = pool } = {}) {
   assertUuid(tenantId, 'tenantId');
@@ -138,7 +158,7 @@ export async function listEscalationManagers({ tenantId, db = pool } = {}) {
     `SELECT u.id, u.email, u.name, u.status,
             r.name AS role, r.permissions,
             (SELECT max(a.created_at) FROM audit_logs a
-              WHERE a.object_id = u.id
+              WHERE a.object_id = u.id::text
                 AND a.tenant_id = u.tenant_id
                 AND a.action = 'platform.escalation_manager.grant') AS granted_at
        FROM user_roles ur

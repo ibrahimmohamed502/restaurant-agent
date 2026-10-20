@@ -697,6 +697,145 @@ try {
     await pool.end();
   }
 
+  // ------------------------------------------------- 14 escalation managers
+  section('14 escalation managers (Platform Super Admin)');
+  {
+    // THE REGRESSION THIS SECTION EXISTS FOR
+    // ----------------------------------------
+    // `listEscalationManagers` compared `audit_logs.object_id` (TEXT) with
+    // `users.id` (UUID). PostgreSQL has no `text = uuid` operator, so the query
+    // failed for EVERY caller:
+    //     ERROR: operator does not exist: text = uuid
+    // The API logged "platform escalation list failed" and answered 500, so the
+    // endpoint was dead in production - not for one tenant, for all of them.
+    //
+    // The fix casts the UUID side (`u.id::text`). The cast is deliberately NOT
+    // on the text column: `audit_logs.object_id` legitimately holds non-UUID
+    // values (B1's connect audit rows store a Facebook Page id there, which is
+    // a numeric string), so `a.object_id::uuid` would throw
+    // "invalid input syntax for type uuid" the moment the first Page is
+    // connected. The assertion below is what distinguishes the two.
+
+    const { listEscalationManagers } = await import('../src/services/platformRoles.js');
+
+    // A holder in t1, and the audit row the subquery looks for.
+    // The 'Escalation Manager' role is the one the FIXTURES already created
+    // (roles has a unique key on tenant_id + name), so it is reused here rather
+    // than created a second time.
+    const { rows: [escRole] } = await q(
+      `SELECT id FROM roles WHERE tenant_id=$1 AND name='Escalation Manager'`, [t1]);
+    check('the escalation manager role fixture exists', !!escRole);
+    await q(`INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [agent, escRole.id]);
+    await q(
+      `INSERT INTO audit_logs (tenant_id, actor_user_id, action, object_type, object_id)
+       VALUES ($1,$2,'platform.escalation_manager.grant','user',$3::text)`,
+      [t1, admin, String(agent)]);
+
+    // A NON-UUID object_id in the same table and the same tenant: the shape
+    // B1's own connect audit rows have.
+    await q(
+      `INSERT INTO audit_logs (tenant_id, actor_user_id, action, object_type, object_id)
+       VALUES ($1,$2,'integrations.facebook.connect','channel','123456789012345')`,
+      [t1, admin]);
+
+    // --- service level ---------------------------------------------------
+    const holders = await listEscalationManagers({ tenantId: t1, db: dbPool });
+    check('the listing query runs at all (no text = uuid type error)', Array.isArray(holders));
+    eq('it finds the holder', holders.filter((h) => String(h.id) === String(agent)).length, 1);
+    check('the granted_at timestamp is resolved', holders[0]?.granted_at != null);
+    check('a non-UUID object_id in the same table does not break the listing',
+      Array.isArray(await listEscalationManagers({ tenantId: t1, db: dbPool })));
+
+    // TENANT SCOPE: the query is filtered by the tenant it is given, so the
+    // holders of one company never appear in another company's listing.
+    const otherHolders = await listEscalationManagers({ tenantId: t2, db: dbPool });
+    eq('another company sees none of these holders',
+      otherHolders.filter((h) => String(h.id) === String(agent)).length, 0);
+
+    // --- HTTP level ------------------------------------------------------
+    const express = (await import('express')).default;
+    const { createApiV1Router } = await import('../src/api/v1/index.js');
+    const pool = new pg.Pool({ connectionString: url, max: 4 });
+
+    const appFor = (session) => {
+      const app = express();
+      const router = createApiV1Router({
+        pool,
+        validateSessionFn: async () => session,
+        verifyPasswordFn: async () => false,
+        createSessionFn: async () => ({ token: 'x', expiresAt: new Date(Date.now() + 60000) }),
+        revokeSessionFn: async () => {},
+        lockedSecondsFn: async () => 0,
+        recordFailedLoginFn: async () => {},
+        resetLoginAttemptsFn: async () => {}
+      });
+      app.use(express.json());
+      app.use('/api/v1', router);
+      return new Promise((r) => {
+        const s = app.listen(0, '127.0.0.1', () =>
+          r({ s, base: `http://127.0.0.1:${s.address().port}/api/v1` }));
+      });
+    };
+    const authFor = async (base) => {
+      const r = await fetch(`${base}/_health`);
+      const c = (r.headers.get('set-cookie') || '').match(/csrf_token=[^;]*/)?.[0];
+      return { cookie: `lwc_session=x; ${c}`, csrf: c?.split('=')[1] };
+    };
+    const send = (base, auth, method, path) => fetch(`${base}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', Cookie: auth.cookie }
+    }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+
+    // 1. AUTHORIZED: a real Platform Super Admin.
+    const psa = await appFor({
+      tenantId: t1, user: { id: admin, email: 'admin@t.local', name: 'A' },
+      roles: ['Platform Super Admin'], customAbilities: [], isPlatformSuperAdmin: true
+    });
+    const psaAuth = await authFor(psa.base);
+    const listed = await send(psa.base, psaAuth, 'GET', `/platform/escalation-managers?tenantId=${t1}`);
+    eq('a Platform Super Admin gets 200 from the escalation managers listing', listed.status, 200);
+    const listedHolders = listed.body?.data?.holders ?? [];
+    eq('and the holder is in the response',
+      listedHolders.filter((h) => String(h.id) === String(agent)).length, 1);
+    check('and the granted_at timestamp is present', listedHolders[0]?.granted_at != null);
+    check('the response carries the role name', listed.body?.data?.role === 'Escalation Manager');
+
+    // 2. The query still works with a non-UUID object_id present.
+    eq('a non-UUID object_id does not break the endpoint', listed.status, 200);
+
+    // 3. UNAUTHORIZED: a Company Admin must not reach the platform route.
+    const ca = await appFor({
+      tenantId: t1, user: { id: admin, email: 'admin@t.local', name: 'A' },
+      roles: ['Company Admin'], customAbilities: ['role.read']
+    });
+    const caAuth = await authFor(ca.base);
+    eq('a Company Admin is refused',
+      (await send(ca.base, caAuth, 'GET', `/platform/escalation-managers?tenantId=${t1}`)).status, 403);
+
+    // 4. The flag alone is not enough: the role has to be there too.
+    const flagged = await appFor({
+      tenantId: t1, user: { id: admin, email: 'admin@t.local', name: 'A' },
+      roles: ['Company Admin'], customAbilities: [], isPlatformSuperAdmin: true
+    });
+    const flaggedAuth = await authFor(flagged.base);
+    eq('the flag without the role is refused',
+      (await send(flagged.base, flaggedAuth, 'GET', `/platform/escalation-managers?tenantId=${t1}`)).status, 403);
+
+    // 5. CROSS-TENANT: asking for another company returns that company's list,
+    //    never this company's holders.
+    const crossListed = await send(psa.base, psaAuth, 'GET', `/platform/escalation-managers?tenantId=${t2}`);
+    eq('a Platform Super Admin asking about another company gets 200', crossListed.status, 200);
+    eq('and never sees this company holders',
+      (crossListed.body?.data?.holders ?? []).filter((h) => String(h.id) === String(agent)).length, 0);
+
+    // 6. The tenantId is required.
+    eq('a missing tenantId is a bad request',
+      (await send(psa.base, psaAuth, 'GET', '/platform/escalation-managers')).status, 400);
+
+    psa.s.close(); ca.s.close(); flagged.s.close();
+    await pool.end();
+  }
+
 } catch (e) {
   failures.push(`fatal: ${e?.code ?? ''} ${e?.message}`);
   console.error('\nfatal:', e?.code, e?.message);
@@ -726,7 +865,9 @@ console.log('='.repeat(64));
 // and that is exactly how this suite hid a broken migration ledger for a long
 // time. If the assertion count falls below the floor, something was silently
 // skipped, so the run fails even when every executed assertion passed.
-const MIN_ASSERTIONS = 111;
+// Raised from 111 to 127: section 14 (escalation managers) adds 16 assertions.
+// The floor is the measured count, so a silently skipped section still fails.
+const MIN_ASSERTIONS = 127;
 if (pass < MIN_ASSERTIONS) {
   console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
   console.log('  This is NOT a pass - sections were almost certainly skipped.');
