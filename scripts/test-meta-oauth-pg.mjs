@@ -1913,7 +1913,7 @@ try {
       db: DB, tenantId: t1, actorUserId: admin1, channelId: chB1B, scope: RESTRICTED_B1B
     });
     eq('the brand owner CAN OAuth-disconnect it', allowed.scope, 'oauth');
-    const { rows: afterAllowed } = await q(
+    const afterAllowed = await q(
       `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [chB1B, OAUTH]
     );
     eq('and its OAuth credential is removed', afterAllowed.rows[0].n, 0);
@@ -1960,11 +1960,11 @@ try {
     ]);
     const okCount = twoDisconnects.filter((r) => r.status === 'fulfilled').length;
     check('at least one of two simultaneous OAuth disconnects succeeded', okCount >= 1);
-    const { rows: concAfter } = await q(
+    const concAfter = await q(
       `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [chConc, OAUTH]
     );
     eq('exactly one OAuth credential remains-or-zero after concurrent disconnects', concAfter.rows[0].n, 0);
-    const { rows: concLegacy } = await q(
+    const concLegacy = await q(
       `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [chConc, LEGACY]
     );
     eq('the legacy credential survived the concurrent disconnects', concLegacy.rows[0].n, 1);
@@ -1972,7 +1972,7 @@ try {
       `SELECT status, oauth_provider FROM channels WHERE id=$1`, [chConc]
     );
     eq('the channel stayed active (a legacy credential still serves it)', concChan[0].status, 'active');
-    const { rows: concAudit } = await q(
+    const concAudit = await q(
       `SELECT count(*)::int n FROM audit_logs
         WHERE action='integrations.facebook.disconnect.oauth' AND object_id=$1`, [CP3]
     );
@@ -2000,7 +2000,7 @@ try {
         availablePages: await conn.listAvailablePages({ db: DB, userAccessToken: 'u' }),
         pageId: RP, db: DB
       }));
-    const { rows: rejectAudit } = await q(
+    const rejectAudit = await q(
       `SELECT metadata::text m FROM audit_logs
         WHERE action='integrations.facebook.connect.token_rejected' AND object_id=$1`, [RP]
     );
@@ -2010,7 +2010,7 @@ try {
     check('the audit records NO token', !/EAA-/.test(meta));
     check('the audit records NO app secret', !/test-app-secret/.test(meta));
     check('the audit records no free-text upstream message', !/not a real token|Error validating|system error/i.test(meta));
-    const { rows: rejectCreds } = await q(
+    const rejectCreds = await q(
       `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1`, [chReject]
     );
     eq('no credential was stored for the rejected token', rejectCreds.rows[0].n, 0);
@@ -2194,6 +2194,38 @@ try {
     eq('it does NOT require a reconnect', rowLegacyOnly.oauthRequiresReconnect, false);
     eq('it is not healthy as an OAuth connection', rowLegacyOnly.connectionHealthy, false);
     eq('its legacy credential is reported present', rowLegacyOnly.legacyCredentialPresent, true);
+
+    // ---- F1: the legacy credential's three facts, kept apart --------------
+    //
+    // A legacy credential with NO stated expiry is the normal state of the
+    // live Messenger/Comments integration. It is present, it is not known to
+    // be expired, and the unknown fact is PRESERVED rather than hidden.
+    eq('a legacy credential with no stated expiry is healthy (present, not known expired)',
+      rowLegacyOnly.legacyCredentialHealthy, true);
+    eq('a legacy credential with no stated expiry is NOT expired',
+      rowLegacyOnly.legacyCredentialExpired, false);
+    eq('a legacy credential with no stated expiry PRESERVES the unknown',
+      rowLegacyOnly.legacyCredentialExpiryUnknown, true);
+
+    // A legacy credential with a KNOWN expiry that has PASSED is the other
+    // half of the rule, and it is reported as expired rather than healthy.
+    const expiredLegacyChannel = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+       VALUES ($1,$2,'meta',$3,'Expired legacy','active') RETURNING id`, [t1, b1, '93400']
+    )).rows[0].id;
+    const elEnc = encrypt('EAA-expired-legacy');
+    await q(
+      `INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, expires_at, last_rotated_at)
+       VALUES ($1,$2,'page_access_token',$3,$4,now() - interval '1 day',now())`,
+      [t1, expiredLegacyChannel, elEnc.value, elEnc.iv]
+    );
+    const rowExpiredLegacy = (await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE }))
+      .find((c) => c.pageId === '93400');
+    check('a legacy channel with a known past expiry is listed', Boolean(rowExpiredLegacy));
+    eq('its legacy credential is present', rowExpiredLegacy.legacyCredentialPresent, true);
+    eq('a known past expiry IS reported as expired', rowExpiredLegacy.legacyCredentialExpired, true);
+    eq('a known past expiry is not "expiry unknown"', rowExpiredLegacy.legacyCredentialExpiryUnknown, false);
+    eq('a known past expiry is NOT healthy', rowExpiredLegacy.legacyCredentialHealthy, false);
 
     // --- and the same after an OAuth-only disconnect -----------------------
     const bothChannel = (await q(

@@ -270,6 +270,28 @@ describe('facebook API client: safe OAuth-only disconnect', () => {
       expect(apiSrc).toContain(f);
     }
   });
+
+  it('keeps the legacy credential facts separate from each other', () => {
+    // Presence, a confirmed expiry, an unknown expiry and the compatibility
+    // "healthy" state are four different facts and are reported as four
+    // fields, so a caller is never told a legacy credential is expired when
+    // the truth is that its expiry was never stated.
+    for (const f of [
+      'legacyCredentialPresent: boolean;',
+      'legacyCredentialExpired: boolean;',
+      'legacyCredentialExpiryUnknown: boolean;',
+      'legacyCredentialHealthy: boolean;'
+    ]) {
+      expect(apiSrc).toContain(f);
+    }
+  });
+
+  it('does not describe the legacy health flag as proof of live connectivity', () => {
+    const idx = apiSrc.indexOf('legacyCredentialHealthy: boolean;');
+    expect(idx).toBeGreaterThan(-1);
+    const doc = apiSrc.slice(Math.max(0, idx - 700), idx);
+    expect(doc).toMatch(/NOT a proof|not a proof/i);
+  });
 });
 
 describe('facebook connect page: a live legacy integration is never shown as removed', () => {

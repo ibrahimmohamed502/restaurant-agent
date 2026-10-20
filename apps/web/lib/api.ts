@@ -834,6 +834,26 @@ export type FacebookConnection = {
   credentialExpiresAt: string | null;
   /** The live Messenger/Comments integration is still using a legacy token. */
   legacyCredentialPresent: boolean;
+  /**
+   * A VALID expiry is known for the legacy credential and it has passed.
+   * False both when the expiry is unknown and when it is still in the future -
+   * `legacyCredentialExpiryUnknown` tells the two apart.
+   */
+  legacyCredentialExpired: boolean;
+  /**
+   * The legacy credential exists but Meta stated no expiry. This is PRESERVED
+   * rather than hidden, so a caller can always tell "we do not know the
+   * expiry" apart from "the expiry passed".
+   */
+  legacyCredentialExpiryUnknown: boolean;
+  /**
+   * The legacy credential is present and is not KNOWN to have expired.
+   *
+   * This is a COMPATIBILITY state about the CREDENTIAL. It is NOT a proof
+   * that the live integration currently answers: nothing in this API has
+   * spoken to Meta. A connectivity answer requires a real call.
+   */
+  legacyCredentialHealthy: boolean;
   /** B1 stored an OAuth credential for this Page. */
   oauthCredentialPresent: boolean;
   /** The OAuth credential is present and not known to be expired. */

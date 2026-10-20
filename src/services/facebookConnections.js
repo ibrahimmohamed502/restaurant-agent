@@ -269,6 +269,80 @@ export function assessCredentialState({ present = false, expiresAt = null, now =
   };
 }
 
+/**
+ * Assess a LEGACY credential.
+ *
+ * WHY THIS IS NOT THE OAUTH RULE
+ * -------------------------------
+ * The OAuth credential is judged strictly: an unknown expiry means "not
+ * provably valid", because B1 wrote that credential itself and knows exactly
+ * when it was issued and for how long.
+ *
+ * A legacy credential is a different animal. It was provisioned OUTSIDE B1, it
+ * has been serving the live Messenger/Comments integration for as long as
+ * that integration has existed, and Meta has normally stated NO expiry for it
+ * at all. Judging it by the OAuth rule would report a WORKING production
+ * integration as "not healthy" on every single page load - a false alarm about
+ * a live system.
+ *
+ * WHAT `healthy` MEANS HERE - AND WHAT IT DOES NOT MEAN
+ * ------------------------------------------------------
+ * "The credential is present and is not KNOWN to have expired." That is a
+ * COMPATIBILITY state, not a statement about live connectivity.
+ *
+ * It is NOT a proof that the integration currently answers. Nothing in this
+ * function has spoken to Meta, and nothing here can. A caller that needs a
+ * connectivity answer must make a real call; this field only describes the
+ * credential.
+ *
+ * THE THREE FACTS ARE KEPT APART
+ * ------------------------------
+ *   present        the credential row exists
+ *   expired        a VALID expiry is known AND it has passed
+ *   expiryUnknown  the credential exists but Meta stated no expiry
+ *
+ * The unknown case is PRESERVED, not hidden. A caller can always tell "we do
+ * not know the expiry" apart from "the expiry passed", and neither is ever
+ * silently rewritten into the other.
+ *
+ * @param {object}  args
+ * @param {boolean} args.present      a credential row exists
+ * @param {Date|string|null} args.expiresAt  the observed expiry, or null if unknown
+ * @param {number|Date} [args.now]    reference time, injectable for tests
+ */
+export function assessLegacyCredentialState({ present = false, expiresAt = null, now = Date.now() } = {}) {
+  if (!present) {
+    return {
+      // The credential does not exist. There is no expiry question to be
+      // uncertain about, so this is NOT reported as "expiry unknown".
+      present: false,
+      expired: false,
+      expiryUnknown: false,
+      healthy: false
+    };
+  }
+  if (expiresAt === null || expiresAt === undefined) {
+    return {
+      present: true,
+      // Not known to be expired - and that is the whole point.
+      expired: false,
+      // Meta stated no expiry. PRESERVED, not hidden.
+      expiryUnknown: true,
+      // Present and not known expired. A compatibility state, NOT a
+      // connectivity proof.
+      healthy: true
+    };
+  }
+  const at = expiresAt instanceof Date ? expiresAt.getTime() : new Date(expiresAt).getTime();
+  const expired = Number.isFinite(at) && at <= new Date(now).getTime();
+  return {
+    present: true,
+    expired,
+    expiryUnknown: false,
+    healthy: !expired
+  };
+}
+
 export class ConnectionError extends Error {
   constructor(code, message, detail = null) {
     super(message);
@@ -837,17 +911,19 @@ export async function listConnections({ db, tenantId, brandId = null, scope }) {
     const legacyPresent = Boolean(r.legacy_credential_present);
     const oauthPresent = Boolean(r.oauth_credential_present);
 
-    // The two connection kinds are assessed SEPARATELY.
+    // The two connection kinds are assessed SEPARATELY, with SEPARATE rules.
     //
-    // The legacy credential is the live Messenger/Comments integration. Its
-    // expiry is normally unknown (Meta stated none), and that has always been
-    // the working behaviour - treating it as expired would raise a false alarm
-    // on a running integration.
+    // The OAuth credential is judged strictly (an unknown expiry is not
+    // validity), because B1 wrote it and knows its lifetime.
     //
-    // The OAuth credential is judged strictly: presence is not validity, and an
-    // unknown expiry is not proof of validity either. A credential we cannot
-    // prove is alive is reported as needing a reconnect.
-    const legacyState = assessCredentialState({
+    // The legacy credential is the live Messenger/Comments integration. It was
+    // provisioned outside B1, Meta has normally stated no expiry for it, and
+    // that has always been the working behaviour - judging it by the OAuth
+    // rule would raise a false alarm about a running production integration.
+    // Its state therefore comes from assessLegacyCredentialState(), which
+    // keeps "present", "expired" and "expiry unknown" apart and never treats
+    // an unknown expiry as a defect.
+    const legacyState = assessLegacyCredentialState({
       present: legacyPresent,
       expiresAt: r.legacy_credential_expires_at ?? null
     });
@@ -901,7 +977,18 @@ export async function listConnections({ db, tenantId, brandId = null, scope }) {
       legacyCredentialPresent: legacyPresent,
       oauthCredentialPresent: oauthPresent,
       // Validity, kept apart from presence.
+      //
+      // The legacy fields describe the CREDENTIAL, not the connection's live
+      // reachability:
+      //   legacyCredentialPresent      the row exists
+      //   legacyCredentialExpired      a VALID expiry is known and it passed
+      //   legacyCredentialExpiryUnknown the row exists but Meta stated no expiry
+      //   legacyCredentialHealthy      present and not KNOWN to be expired -
+      //                                a compatibility state, NOT a proof that
+      //                                the integration currently answers
       legacyCredentialHealthy: legacyState.healthy,
+      legacyCredentialExpired: legacyState.expired,
+      legacyCredentialExpiryUnknown: legacyState.expiryUnknown,
       oauthCredentialHealthy: status.oauthHealthy,
       oauthCredentialExpired: status.oauthCredentialExpired,
       oauthCredentialExpiryUnknown: status.oauthCredentialExpiryUnknown,

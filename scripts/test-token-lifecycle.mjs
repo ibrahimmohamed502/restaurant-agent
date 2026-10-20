@@ -3,6 +3,7 @@
 import {
   assessCredentialState,
   assessConnectionStatus,
+  assessLegacyCredentialState,
   expiryFromInspection,
   assessGrantedScopes,
   CREDENTIAL_NEVER_EXPIRES_AT
@@ -214,6 +215,58 @@ c = assessConnectionStatus({
 check('a legacy-only channel does not need a reconnect', c.oauthRequiresReconnect === false);
 check('a legacy-only channel is not healthy', c.connectionHealthy === false);
 check('a legacy-only channel is not OAuth-connected', c.oauthConnected === false);
+
+console.log('');
+console.log('=== legacy credential state: a SEPARATE rule from OAuth ===');
+
+// 27. A legacy credential that does not exist.
+let l = assessLegacyCredentialState({ present: false, expiresAt: null, now: NOW });
+check('a missing legacy credential is not present', l.present === false);
+check('a missing legacy credential is not expired', l.expired === false);
+check('a missing legacy credential is not "expiry unknown" (there is nothing to be uncertain about)', l.expiryUnknown === false);
+check('a missing legacy credential is not healthy', l.healthy === false);
+
+// 28. A legacy credential that exists, with NO stated expiry. This is the
+// normal state of the live Messenger/Comments integration: Meta has never
+// stated an expiry for it.
+l = assessLegacyCredentialState({ present: true, expiresAt: null, now: NOW });
+check('a legacy credential with an unknown expiry is present', l.present === true);
+check('a legacy credential with an unknown expiry is NOT expired', l.expired === false);
+check('a legacy credential with an unknown expiry PRESERVES the unknown', l.expiryUnknown === true);
+check('a legacy credential with an unknown expiry is healthy (present, not known expired)', l.healthy === true);
+
+// 29. A legacy credential with a KNOWN future expiry.
+l = assessLegacyCredentialState({ present: true, expiresAt: FUTURE, now: NOW });
+check('a legacy credential with a future expiry is present', l.present === true);
+check('a legacy credential with a future expiry is not expired', l.expired === false);
+check('a legacy credential with a future expiry is not "expiry unknown"', l.expiryUnknown === false);
+check('a legacy credential with a future expiry is healthy', l.healthy === true);
+
+// 30. A legacy credential with a KNOWN expiry that has PASSED.
+l = assessLegacyCredentialState({ present: true, expiresAt: PAST, now: NOW });
+check('a legacy credential with a past expiry is expired', l.expired === true);
+check('a legacy credential with a past expiry is NOT healthy', l.healthy === false);
+check('a legacy credential with a past expiry is not "expiry unknown"', l.expiryUnknown === false);
+
+// 31. A string expiry (the shape the DB driver returns) is understood.
+l = assessLegacyCredentialState({ present: true, expiresAt: '2026-06-01T00:00:00Z', now: NOW });
+check('a legacy credential with a string expiry is understood', l.healthy === true);
+
+// 32. An expiry exactly at now counts as expired.
+l = assessLegacyCredentialState({ present: true, expiresAt: new Date(NOW), now: NOW });
+check('a legacy credential expiring exactly now is expired', l.expired === true);
+
+// 33. THE REGRESSION GUARD FOR F1: the legacy rule is INDEPENDENT of the
+// strict OAuth rule. An unknown expiry is "not provably valid" for a token
+// B1 wrote, and "not known expired" for a credential that has been serving a
+// live integration for years. Collapsing the two is what made the listing
+// report a working production integration as unhealthy.
+const legacyUnknown = assessLegacyCredentialState({ present: true, expiresAt: null, now: NOW });
+const oauthUnknown = assessCredentialState({ present: true, expiresAt: null, now: NOW });
+check('an unknown expiry is UNKNOWN for an OAuth credential', oauthUnknown.healthy === false);
+check('an unknown expiry is NOT a defect for a legacy credential', legacyUnknown.healthy === true);
+check('the two rules are deliberately different', legacyUnknown.healthy !== oauthUnknown.healthy);
+check('both preserve the unknown fact', legacyUnknown.expiryUnknown === true && oauthUnknown.expiryUnknown === true);
 
 console.log('');
 console.log('  ' + pass + ' passed, ' + failures.length + ' failed');
