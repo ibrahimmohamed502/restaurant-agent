@@ -2106,6 +2106,12 @@ try {
   {
     section('19 expiry tri-state, granted scopes and provider isolation');
 
+    // The legacy credentials this section seeds are encrypted at rest, exactly
+    // as production stores them. The helper is imported HERE, in this block's
+    // own scope: the crypto import in the earlier sections is a different
+    // lexical scope, and a lazy import is not hoisted.
+    const { encrypt } = await import('../src/db/crypto.js');
+
     // ---- Task 1: the expiry tri-state, end to end -------------------------
     //
     // Meta's `expires_at` is a THREE-way answer and the storage must keep the
