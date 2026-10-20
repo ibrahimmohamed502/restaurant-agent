@@ -2808,15 +2808,16 @@ console.log('='.repeat(64));
 //   187 -> 196 -> 229 were each pinned to a number that had actually been
 //   observed on a real run (runs 39218882467, 39232448510, ...).
 //   289 was pinned to the last verified count of that round.
-//   455 is the count MEASURED by GitHub CI run 39392987463, on commit
-//   670e333f314c81bc72adb7b7864c7d6f066f02e0, with every section from 1 to 20
+//   455 was the count MEASURED by CI run 39392987463 (commit 670e333).
+//   496 is the count MEASURED by CI run 39406300943, on commit
+//   ce752eed59fa0c4204d45cf0054afc1ed5cd3fcf, with every section from 1 to 21
 //   executed and zero failures.
 //
 // A static reading of this file once suggested the suite would execute roughly
 // 355 assertions. That was a PREDICTION from counting call sites, not a
 // measurement, and a floor set from a prediction is a floor that can fail a
-// fully green run for no reason. The floor was therefore pinned to a number
-// that really ran, and it is now raised to the MEASURED count of a complete
+// fully green run for no reason. The floor is therefore pinned to a number
+// that really ran, and it is raised to the MEASURED count of each complete
 // green run.
 //
 // The floor is deliberately not weakened, and no individual security
@@ -2825,7 +2826,7 @@ console.log('='.repeat(64));
 // The floor is precisely what would have caught the original defect: the suite
 // could report 196 passing while never once asserting that code_verifier is sent
 // at the exchange.
-const MIN_ASSERTIONS = 455;
+const MIN_ASSERTIONS = 496;
 if (pass < MIN_ASSERTIONS) {
   console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
   console.log('  This is NOT a pass - sections were almost certainly skipped.');
