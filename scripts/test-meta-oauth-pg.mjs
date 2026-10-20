@@ -2637,10 +2637,25 @@ try {
     // ---- a CRASHED holder releases the lock (restart recovery) -----------
     // A worker that dies mid-pass must not wedge the cleanup. The advisory
     // lock is session scoped, so the lock dies with the session.
-    const crasher = await pool.connect();
+    //
+    // This uses a STANDALONE client, never one from the pool. Closing a
+    // POOLED client ends the connection but leaves it registered in the pool's
+    // accounting, and pg-pool's shutdown waits for every client to come back
+    // to its idle list - so a pooled client that is ended instead of released
+    // wedges pool.end() forever. A standalone client is invisible to the pool,
+    // so it can be killed without touching the pool's bookkeeping.
+    const crasher = new pg.Client({ connectionString: url });
+    await crasher.connect();
     await crasher.query('SELECT pg_advisory_lock($1::bigint)', [LOCK]);
     await crasher.end();
-    const afterCrash = await state.runOAuthStateCleanup({ db: DB });
+    // The backend needs a moment to notice the closed socket, so the lock is
+    // released asynchronously. Poll for it instead of racing it.
+    let afterCrash = null;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      afterCrash = await state.runOAuthStateCleanup({ db: DB });
+      if (afterCrash.ran) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     eq('a crashed holder releases the lock, so a restarted worker can run', afterCrash.ran, true);
 
     // ---- idempotency ------------------------------------------------------
@@ -2765,7 +2780,14 @@ try {
   console.error('\nfatal:', e?.code, e?.message, e?.stack);
 } finally {
   for (const s of servers) { try { s.close(); } catch {} }
-  await pool.end().catch(() => {});
+  // BOUNDED shutdown. pg-pool's end() waits for every client to come back to
+  // its idle list, so one client that is ended instead of released would hang
+  // the whole suite until the job timeout - and the suite would never print its
+  // result. A leak must cost seconds, not the run.
+  await Promise.race([
+    pool.end().catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 5000))
+  ]);
   await client.end().catch(() => {});
 }
 
