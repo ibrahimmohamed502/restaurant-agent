@@ -2360,7 +2360,7 @@ try {
       }
     });
 
-    const connectCase = async (pageId) => conn.connectPage({
+    const connectCase = async (pageId, mode = 'connect') => conn.connectPage({
       tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
       availablePages: await conn.listAvailablePages({ db: DB, userAccessToken: 'u' }),
       pageId,
@@ -2539,7 +2539,7 @@ try {
       `INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
        VALUES ($1,$2,'page_access_token',$3,$4,now())`, [t1, bothChannel, bothEnc.value, bothEnc.iv]
     );
-    const rBoth = await connectCase('93300');
+    const rBoth = await connectCase('93300', 'reconnect');
     eq('the page with a legacy credential reconnects over OAuth', rBoth.pageId, '93300');
     const rowBoth = await rowFor('93300');
     check('the reconnected channel is listed', Boolean(rowBoth));
