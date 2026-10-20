@@ -1988,8 +1988,16 @@ try {
       post: async () => ({}),
       get: async (path, params) => {
         if (path === '/debug_token') return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: false } };
-        if (path === '/me/accounts') return { data: [{ pageId: RP, name: 'Reject page', category: 'Retail', tasks: ['MANAGE'],
-                     pageAccessToken: 'EAA-reject-923' }] };
+        // META'S OWN SHAPE, not our internal one.
+        //
+        // `/me/accounts` is Meta's response, so it carries `id` and
+        // `access_token`. `discoverPages()` is what turns those into the
+        // internal `pageId` / `pageAccessToken`. A mock that returns the
+        // INTERNAL names here is read as a page whose id is `undefined`, so
+        // the connect is refused as PAGE_NOT_IN_ACCOUNT long before the
+        // token rejection under test is ever reached.
+        if (path === '/me/accounts') return { data: [{ id: RP, name: 'Reject page', category: 'Retail', tasks: ['MANAGE'],
+                     access_token: 'EAA-reject-923' }] };
         return {};
       }
     });
