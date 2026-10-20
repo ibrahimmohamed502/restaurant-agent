@@ -2364,6 +2364,7 @@ try {
       tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
       availablePages: await conn.listAvailablePages({ db: DB, userAccessToken: 'u' }),
       pageId,
+      mode,
       requestedScopes: ['pages_show_list', 'pages_read_engagement'],
       db: DB
     });
