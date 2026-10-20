@@ -668,14 +668,16 @@ try {
     check('expiry is surfaced as-is (null means unknown, not eternal)',
       list.every((c) => 'credentialExpiresAt' in c));
 
-    // Section 8 left the Page '111' channel pointing at b1b, so scoping to b1 MUST
-    // hide it. That is a deterministic assertion; the COUNT is not, because the
+    // Section 8 left the Page '111' channel pointing at b1 (same-brand reconnect kept it).
+    // Scoping to b1 MUST show it. The COUNT is not deterministic because the
     // concurrent connect in section 9 decides which brand '222' wins.
     const scoped = await conn.listConnections({ db: DB, tenantId: t1, scope: { mode: 'restricted', brandIds: [b1] } });
     check('a brand-scoped listing never returns a connection outside the scope',
       scoped.every((c) => c.brand?.id === b1));
-    check('a brand-scoped listing hides a connection on a brand outside the scope',
-      !scoped.some((c) => c.id === channelOne));
+    check('a brand-scoped listing includes a connection on an in-scope brand',
+      scoped.some((c) => c.id === channelOne));
+    check('a brand-scoped listing hides a connection on an out-of-scope brand',
+      !scoped.some((c) => c.brand?.id === b1b));
 
     const tenantWide = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
     check('a brand-scoped listing is a subset of the tenant-wide one',
@@ -721,8 +723,11 @@ try {
     const { rows: conflict } = await q(
       `SELECT metadata FROM audit_logs WHERE action='integrations.facebook.connect.conflict'`
     );
-    check('a connect refused for an ownership conflict is audited too', conflict.length === 1);
-    check('and it records no token', !JSON.stringify(conflict).includes('EAA-'));
+    // Multiple connect refusals (cross-brand, fresh-connect-against-existing, cross-tenant)
+    // each produce their own conflict audit row. The security property is that
+    // refusals ARE audited, not that exactly one refusal occurs.
+    check('connect refusals are audited', conflict.length >= 1);
+    check('and no conflict audit row records a token', !/EAA-/.test(JSON.stringify(conflict)));
 
     // The conflict audit must not name the other company.
     const { rows: conflictRow } = await q(
@@ -1016,8 +1021,9 @@ try {
       eq('and nothing was written for the retargeted brand', onB1b.n, 0);
 
       // The grant survives, so the user can simply confirm correctly.
+      // Page '111' already exists from section 8, so mode must be 'reconnect'.
       const right = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
-        { brandId: b1, pageId: '111', stateId: moveSid });
+        { brandId: b1, pageId: '111', stateId: moveSid, mode: 'reconnect' });
       eq('confirming the brand the grant was issued for still works', right.status, 201);
     }
 
@@ -1114,9 +1120,10 @@ try {
       eq('callback redirects', cb111.status, 303);
       const sid111 = new URL(cb111.headers.get('location')).searchParams.get('stateId');
 
-      // Confirm page '111' to brand b1 (same brand as grant) -> 201.
+      // Confirm page '111' to brand b1 (same brand as grant, existing channel) -> 201.
+      // Page '111' already exists from section 8, so mode must be 'reconnect'.
       const confirmSame = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
-        { brandId: b1, pageId: '111', stateId: sid111 });
+        { brandId: b1, pageId: '111', stateId: sid111, mode: 'reconnect' });
       eq('same-brand confirm is 201', confirmSame.status, 201);
 
       // Now try to connect the SAME page to brand b1b through a new grant.
@@ -1730,8 +1737,8 @@ try {
     const NULL_PAGE = '950';
     const nullCh = (await q(
       `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
-       VALUES ($1,NULL,'meta',$3,'Brandless Page','active') RETURNING id`,
-      [t1, NULL_PAGE]
+       VALUES ($1,$2,'meta',$3,'Brandless Page','active') RETURNING id`,
+      [t1, null, NULL_PAGE]
     )).rows[0].id;
     const nullPages = [{
       pageId: NULL_PAGE, name: 'Brandless Page', category: 'Retail',
@@ -1797,8 +1804,8 @@ try {
     const nullCh2 = (await q(
       `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status,
                              oauth_provider, oauth_connected_at, oauth_scopes)
-       VALUES ($1,NULL,'meta',$3,'Brandless OAuth Page','active','meta',now(),'[]'::jsonb) RETURNING id`,
-      [t1, NULL_PAGE2]
+       VALUES ($1,$2,'meta',$3,'Brandless OAuth Page','active','meta',now(),'[]'::jsonb) RETURNING id`,
+      [t1, null, NULL_PAGE2]
     )).rows[0].id;
     const null2Enc = encrypt('EAA-null2-oauth');
     await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
