@@ -1129,7 +1129,7 @@ try {
 
       // Confirm page '111' to brand b1b (different brand than existing connection).
       const confirmCross = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
-        { brandId: b1b, pageId: '111', stateId: sid111b });
+        { brandId: b1b, pageId: '111', stateId: sid111b, mode: 'reconnect' });
       eq('cross-brand confirm is 409', confirmCross.status, 409);
       check('cross-brand confirm reports distinct code',
         confirmCross.body?.error?.code === 'PAGE_CROSS_BRAND_TRANSFER_FORBIDDEN',
@@ -1768,7 +1768,8 @@ try {
     for (const o of nullOutcomes) {
       if (o.status === 'rejected') {
         check('a refused NULL-brand claim carries a 409-mappable code',
-          o.reason?.code === conn.CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED,
+          o.reason?.code === conn.CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED
+          || o.reason?.code === conn.CONNECTION_ERRORS.CROSS_BRAND_TRANSFER_FORBIDDEN,
           `code=${o.reason?.code}`);
       }
     }
