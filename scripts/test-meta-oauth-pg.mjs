@@ -594,18 +594,40 @@ try {
     );
     eq('and no credential row either', credsAfter.n, 1);
 
-    // Reconnect inside the SAME company is allowed, and re-points the brand.
+    // Reconnect to a DIFFERENT brand of the same company is FORBIDDEN.
+    await rejects('cross-brand reconnect is refused',
+      conn.CONNECTION_ERRORS.CROSS_BRAND_TRANSFER_FORBIDDEN,
+      async () => conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1b, brandScope: T1_BOTH_BRANDS,
+        availablePages: await discovered(), pageId: '111', mode: 'reconnect', db: DB
+      }));
+    const { rows: [stillB1] } = await q(`SELECT brand_id FROM channels WHERE id=$1`, [channelOne]);
+    eq('cross-brand reconnect did not change the brand', String(stillB1.brand_id), String(b1));
+    const { rows: [stillOneCred] } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind='page_access_token_oauth'`, [channelOne]
+    );
+    eq('cross-brand reconnect created no extra OAuth credential', stillOneCred.n, 1);
+
+    // Reconnect to the SAME brand is allowed.
     const again = await conn.connectPage({
-      tenantId: t1, actorUserId: admin1, brandId: b1b, brandScope: T1_BOTH_BRANDS,
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
       availablePages: await discovered(), pageId: '111', mode: 'reconnect', db: DB
     });
-    check('reconnecting within the same company succeeds', again.pageId === '111');
-    eq('and it reuses the same channel row', again.channelId, channelOne);
-    const { rows: [moved] } = await q(`SELECT brand_id FROM channels WHERE id=$1`, [channelOne]);
-    eq('and the page now points at the second brand', String(moved.brand_id), String(b1b));
+    check('same-brand reconnect succeeds', again.pageId === '111');
+    eq('same-brand reconnect reuses the same channel row', again.channelId, channelOne);
+    const { rows: [stillB1Again] } = await q(`SELECT brand_id FROM channels WHERE id=$1`, [channelOne]);
+    eq('same-brand reconnect keeps the brand', String(stillB1Again.brand_id), String(b1));
 
     const { rows: [dup] } = await q(`SELECT count(*)::int n FROM channels WHERE external_id='111'`);
     eq('reconnect did not create a duplicate channel', dup.n, 1);
+
+    // Fresh connect against an existing branded channel is refused, same brand or not.
+    await rejects('fresh connect against existing branded page is refused',
+      conn.CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED,
+      async () => conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: await discovered(), pageId: '111', db: DB
+      }));
   }
 
   // ---------------------------------------------------------------- 9 concurrent connect
@@ -1079,6 +1101,55 @@ try {
     // exchange - while all 196 prior assertions stayed green, because the suite
     // only ever asserted the challenge went OUT. A mock that only COUNTS calls
     // cannot see a missing parameter; the mock below RECORDS them.
+    // ============================================ 14b API-level cross-brand refusal
+    // Proves cross-brand transfer is refused through the real HTTP router,
+    // with correct 409 status, audit record, and no state mutation.
+    {
+      // Connect page '111' to brand b1 through the full OAuth flow.
+      const start111 = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
+      eq('connect start for b1 is 200', start111.status, 200);
+      const cb111 = await fetch(
+        `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(start111.body.data.state)}`,
+        { redirect: 'manual' });
+      eq('callback redirects', cb111.status, 303);
+      const sid111 = new URL(cb111.headers.get('location')).searchParams.get('stateId');
+
+      // Confirm page '111' to brand b1 (same brand as grant) -> 201.
+      const confirmSame = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
+        { brandId: b1, pageId: '111', stateId: sid111 });
+      eq('same-brand confirm is 201', confirmSame.status, 201);
+
+      // Now try to connect the SAME page to brand b1b through a new grant.
+      const start111b = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1b });
+      eq('connect start for b1b is 200', start111b.status, 200);
+      const cb111b = await fetch(
+        `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(start111b.body.data.state)}`,
+        { redirect: 'manual' });
+      const sid111b = new URL(cb111b.headers.get('location')).searchParams.get('stateId');
+
+      // Confirm page '111' to brand b1b (different brand than existing connection).
+      const confirmCross = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
+        { brandId: b1b, pageId: '111', stateId: sid111b });
+      eq('cross-brand confirm is 409', confirmCross.status, 409);
+      check('cross-brand confirm reports distinct code',
+        confirmCross.body?.error?.code === 'PAGE_CROSS_BRAND_TRANSFER_FORBIDDEN',
+        `code=${confirmCross.body?.error?.code}`);
+
+      // Brand on the channel is unchanged.
+      const { rows: [chan111] } = await q(`SELECT brand_id FROM channels WHERE external_id='111' AND provider='meta'`);
+      eq('page still belongs to brand b1 after refused cross-brand confirm',
+        String(chan111.brand_id), String(b1));
+
+      // Audit records the refusal.
+      const { rows: crossAudit } = await q(
+        `SELECT metadata::text m FROM audit_logs
+          WHERE action='integrations.facebook.connect.conflict'
+            AND object_id='111'
+            AND metadata::text LIKE '%cross_brand_transfer_forbidden%'`);
+      eq('cross-brand refusal is audited', crossAudit.length >= 1);
+      check('audit records no token', !/EAA-/.test(JSON.stringify(crossAudit)));
+    }
+
     section('15 PKCE verifier round trip and config_id');
 
     {
@@ -1556,8 +1627,10 @@ try {
     // The service contract EXPLICITLY permits a same-tenant, same-brand,
     // same-Page reconnect: the routing channel is found by an explicit
     // provider='meta' + tenant_id predicate, and a late arrival REPLACES the
-    // credential (facebookConnections.js: "Same tenant, same routing channel:
-    // reconnect, or move to a different brand of the same company").
+    // credential. Cross-brand reassignment is forbidden: reconnect to a
+    // different brand is refused (facebookConnections.js: cross-brand transfer
+    // is rejected under mode='reconnect'; mode='connect' against an existing
+    // channel is always refused).
     //
     // So "how many of the three won" is a TIMING question, not a security
     // property: a late arrival may find the routing channel and replace the
@@ -1639,6 +1712,118 @@ try {
     check('no audit row contains a token', !/EAA-/.test(auditBlob));
     check('no audit row contains an app secret', !/test-app-secret/.test(auditBlob));
 
+    metaOAuth.resetGraphTransport();
+  }
+
+  // ============================================= 16b cross-brand transfer prohibition
+  // New tests proving cross-brand reassignment is refused in BOTH modes,
+  // including concurrent first-connect and legacy NULL-brand claims.
+  section('16b cross-brand transfer prohibition');
+
+  {
+    const LEGACY = conn.CREDENTIAL_KIND_LEGACY;
+    const OAUTH = conn.CREDENTIAL_KIND_OAUTH;
+
+    // ---- brandless (NULL brand_id) channel: first brand assignment -------
+    // A brandless legacy channel exists. Two concurrent connect attempts with
+    // DIFFERENT brands must produce exactly one owner.
+    const NULL_PAGE = '950';
+    const nullCh = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+       VALUES ($1,NULL,'meta',$3,'Brandless Page','active') RETURNING id`,
+      [t1, NULL_PAGE]
+    )).rows[0].id;
+    const nullPages = [{
+      pageId: NULL_PAGE, name: 'Brandless Page', category: 'Retail',
+      tasks: ['MANAGE', 'CREATE_CONTENT', 'MODERATE'],
+      pageAccessToken: 'EAA-page-950'
+    }];
+
+    metaOAuth.setGraphTransport({
+      post: async () => ({}),
+      get: async (path, params) => {
+        if (path === '/debug_token') {
+          return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true,
+            profile_id: NULL_PAGE, scopes: ['pages_show_list'], expires_at: 0 } };
+        }
+        if (path === '/me/accounts') return { data: nullPages };
+        return {};
+      }
+    });
+
+    const nullOutcomes = await Promise.allSettled([
+      conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: nullPages, pageId: NULL_PAGE, mode: 'reconnect', db: DB
+      }),
+      conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1b, brandScope: T1_BOTH_BRANDS,
+        availablePages: nullPages, pageId: NULL_PAGE, mode: 'reconnect', db: DB
+      })
+    ]);
+    const nullWon = nullOutcomes.filter((o) => o.status === 'fulfilled').length;
+    const nullLost = nullOutcomes.filter((o) => o.status === 'rejected').length;
+    eq('exactly one concurrent NULL-brand claim wins', nullWon, 1);
+    eq('the other NULL-brand claim is refused', nullLost, 1);
+    for (const o of nullOutcomes) {
+      if (o.status === 'rejected') {
+        check('a refused NULL-brand claim carries a 409-mappable code',
+          o.reason?.code === conn.CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED,
+          `code=${o.reason?.code}`);
+      }
+    }
+    const { rows: nullChannels } = await q(
+      `SELECT count(*)::int n FROM channels WHERE external_id=$1 AND provider='meta'`, [NULL_PAGE]
+    );
+    eq('exactly one routing channel after concurrent NULL-brand claims', nullChannels[0].n, 1);
+    const { rows: nullBrand } = await q(
+      `SELECT brand_id FROM channels WHERE external_id=$1 AND provider='meta'`, [NULL_PAGE]
+    );
+    check('the surviving NULL-brand channel is on b1 or b1b',
+      String(nullBrand[0].brand_id) === String(b1) || String(nullBrand[0].brand_id) === String(b1b));
+    const { rows: nullCreds } = await q(
+      `SELECT count(*)::int n FROM provider_credentials pc JOIN channels c ON c.id=pc.channel_id
+        WHERE c.external_id=$1 AND pc.kind=$2`, [NULL_PAGE, OAUTH]
+    );
+    eq('exactly one OAuth credential after concurrent NULL-brand claims', nullCreds[0].n, 1);
+
+    metaOAuth.resetGraphTransport();
+
+    // ---- brandless channel with existing OAuth credential: refused -------
+    // A brandless channel that already has an OAuth credential must not be
+    // assigned a brand via reconnect.
+    const NULL_PAGE2 = '951';
+    const nullCh2 = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status,
+                             oauth_provider, oauth_connected_at, oauth_scopes)
+       VALUES ($1,NULL,'meta',$3,'Brandless OAuth Page','active','meta',now(),'[]'::jsonb) RETURNING id`,
+      [t1, NULL_PAGE2]
+    )).rows[0].id;
+    const null2Enc = encrypt('EAA-null2-oauth');
+    await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+             VALUES ($1,$2,$3,$4,$5,now())`, [t1, nullCh2, OAUTH, null2Enc.value, null2Enc.iv]);
+
+    const null2Pages = [{
+      pageId: NULL_PAGE2, name: 'Brandless OAuth Page', category: 'Retail',
+      tasks: ['MANAGE'], pageAccessToken: 'EAA-page-951'
+    }];
+    metaOAuth.setGraphTransport({
+      post: async () => ({}),
+      get: async (path, params) => {
+        if (path === '/debug_token') {
+          return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true,
+            profile_id: NULL_PAGE2, scopes: ['pages_show_list'], expires_at: 0 } };
+        }
+        if (path === '/me/accounts') return { data: null2Pages };
+        return {};
+      }
+    });
+    await rejects('reconnect on brandless channel with OAuth is refused',
+      conn.CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED,
+      () => conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: null2Pages, pageId: NULL_PAGE2, mode: 'reconnect', db: DB
+      }));
     metaOAuth.resetGraphTransport();
   }
 

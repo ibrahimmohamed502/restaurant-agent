@@ -1088,7 +1088,8 @@
       "CONNECTION_TOKEN_REJECTED": "Facebook issued a token that cannot be used for this Page. Please start the connection again.",
       "CONNECTION_LEGACY_CREDENTIAL_PRESENT": "This Facebook Page is still connected through an older setup. Disconnecting it here would stop that working connection.",
       "NETWORK_ERROR": "The request could not be completed. Check your connection and try again.",
-      "BRAND_DOES_NOT_MATCH_GRANT": "This authorization was started for a different brand. Start again and choose this brand before connecting to Facebook."
+      "BRAND_DOES_NOT_MATCH_GRANT": "This authorization was started for a different brand. Start again and choose this brand before connecting to Facebook.",
+      "CROSS_BRAND_TRANSFER_FORBIDDEN": "This Facebook Page is already connected to a different brand. Reconnecting is only allowed to the same brand."
     }
   }
 }

@@ -46,6 +46,7 @@ import {
   type DiscoverablePage,
   type FacebookConnection
 } from '@/lib/api';
+import { selectConfirmMode } from './selectConfirmMode';
 
 type Phase =
   | 'loading'
@@ -75,7 +76,8 @@ type KnownError =
   | 'META_CODE_EXCHANGE_FAILED'
   | 'NETWORK_ERROR'
   | 'CONNECTION_TOKEN_REJECTED'
-  | 'CONNECTION_LEGACY_CREDENTIAL_PRESENT';
+  | 'CONNECTION_LEGACY_CREDENTIAL_PRESENT'
+  | 'CROSS_BRAND_TRANSFER_FORBIDDEN';
 
 const isKnownError = (code: string): code is KnownError =>
   [
@@ -90,7 +92,9 @@ const isKnownError = (code: string): code is KnownError =>
     'CONNECTION_TOKEN_REJECTED',
     // This channel still carries a legacy credential, so disconnecting it would
     // stop a working integration.
-    'CONNECTION_LEGACY_CREDENTIAL_PRESENT'
+    'CONNECTION_LEGACY_CREDENTIAL_PRESENT',
+    // The page is already connected to a different brand.
+    'CROSS_BRAND_TRANSFER_FORBIDDEN'
   ].includes(code);
 
 export default function FacebookConnectPage() {
@@ -221,11 +225,18 @@ export default function FacebookConnectPage() {
     setPhase('confirming');
     try {
       const existing = connections.find((c) => c.pageId === selectedPage);
+      const selection = selectConfirmMode(existing, targetBrand);
+      if (selection.mode === 'refuse') {
+        setErrorCode(selection.reason);
+        setPhase('idle');
+        return;
+      }
+      const mode = selection.mode;
       await facebookApi.confirm({
         brandId: targetBrand,
         pageId: selectedPage,
         stateId,
-        mode: existing ? 'reconnect' : 'connect'
+        mode
       });
       // Drop the spent grant from the URL so a refresh cannot replay it.
       router.replace('/integrations/facebook');

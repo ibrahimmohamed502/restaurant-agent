@@ -43,6 +43,9 @@ export const CONNECTION_ERRORS = {
   PAGE_NOT_CONNECTABLE: 'PAGE_NOT_CONNECTABLE',
   PAGE_OWNED_BY_ANOTHER_TENANT: 'PAGE_OWNED_BY_ANOTHER_TENANT',
   PAGE_ALREADY_CONNECTED: 'PAGE_ALREADY_CONNECTED',
+  // Reconnect is permitted only for the same authorized brand; a different
+  // brand is a forbidden transfer, not a silent reassignment.
+  CROSS_BRAND_TRANSFER_FORBIDDEN: 'PAGE_CROSS_BRAND_TRANSFER_FORBIDDEN',
   CHANNEL_NOT_FOUND: 'CHANNEL_NOT_FOUND',
   CREDENTIAL_MISSING: 'CREDENTIAL_MISSING',
   UPSTREAM_ERROR: 'CONNECTION_UPSTREAM_ERROR',
@@ -354,6 +357,33 @@ export class ConnectionError extends Error {
 
 function fail(code, message, detail = null) {
   throw new ConnectionError(code, message, detail);
+}
+
+/**
+ * Record a refused connect as a security event.
+ *
+ * Written through the transaction client AFTER ROLLBACK so the audit record
+ * survives the rolled-back connection attempt. Does not swallow errors — a
+ * failed audit write is logged, but the connection refusal is still reported.
+ */
+async function recordConnectConflictAudit({
+  client,
+  tenantId,
+  actorUserId,
+  pageId,
+  actorIp,
+  reason,
+  ...metadata
+}) {
+  try {
+    await client.query(
+      `INSERT INTO audit_logs (tenant_id, actor_user_id, action, object_type, object_id, ip, metadata)
+       VALUES ($1,$2,'integrations.facebook.connect.conflict','channel',$3,$4,$5::jsonb)`,
+      [tenantId, actorUserId, pageId, actorIp, JSON.stringify({ reason, ...metadata })]
+    );
+  } catch (auditErr) {
+    console.error('connect conflict audit write failed:', auditErr?.message);
+  }
 }
 
 /**
@@ -718,17 +748,76 @@ async function runConnectTransaction({
 
     let channelId;
     if (routing) {
-      // Same tenant, same routing channel: reconnect, or move to a different
-      // brand of the same company.
-      //
-      // The pre-existing global unique index on external_id means we UPDATE the
-      // row rather than inserting a second one. `channels` has no updated_at
-      // column, so the connection timestamp is the only freshness marker.
-      //
-      // CRITICAL: the legacy credential is NOT deleted. The OAuth credential is
-      // stored under its own kind, so the live Messenger/Comments resolver -
-      // which reads only `page_access_token` - keeps using exactly the token it
-      // uses today.
+      // A fresh connect must never re-point an existing channel, whether to
+      // the same brand or a different one. Reconnect is the only path that may
+      // update an existing channel.
+      if (mode === 'connect') {
+        await client.query('ROLLBACK');
+        await recordConnectConflictAudit({
+          client,
+          tenantId,
+          actorUserId,
+          pageId: chosen.pageId,
+          actorIp,
+          reason: 'page_already_connected',
+          existingBrand: routing.brand_id
+        });
+        fail(CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED, 'this Facebook page is already connected');
+      }
+
+      // mode === 'reconnect'. A different brand is a forbidden transfer.
+      if (routing.brand_id && String(routing.brand_id) !== String(brandId)) {
+        await client.query('ROLLBACK');
+        await recordConnectConflictAudit({
+          client,
+          tenantId,
+          actorUserId,
+          pageId: chosen.pageId,
+          actorIp,
+          reason: 'cross_brand_transfer_forbidden',
+          existingBrand: routing.brand_id,
+          requestedBrand: brandId
+        });
+        fail(
+          CONNECTION_ERRORS.CROSS_BRAND_TRANSFER_FORBIDDEN,
+          'this Facebook page is already connected to a different brand'
+        );
+      }
+
+      // brand_id IS NULL: first brand assignment on a brandless (legacy or
+      // company-wide) channel. Verify existing credential state before
+      // permitting the assignment — NULL brand is not proof of an unclaimed
+      // Page.
+      if (!routing.brand_id) {
+        const { rows: credRows } = await client.query(
+          `SELECT kind FROM provider_credentials WHERE channel_id = $1 AND tenant_id = $2`,
+          [routing.id, tenantId]
+        );
+        const hasOAuth = credRows.some((r) => r.kind === CREDENTIAL_KIND_OAUTH);
+        if (hasOAuth) {
+          await client.query('ROLLBACK');
+          await recordConnectConflictAudit({
+            client,
+            tenantId,
+            actorUserId,
+            pageId: chosen.pageId,
+            actorIp,
+            reason: 'oauth_already_connected'
+          });
+          fail(
+            CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED,
+            'this Facebook page already has an OAuth connection'
+          );
+        }
+        // Brandless channel with no OAuth credential: proceed to first brand
+        // assignment below. A legacy credential, if present, is left untouched.
+      }
+
+      // Same-brand reconnect, or first brand assignment on a brandless
+      // channel. The legacy credential is NOT deleted. The OAuth credential
+      // is stored under its own kind, so the live Messenger/Comments resolver
+      // - which reads only `page_access_token` - keeps using exactly the token
+      // it uses today.
       const { rows } = await client.query(
         `UPDATE channels
             SET brand_id = $3,

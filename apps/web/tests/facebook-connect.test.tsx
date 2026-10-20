@@ -13,6 +13,8 @@ vi.mock('next/navigation', () => ({
 }));
 
 import FacebookConnectPage from '@/app/(app)/integrations/facebook/page';
+import { selectConfirmMode } from '@/app/(app)/integrations/facebook/selectConfirmMode';
+import type { FacebookConnection } from '@/lib/api';
 import en from '@/messages/en.json';
 import ar from '@/messages/ar.json';
 
@@ -251,6 +253,45 @@ describe('facebook connect page: unified connection status', () => {
     for (const l of healthLines) {
       expect(l).not.toContain('credentialPresent');
     }
+  });
+});
+
+describe('facebook connect page: confirm mode selection', () => {
+  // Behavioral tests of selectConfirmMode: real inputs → real outputs,
+  // not source-text inspection.
+  const targetBrand = 'brand-aaa-0000-0000-0000-000000000001';
+
+  it('selects connect for a brand-new page (no existing connection)', () => {
+    const result = selectConfirmMode(undefined, targetBrand);
+    expect(result.mode).toBe('connect');
+  });
+
+  it('selects reconnect for same-brand existing connection', () => {
+    const result = selectConfirmMode(
+      { pageId: 'page-1', brand: { id: targetBrand, name: 'Brand A' } } as FacebookConnection,
+      targetBrand
+    );
+    expect(result.mode).toBe('reconnect');
+  });
+
+  it('refuses reconnect to a different brand', () => {
+    const result = selectConfirmMode(
+      {
+        pageId: 'page-1',
+        brand: { id: 'brand-bbb-0000-0000-0000-000000000002', name: 'Brand B' }
+      } as FacebookConnection,
+      targetBrand
+    );
+    expect(result.mode).toBe('refuse');
+    expect((result as { reason: string }).reason).toBe('CROSS_BRAND_TRANSFER_FORBIDDEN');
+  });
+
+  it('selects reconnect for a brandless legacy channel (first brand assignment)', () => {
+    const result = selectConfirmMode(
+      { pageId: 'page-1', brand: null } as FacebookConnection,
+      targetBrand
+    );
+    expect(result.mode).toBe('reconnect');
   });
 });
 
