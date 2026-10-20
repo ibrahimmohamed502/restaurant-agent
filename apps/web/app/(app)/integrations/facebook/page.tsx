@@ -73,7 +73,9 @@ type KnownError =
   | 'OAUTH_STATE_MISMATCH'
   | 'META_UPSTREAM_UNAVAILABLE'
   | 'META_CODE_EXCHANGE_FAILED'
-  | 'NETWORK_ERROR';
+  | 'NETWORK_ERROR'
+  | 'CONNECTION_TOKEN_REJECTED'
+  | 'CONNECTION_LEGACY_CREDENTIAL_PRESENT';
 
 const isKnownError = (code: string): code is KnownError =>
   [
@@ -83,7 +85,12 @@ const isKnownError = (code: string): code is KnownError =>
     'OAUTH_STATE_ALREADY_USED', 'OAUTH_STATE_NOT_FOUND', 'OAUTH_STATE_MISMATCH',
     'META_UPSTREAM_UNAVAILABLE', 'META_CODE_EXCHANGE_FAILED', 'NETWORK_ERROR',
     // The grant is minted for one brand; the server refuses a retarget.
-    'BRAND_DOES_NOT_MATCH_GRANT'
+    'BRAND_DOES_NOT_MATCH_GRANT',
+    // The token Meta issued could not be used for this connection.
+    'CONNECTION_TOKEN_REJECTED',
+    // This channel still carries a legacy credential, so disconnecting it would
+    // stop a working integration.
+    'CONNECTION_LEGACY_CREDENTIAL_PRESENT'
   ].includes(code);
 
 export default function FacebookConnectPage() {
@@ -157,7 +164,18 @@ export default function FacebookConnectPage() {
       }
 
       // Fresh visit: show what is already connected, and offer to add more.
-      const needsWork = list.some((c) => !c.credentialPresent || c.status !== 'active');
+      // A Page can carry a healthy legacy integration AND an expired OAuth
+    // credential. The legacy one says nothing about the OAuth token, so the
+    // OAuth connection is judged on its own.
+    // ONE rule, computed by the API. The UI does not re-derive health: that is
+    // what stopped the badge, the row and the page phase from disagreeing.
+    // A legacy-only row is a LIVE Messenger/Comments integration, not a
+    // connection that needs work. Only an OAuth-connected row can be asking
+    // for a reconnect, and only an OAuth-connected row that is not active is a
+    // problem in its own right.
+    const needsWork = list.some(
+      (c) => c.oauthRequiresReconnect || (c.oauthConnected && c.status !== 'active')
+    );
       setPhase(needsWork && list.length > 0 ? 'needsReconnect' : 'idle');
     };
 
@@ -226,9 +244,18 @@ export default function FacebookConnectPage() {
     setErrorCode(null);
     setNotice(null);
     try {
-      await facebookApi.disconnect(channelId);
+      // A Page that still carries a legacy credential is running a live
+      // Messenger/Comments integration. A FULL disconnect would stop it, so the
+      // safe operation is used instead: remove only the OAuth link and leave
+      // the legacy integration exactly as it is.
+      const target = connections.find((c) => c.id === channelId);
+      const scope = target?.legacyCredentialPresent ? 'oauth' : 'full';
+      const result = await facebookApi.disconnect(channelId, scope);
       const list = await loadConnections();
       setPhase(list.length > 0 ? 'needsReconnect' : 'idle');
+      if (scope === 'oauth') {
+        setNotice(result?.scope === 'oauth' ? 'facebook.oauthRemoved' : null);
+      }
     } catch (e) {
       setErrorCode((e as { code?: string })?.code ?? 'NETWORK_ERROR');
       setPhase('connected');
@@ -245,7 +272,11 @@ export default function FacebookConnectPage() {
   }
 
   const busy = phase === 'starting' || phase === 'confirming';
-  const connectedCount = connections.filter((c) => c.credentialPresent && c.status === 'active').length;
+  // Uses the API's single rule. A legacy credential no longer makes an expired
+  // OAuth token count as connected.
+  const connectedCount = connections.filter(
+    (c) => c.connectionHealthy && c.status === 'active'
+  ).length;
   // Rendered as its own card so a confirm-in-flight keeps its button label stable
   // while still telling the user something is happening.
   const confirmLabel = phase === 'confirming' ? 'states.picking.confirming' : 'states.picking.confirm';
@@ -402,7 +433,13 @@ export default function FacebookConnectPage() {
           </CardHeader>
           <CardContent className="space-y-2.5">
             {connections.map((c) => {
-              const live = c.credentialPresent && c.status === 'active';
+              // The API's single rule, not a local re-derivation.
+              const live = c.connectionHealthy && c.status === 'active';
+              // Not OAuth-connected, but the live Messenger/Comments integration
+              // is still serving this Page. It is ACTIVE. Showing it as removed,
+              // or as "needs reconnect", or offering a disconnect that the
+              // server will refuse, would all be lies.
+              const legacyOnly = c.legacyOnly;
               return (
                 <div key={c.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border px-3 py-2.5">
                   <div className="min-w-0">
@@ -412,19 +449,41 @@ export default function FacebookConnectPage() {
                     <p className="truncate text-xs text-muted-foreground">
                       {c.brand?.name || t('noBrand')}
                     </p>
+                    {c.oauthConnected ? (
+                      // The scopes Facebook CONFIRMED. The requested ones are
+                      // shown only when nothing was confirmed, and are labelled
+                      // as a request - never as a grant.
+                      <p className="truncate text-xs text-muted-foreground">
+                        {c.scopesVerified
+                          ? t('connections.scopesConfirmed', {
+                              scopes: (c.grantedScopes ?? []).join(', ') || '-',
+                            })
+                          : t('connections.scopesUnconfirmed', {
+                              requested: (c.requestedScopes ?? []).join(', ') || '-',
+                            })}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge variant={live ? 'success' : 'warning'}>
-                      {t(live ? 'status.connected' : 'status.needsReconnect')}
+                    <Badge variant={live ? 'success' : legacyOnly ? 'neutral' : 'warning'}>
+                      {t(
+                        live
+                          ? 'status.connected'
+                          : legacyOnly
+                            ? 'status.legacyOnly'
+                            : 'status.needsReconnect'
+                      )}
                     </Badge>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => void disconnect(c.id)}
-                      aria-label={t('connections.disconnect')}
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden />
-                    </Button>
+                    {legacyOnly ? null : (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void disconnect(c.id)}
+                        aria-label={t('connections.disconnect')}
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden />
+                      </Button>
+                    )}
                   </div>
                 </div>
               );

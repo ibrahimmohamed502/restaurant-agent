@@ -45,6 +45,7 @@ import {
   connectPage,
   listConnections,
   disconnectPage,
+  disconnectOAuthConnection,
   ConnectionError,
   CONNECTION_ERRORS
 } from '../../services/facebookConnections.js';
@@ -288,9 +289,15 @@ export function createMetaOAuthRouter({ pool }) {
           // Meta's description are never recorded.
           metadata: { upstream: e.code }
         });
+        // A browser redirect, for the same reason as the discovery failure
+        // below: the user is returning from Meta's consent screen and needs a
+        // page with an explanation, not a JSON body.
+        if (e instanceof MetaOAuthError) {
+          return res.redirect(303, postLoginUrl({ error: e.code }));
+        }
         const sent = sendServiceError(res, e);
         if (sent) return sent;
-        return apiError(res, e instanceof OAuthStateError ? statusForStateError(e.code) : 502, e.code, e.message);
+        return apiError(res, statusForStateError(e.code), e.code, e.message);
       }
       throw e;
     }
@@ -302,6 +309,13 @@ export function createMetaOAuthRouter({ pool }) {
     } catch (e) {
       // Clear the parked grant on any failure so it cannot linger unused.
       await takeUserToken({ stateId: claimed.id, db: req.db, destroy: true }).catch(() => {});
+      // The callback is a BROWSER REDIRECT, not an API call. A person has just
+      // come back from Meta's consent screen; showing them raw JSON is a dead
+      // end with no way forward. Redirect into the app with our own error code
+      // so the connect page can explain what happened and offer a retry.
+      if (e instanceof ConnectionError) {
+        return res.redirect(303, postLoginUrl({ error: e.code }));
+      }
       const sent = sendServiceError(res, e);
       if (sent) return sent;
       if (e instanceof MetaOAuthError) return apiError(res, 502, e.code, e.message);
@@ -478,7 +492,9 @@ export function createMetaOAuthRouter({ pool }) {
         brandScope: scope,
         availablePages,
         pageId: String(pageId),
-        scopes: B1_SCOPES,
+        // What B1 ASKED for. The service stores what Meta CONFIRMED, which it
+        // reads from the token inspection - never this list.
+        requestedScopes: B1_SCOPES,
         actorIp: req.ip,
         mode: mode === 'reconnect' ? 'reconnect' : 'connect',
         db: pool
@@ -530,14 +546,35 @@ export function createMetaOAuthRouter({ pool }) {
     if (!UUID.test(String(req.params.id))) {
       return apiError(res, 400, 'VALIDATION_ERROR', 'connection id must be a uuid');
     }
+    // scope=oauth removes ONLY the OAuth connection. The legacy credential, the
+    // Messenger/Comments channels and an active legacy channel are untouched.
+    // The default (full) removes the channel and is refused on a legacy-
+    // dependent channel, because that would stop a working integration.
+    const scope = String(req.query?.scope || 'full');
+    if (scope !== 'full' && scope !== 'oauth') {
+      return apiError(res, 400, 'VALIDATION_ERROR', 'scope must be "full" or "oauth"');
+    }
     try {
-      const result = await disconnectPage({
-        db: pool,
-        tenantId: req.v1?.tenantId,
-        actorUserId: req.v1?.user?.id,
-        channelId: String(req.params.id),
-        actorIp: req.ip
-      });
+      const result = scope === 'oauth'
+        ? await disconnectOAuthConnection({
+          db: pool,
+          tenantId: req.v1?.tenantId,
+          actorUserId: req.v1?.user?.id,
+          channelId: String(req.params.id),
+          // The authenticated session's brand scope. A restricted Supervisor must
+          // not be able to disconnect another brand's connection inside their own
+          // tenant, so the scope is enforced server-side, not in the UI.
+          scope: brandScopeFromSession(req.v1),
+          actorIp: req.ip
+        })
+        : await disconnectPage({
+          db: pool,
+          tenantId: req.v1?.tenantId,
+          actorUserId: req.v1?.user?.id,
+          channelId: String(req.params.id),
+          scope: brandScopeFromSession(req.v1),
+          actorIp: req.ip
+        });
       return res.json({ data: result });
     } catch (e) {
       const sent = sendServiceError(res, e);

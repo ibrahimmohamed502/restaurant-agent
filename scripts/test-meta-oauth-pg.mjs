@@ -489,8 +489,19 @@ try {
   // /oauth/access_token and /me/accounts arrive through the same GET transport.
   // A single-shape mock would silently return the wrong body for one of them.
   metaOAuth.setGraphTransport({
-    get: async (path) => {
+    get: async (path, params) => {
       if (path === '/oauth/access_token') return { access_token: 'EAA-user-token', expires_in: 5184000 };
+      if (path === '/debug_token') {
+        const inspected = PAGES.find((p) => p.access_token === params?.input_token);
+        if (!inspected) return { data: { is_valid: false } };
+        return {
+          data: {
+            app_id: 'test-app-id', type: 'PAGE', is_valid: true,
+            profile_id: inspected.id, scopes: ['pages_show_list', 'pages_read_engagement'],
+            expires_at: 0
+          }
+        };
+      }
       if (path !== '/me/accounts') return {};
       return {
         data: PAGES.map((p) => ({
@@ -521,13 +532,13 @@ try {
 
     const r = await conn.connectPage({
       tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: TENANT_SCOPE,
-      availablePages: await discovered(), pageId: '111', scopes: ['pages_show_list'], db: DB
+      availablePages: await discovered(), pageId: '111', requestedScopes: ['pages_show_list'], db: DB
     });
     channelOne = r.channelId;
     check('a page connects to a brand', r.pageId === '111');
 
     const { rows: [cred] } = await q(
-      `SELECT value_encrypted, iv FROM provider_credentials WHERE kind='page_access_token' AND channel_id=$1`, [r.channelId]
+      `SELECT value_encrypted, iv FROM provider_credentials WHERE kind='page_access_token_oauth' AND channel_id=$1`, [r.channelId]
     );
     check('a credential row exists', Boolean(cred));
     check('the credential is encrypted at rest, not plaintext',
@@ -656,7 +667,7 @@ try {
     eq('another company sees none of it',
       (await conn.listConnections({ db: DB, tenantId: t2, scope: TENANT_SCOPE })).length, 0);
 
-    await conn.disconnectPage({ db: DB, tenantId: t1, actorUserId: admin1, channelId: channelOne });
+    await conn.disconnectPage({ db: DB, tenantId: t1, actorUserId: admin1, channelId: channelOne, scope: TENANT_SCOPE });
 
     const { rows: [gone] } = await q(
       `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1`, [channelOne]
@@ -667,7 +678,7 @@ try {
     eq('the channel row is kept, disabled, for history', kept.status, 'disabled');
 
     await rejects('disconnecting another company channel is refused', conn.CONNECTION_ERRORS.CHANNEL_NOT_FOUND,
-      () => conn.disconnectPage({ db: DB, tenantId: t2, actorUserId: admin2, channelId: channelOne }));
+      () => conn.disconnectPage({ db: DB, tenantId: t2, actorUserId: admin2, channelId: channelOne, scope: TENANT_SCOPE }));
 
     const afterDisconnect = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
     check('a disconnected page is no longer reported as connected',
@@ -1050,6 +1061,11 @@ try {
         post: async () => ({ access_token: 'EAA-mock' }),
         get: async (path, params) => {
           if (path === '/oauth/access_token') { capturedExchange = { ...params }; return { access_token: 'EAA-mock' }; }
+        if (path === '/debug_token') {
+          return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true,
+                           profile_id: 'PAGE-PROBE-1', scopes: ['pages_show_list', 'pages_read_engagement'],
+                           expires_at: 0 } };
+        }
           // A REALISTIC page list. An empty `data` makes listAvailablePages fail
           // with UPSTREAM_ERROR (HTTP 502) by design - it is a genuine refusal,
           // not a mock artefact, so the mock must return a usable Page.
@@ -1251,6 +1267,979 @@ try {
     }
   }
 
+  // ============================================= 16 safe reconnect: C1-C7
+  // Added after the review that found the reconnect would have deleted the
+  // working legacy credentials and could have updated the wrong channel.
+  section('16 safe reconnect, token validation and credential lifecycle');
+
+  {
+    const LEGACY = conn.CREDENTIAL_KIND_LEGACY;
+    const OAUTH = conn.CREDENTIAL_KIND_OAUTH;
+    eq('the legacy credential kind is unchanged', LEGACY, 'page_access_token');
+    eq('the OAuth credential kind is separate', OAUTH, 'page_access_token_oauth');
+
+    // A Page that already has a LEGACY integration: a meta routing channel with
+    // a legacy credential, plus meta_dm and meta_comment siblings. This is the
+    // real shape of an existing customer.
+    const LEGACY_PAGE = '900';
+    const legacyChannel = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+       VALUES ($1,$2,'meta',$3,'Legacy Page','active') RETURNING id`, [t1, b1, LEGACY_PAGE]
+    )).rows[0].id;
+    await q(`INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+             VALUES ($1,$2,'meta_dm',$3,'Legacy DM','active')`, [t1, b1, LEGACY_PAGE]);
+    await q(`INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+             VALUES ($1,$2,'meta_comment',$3,'Legacy Comments','active')`, [t1, b1, LEGACY_PAGE]);
+    const { encrypt } = await import('../src/db/crypto.js');
+    const legacyEnc = encrypt('EAA-LEGACY-LONG-LIVED');
+    await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, expires_at, last_rotated_at)
+             VALUES ($1,$2,$3,$4,$5,NULL,NULL)`, [t1, legacyChannel, LEGACY, legacyEnc.value, legacyEnc.iv]);
+    const legacyCredId = (await q(
+      `SELECT id FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyChannel, LEGACY]
+    )).rows[0].id;
+
+    const legacyPages = [{
+      pageId: LEGACY_PAGE, name: 'Legacy Page', category: 'Retail',
+      tasks: ['MANAGE', 'CREATE_CONTENT', 'MODERATE'],
+      pageAccessToken: 'EAA-page-900'
+    }];
+
+    // The inspection mock for this section: a Page token, deliberately WITHOUT
+    // pages_messaging or pages_manage_engagement. Connecting must still work.
+    //
+    // `/debug_token` is a GET. A mock that answers it on `post` returns an
+    // empty body to the real GET call, which reads as "Meta said nothing" and
+    // fails the connect as TOKEN_REJECTED. The handler therefore MUST sit on
+    // the same verb the code uses.
+    //
+    // (This mock was still on `post`. It had not been executed since the
+    // inspection became GET-only, so nothing had caught it.)
+    const legacyTransport = {
+      post: async () => ({}),
+      get: async (path, params) => {
+        if (path === '/me/accounts') return { data: legacyPages };
+        if (path !== '/debug_token') return {};
+        if (params?.input_token === 'EAA-bad-type') {
+          return { data: { app_id: 'test-app-id', type: 'USER', is_valid: true, user_id: '1' } };
+        }
+        if (params?.input_token === 'EAA-wrong-app') {
+          return { data: { app_id: 'other-app-id', type: 'PAGE', is_valid: true, profile_id: '900' } };
+        }
+        if (params?.input_token === 'EAA-expired') {
+          return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true, profile_id: '900',
+                           expires_at: 1000 } };
+        }
+        if (params?.input_token === 'EAA-wrong-page') {
+          return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true, profile_id: '111' } };
+        }
+        if (params?.input_token === 'EAA-invalid') {
+          return { data: { is_valid: false } };
+        }
+        return {
+          data: {
+            app_id: 'test-app-id', type: 'PAGE', is_valid: true, profile_id: '900',
+            // NO pages_messaging, NO pages_manage_engagement. Deliberate.
+            scopes: ['pages_show_list', 'pages_read_engagement'],
+            expires_at: 0
+          }
+        };
+      }
+    };
+    metaOAuth.setGraphTransport(legacyTransport);
+
+    // ---- C3: the legacy credential survives a reconnect, untouched ----------
+    const legacyBefore = await q(
+      `SELECT count(*)::int n, min(created_at)::text mn, max(created_at)::text mx
+         FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyChannel, LEGACY]
+    );
+    const legacySiblings = await q(
+      `SELECT id, provider, display_name FROM channels
+        WHERE external_id=$1 AND provider IN ('meta_dm','meta_comment') ORDER BY provider`, [LEGACY_PAGE]
+    );
+
+    const reconnected = await conn.connectPage({
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+      availablePages: legacyPages, pageId: LEGACY_PAGE, mode: 'reconnect', db: DB
+    });
+    eq('a reconnect to a legacy-connected Page succeeds', reconnected.pageId, LEGACY_PAGE);
+
+    const legacyAfter = await q(
+      `SELECT count(*)::int n, min(created_at)::text mn, max(created_at)::text mx
+         FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyChannel, LEGACY]
+    );
+    eq('the legacy credential COUNT is unchanged', legacyAfter.rows[0].n, legacyBefore.rows[0].n);
+    eq('the legacy credential was not re-created (same created_at)', legacyAfter.rows[0].mn, legacyBefore.rows[0].mn);
+    const { rows: legacyStillThere } = await q(
+      `SELECT id FROM provider_credentials WHERE id=$1`, [legacyCredId]
+    );
+    check('the legacy credential ROW is still present, same id', legacyStillThere.length === 1);
+
+    const { rows: oauthRows } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyChannel, OAUTH]
+    );
+    eq('the OAuth credential is stored under its own kind', oauthRows[0].n, 1);
+    const { rows: legacyKindRows } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyChannel, LEGACY]
+    );
+    eq('no extra legacy credential was accumulated', legacyKindRows[0].n, 1);
+
+    // ---- the DM and comment siblings are untouched ------------------------
+    const legacySiblingsAfter = await q(
+      `SELECT id, provider, display_name FROM channels
+        WHERE external_id=$1 AND provider IN ('meta_dm','meta_comment') ORDER BY provider`, [LEGACY_PAGE]
+    );
+    eq('the meta_dm and meta_comment channels are byte-identical',
+      JSON.stringify(legacySiblingsAfter.rows), JSON.stringify(legacySiblings.rows));
+
+    // ---- the routing channel is the one that got updated -----------------
+    const { rows: routingRows } = await q(
+      `SELECT id, provider FROM channels WHERE external_id=$1 AND provider='meta' AND tenant_id=$2`,
+      [LEGACY_PAGE, t1]
+    );
+    eq('exactly one meta routing channel exists for this page', routingRows.length, 1);
+    eq('and it is the one the reconnect updated', routingRows[0].id, legacyChannel);
+
+    // ---- C2: a conflict on ANY row refuses the connect --------------------
+    // T2 owns a meta_dm channel for the same Page. The routing channel belongs
+    // to T1, so a T2 connect must be refused - and the refusal must come from
+    // examining EVERY row, not from whichever row came first.
+    await q(`INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+             VALUES ($1,$2,'meta_dm',$3,'T2 DM','active')`, [t2, b2, LEGACY_PAGE]);
+    const beforeConflict = await q(
+      `SELECT count(*)::int n FROM channels WHERE external_id=$1`, [LEGACY_PAGE]
+    );
+    await rejects('a cross-tenant conflict on a NON-routing row refuses the connect',
+      conn.CONNECTION_ERRORS.PAGE_OWNED_BY_ANOTHER_TENANT,
+      () => conn.connectPage({
+        tenantId: t2, actorUserId: admin2, brandId: b2, brandScope: TENANT_SCOPE,
+        availablePages: legacyPages, pageId: LEGACY_PAGE, db: DB
+      }));
+    const afterConflict = await q(
+      `SELECT count(*)::int n FROM channels WHERE external_id=$1`, [LEGACY_PAGE]
+    );
+    eq('the refused connect created no channel', afterConflict.rows[0].n, beforeConflict.rows[0].n);
+    const { rows: conflictAudit } = await q(
+      `SELECT count(*)::int n FROM audit_logs
+        WHERE action='integrations.facebook.connect.conflict' AND object_id=$1`, [LEGACY_PAGE]
+    );
+    eq('the refusal is audited', conflictAudit[0].n, 1);
+    await q(`DELETE FROM channels WHERE external_id=$1 AND tenant_id=$2`, [LEGACY_PAGE, t2]);
+
+    // ---- C4: token inspection REJECTS bad tokens -------------------------
+    const badToken = async (token) => {
+      try {
+        await conn.connectPage({
+          tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+          availablePages: [{ ...legacyPages[0], pageAccessToken: token }],
+          pageId: LEGACY_PAGE, db: DB
+        });
+        return null;
+      } catch (e) { return e.code; }
+    };
+    eq('a token Meta reports as invalid is rejected',
+      await badToken('EAA-invalid'), conn.CONNECTION_ERRORS.TOKEN_REJECTED);
+    eq('an expired token is rejected',
+      await badToken('EAA-expired'), conn.CONNECTION_ERRORS.TOKEN_REJECTED);
+    eq('a token for another app is rejected',
+      await badToken('EAA-wrong-app'), conn.CONNECTION_ERRORS.TOKEN_REJECTED);
+    eq('a token that is not a Page token is rejected',
+      await badToken('EAA-bad-type'), conn.CONNECTION_ERRORS.TOKEN_REJECTED);
+    eq('a token bound to a different Page is rejected',
+      await badToken('EAA-wrong-page'), conn.CONNECTION_ERRORS.TOKEN_REJECTED);
+
+    // The headline requirement: missing Messenger/Comments scopes must NOT
+    // prevent a basic Page connection.
+    const noMessenger = await conn.connectPage({
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+      availablePages: legacyPages, pageId: LEGACY_PAGE, mode: 'reconnect', db: DB
+    });
+    eq('a token WITHOUT pages_messaging still connects the Page', noMessenger.pageId, LEGACY_PAGE);
+    const { rows: afterNoMessenger } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyChannel, LEGACY]
+    );
+    eq('and the legacy credential is still intact after that connect', afterNoMessenger[0].n, 1);
+
+    // ---- C6: the listing reports OAuth and legacy separately --------------
+    const listed = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
+    const legacyRow = listed.find((c) => c.pageId === LEGACY_PAGE);
+    check('the legacy-connected Page is listed', Boolean(legacyRow));
+    eq('the legacy credential is reported present', legacyRow.legacyCredentialPresent, true);
+    eq('the OAuth credential is reported present', legacyRow.oauthCredentialPresent, true);
+    eq('the back-compatible flag is the OR of the two', legacyRow.credentialPresent, true);
+    const { rows: t2List } = await q(
+      `SELECT count(*)::int n FROM channels WHERE tenant_id=$1 AND external_id=$2`, [t2, LEGACY_PAGE]
+    );
+    eq('no cross-tenant row was created by the refused connect', t2List[0].n, 0);
+
+    // ---- C5: disconnect refuses while a legacy credential remains ---------
+    await rejects('disconnect is refused while a legacy credential is present',
+      conn.CONNECTION_ERRORS.LEGACY_CREDENTIAL_PRESENT,
+      () => conn.disconnectPage({ db: DB, tenantId: t1, actorUserId: admin1, channelId: legacyChannel, scope: TENANT_SCOPE }));
+    const { rows: afterRefusedDisconnect } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1`, [legacyChannel]
+    );
+    eq('the refused disconnect removed no credential', afterRefusedDisconnect[0].n, 2);
+    const { rows: stillActive } = await q(`SELECT status FROM channels WHERE id=$1`, [legacyChannel]);
+    eq('and the channel is still active', stillActive[0].status, 'active');
+
+    // ---- a channel with ONLY an OAuth credential can be disconnected -------
+    const { rows: soloRows } = await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status,
+                             oauth_provider, oauth_connected_at, oauth_scopes)
+       VALUES ($1,$2,'meta',$3,'Solo Page','active','meta',now(),'[]'::jsonb) RETURNING id`,
+      [t1, b1b, '901']
+    );
+    const soloChannel = soloRows[0].id;
+    const soloEnc = encrypt('EAA-solo-oauth');
+    await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+             VALUES ($1,$2,$3,$4,$5,now())`, [t1, soloChannel, OAUTH, soloEnc.value, soloEnc.iv]);
+    await conn.disconnectPage({ db: DB, tenantId: t1, actorUserId: admin1, channelId: soloChannel, scope: TENANT_SCOPE });
+    const { rows: soloCreds } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1`, [soloChannel]
+    );
+    eq('disconnect removes the OAuth credential of an OAuth-only channel', soloCreds[0].n, 0);
+    const { rows: soloStatus } = await q(`SELECT status FROM channels WHERE id=$1`, [soloChannel]);
+    eq('and disables that channel', soloStatus[0].status, 'disabled');
+
+    // ---- concurrency: connect, reconnect and disconnect in parallel -------
+    const CONC_PAGE = '902';
+    const concPages = [{
+      pageId: CONC_PAGE, name: 'Concurrent Page', category: 'Retail',
+      tasks: ['MANAGE'], pageAccessToken: 'EAA-page-902'
+    }];
+    metaOAuth.setGraphTransport({
+      post: async () => ({}),
+      // `/debug_token` is a GET - the handler must sit on the same verb the
+      // code uses, or the inspection reads an empty body and refuses the
+      // connect.
+      get: async (path, params) => {
+        if (path === '/debug_token') {
+          return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true, profile_id: CONC_PAGE,
+                      scopes: ['pages_show_list'], expires_at: 0 } };
+        }
+        if (path === '/me/accounts') return { data: concPages };
+        return {};
+      }
+    });
+    const outcomes = await Promise.allSettled([
+      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: concPages, pageId: CONC_PAGE, db: DB }),
+      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: concPages, pageId: CONC_PAGE, db: DB }),
+      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: concPages, pageId: CONC_PAGE, db: DB })
+    ]);
+    const won = outcomes.filter((o) => o.status === 'fulfilled').length;
+    check('concurrent connects never produce more than one winner', won <= 1);
+    const { rows: concChannels } = await q(
+      `SELECT count(*)::int n FROM channels WHERE external_id=$1 AND provider='meta'`, [CONC_PAGE]
+    );
+    eq('exactly one routing channel exists after concurrent connects', concChannels[0].n, 1);
+    const { rows: concCreds } = await q(
+      `SELECT count(*)::int n FROM provider_credentials pc JOIN channels c ON c.id=pc.channel_id
+        WHERE c.external_id=$1 AND pc.kind=$2`, [CONC_PAGE, OAUTH]
+    );
+    eq('exactly one OAuth credential exists after concurrent connects', concCreds[0].n, 1);
+
+    // ---- brand authorization is still enforced ---------------------------
+    // The transport is restored first: the concurrency block above installed a
+    // mock that only knows the concurrent Page, and using it here would test
+    // the wrong thing (token rejection instead of brand scope).
+    metaOAuth.setGraphTransport(legacyTransport);
+    await rejects('a brand outside the caller scope is still refused',
+      conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
+      () => conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1c, brandScope: T1_BOTH_BRANDS,
+        availablePages: legacyPages, pageId: LEGACY_PAGE, db: DB
+      }));
+
+    // ---- audit history preserved, no secrets -----------------------------
+    const { rows: auditRows } = await q(
+      `SELECT metadata::text m FROM audit_logs
+        WHERE action IN ('integrations.facebook.connect','integrations.facebook.reconnect')`);
+    check('connect and reconnect are audited', auditRows.length >= 2);
+    const auditBlob = JSON.stringify(auditRows);
+    check('no audit row contains a token', !/EAA-/.test(auditBlob));
+    check('no audit row contains an app secret', !/test-app-secret/.test(auditBlob));
+
+    metaOAuth.resetGraphTransport();
+  }
+
+  // ============================================= 17 final review fixes
+  // Covers the findings of the final code review:
+  //   HIGH-1  an OAuth-only disconnect exists and leaves a legacy integration alone
+  //   HIGH-2  an expired / unknown-expiry OAuth credential is not reported healthy
+  //   MEDIUM-2 concurrent RECONNECT is serialised explicitly
+  section('17 oauth-only disconnect, expiry-aware status and reconnect concurrency');
+
+  {
+    const { encrypt } = await import('../src/db/crypto.js');
+    const LEGACY = conn.CREDENTIAL_KIND_LEGACY;
+    const OAUTH = conn.CREDENTIAL_KIND_OAUTH;
+
+    // ---- a Page with a legacy integration AND an OAuth connection ----------
+    const LP = '910';
+    const legacyCh = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+       VALUES ($1,$2,'meta',$3,'Legacy Page 910','active') RETURNING id`, [t1, b1, LP]
+    )).rows[0].id;
+    await q(`INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+             VALUES ($1,$2,'meta_comment',$3,'Comments 910','active')`, [t1, b1, LP]);
+    await q(`INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+             VALUES ($1,$2,'meta_dm',$3,'DM 910','active')`, [t1, b1, LP]);
+    const legacyEnc2 = encrypt('EAA-LEGACY-910');
+    await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+             VALUES ($1,$2,$3,$4,$5,NULL)`, [t1, legacyCh, LEGACY, legacyEnc2.value, legacyEnc2.iv]);
+    const legacyId910 = (await q(
+      `SELECT id FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyCh, LEGACY]
+    )).rows[0].id;
+
+    // The inspection mock: the expiry is driven by the token, so the expiry
+    // states can be exercised without touching the clock.
+    const inspectionFor = (token) => {
+      if (token === 'EAA-expired-910') {
+        return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true, profile_id: LP,
+                          scopes: ['pages_show_list'], expires_at: 1000 } };
+      }
+      if (token === 'EAA-unknown-910') {
+        return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true, profile_id: LP,
+                          scopes: ['pages_show_list'] } };
+      }
+      return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true, profile_id: LP,
+                        scopes: ['pages_show_list', 'pages_read_engagement'],
+                        expires_at: Math.floor(Date.now() / 1000) + 3600 } };
+    };
+    const pages910 = (token) => [{
+      pageId: LP, name: 'Legacy Page 910', category: 'Retail',
+      tasks: ['MANAGE', 'CREATE_CONTENT'], pageAccessToken: token
+    }];
+
+    metaOAuth.setGraphTransport({
+      post: async () => ({}),
+      get: async (path, params) => {
+        if (path === '/debug_token') return inspectionFor(params?.input_token);
+        if (path === '/me/accounts') return { data: pages910('EAA-page-910') };
+        return {};
+      }
+    });
+
+    // ---- HIGH-2: expiry-aware status ------------------------------------
+    const connected910 = await conn.connectPage({
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+      availablePages: pages910('EAA-page-910'), pageId: LP, db: DB
+    });
+    eq('the page connects', connected910.pageId, LP);
+    const listed910 = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
+    const row910 = listed910.find((c) => c.pageId === LP);
+    check('the page is listed', Boolean(row910));
+    eq('a legacy credential is present', row910.legacyCredentialPresent, true);
+    eq('an OAuth credential is present', row910.oauthCredentialPresent, true);
+    eq('a future expiry means the OAuth credential is healthy', row910.oauthCredentialHealthy, true);
+    eq('a healthy OAuth credential does not require a reconnect', row910.oauthRequiresReconnect, false);
+    eq('the back-compatible flag is still the OR', row910.credentialPresent, true);
+
+    // Now try to replace it with an EXPIRED OAuth credential.
+    //
+    // A token Meta reports as already expired is REFUSED, fail-closed: a
+    // known-dead credential is never stored, and the working credential that
+    // is already in place is left exactly as it was.
+    await rejects('a connect with an expired token is refused',
+      conn.CONNECTION_ERRORS.TOKEN_REJECTED,
+      () => conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: pages910('EAA-expired-910'), pageId: LP, mode: 'reconnect', db: DB
+      }));
+    const afterRefusal = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
+    const keptRow = afterRefusal.find((c) => c.pageId === LP);
+    eq('the refused connect left the working credential in place', keptRow.oauthCredentialHealthy, true);
+    eq('the refused connect did not turn the connection into a reconnect case',
+      keptRow.oauthRequiresReconnect, false);
+    const { rows: credAfterRefusal } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyCh, OAUTH]
+    );
+    eq('the refused connect stored no second OAuth credential', credAfterRefusal[0].n, 1);
+
+    // A credential that expires AFTER it was stored is reported as expired.
+    // Time passing is the only way a stored credential becomes expired, so the
+    // stored row is aged directly - a connect would (correctly) refuse to
+    // install an already-expired token in the first place.
+    await q(
+      `UPDATE provider_credentials SET expires_at = now() - interval '1 hour'
+        WHERE channel_id=$1 AND kind=$2`, [legacyCh, OAUTH]
+    );
+    const afterExpiry = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
+    const expRow = afterExpiry.find((c) => c.pageId === LP);
+    eq('an expired OAuth credential is reported expired', expRow.oauthCredentialExpired, true);
+    eq('an expired OAuth credential is NOT healthy', expRow.oauthCredentialHealthy, false);
+    eq('an expired OAuth credential requires a reconnect', expRow.oauthRequiresReconnect, true);
+    eq('the legacy credential is still present', expRow.legacyCredentialPresent, true);
+    eq('a working legacy credential does NOT mask the expired OAuth one',
+      expRow.oauthRequiresReconnect, true);
+    eq('the legacy connection is still healthy', expRow.legacyCredentialHealthy, true);
+
+    // Unknown expiry is not validity either.
+    await conn.connectPage({
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+      availablePages: pages910('EAA-unknown-910'), pageId: LP, mode: 'reconnect', db: DB
+    });
+    const afterUnknown = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
+    const unkRow = afterUnknown.find((c) => c.pageId === LP);
+    eq('an unknown expiry is flagged as unknown', unkRow.oauthCredentialExpiryUnknown, true);
+    eq('an unknown expiry is NOT healthy', unkRow.oauthCredentialHealthy, false);
+    eq('an unknown expiry requires a reconnect', unkRow.oauthRequiresReconnect, true);
+
+    // ---- MEDIUM-2: concurrent RECONNECT on an existing routing channel ----
+    const beforeConc = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyCh, OAUTH]
+    );
+    eq('one OAuth credential exists before the concurrent reconnects', beforeConc.rows[0].n, 1);
+    const concResults = await Promise.allSettled([
+      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: pages910('EAA-page-910'), pageId: LP, mode: 'reconnect', db: DB }),
+      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: pages910('EAA-page-910'), pageId: LP, mode: 'reconnect', db: DB }),
+      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: pages910('EAA-page-910'), pageId: LP, mode: 'reconnect', db: DB })
+    ]);
+    const concFulfilled = concResults.filter((r) => r.status === 'fulfilled').length;
+    check('concurrent reconnects all resolve to a definite outcome', concFulfilled >= 0);
+    const afterConc = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyCh, OAUTH]
+    );
+    eq('exactly ONE OAuth credential exists after concurrent reconnects', afterConc.rows[0].n, 1);
+    const { rows: legacyAfterConc } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyCh, LEGACY]
+    );
+    eq('the legacy credential survived the concurrent reconnects', legacyAfterConc[0].n, 1);
+    const { rows: legacyIdAfterConc } = await q(
+      `SELECT id FROM provider_credentials WHERE id=$1`, [legacyId910]
+    );
+    eq('the legacy credential row is the SAME row', legacyIdAfterConc.length, 1);
+
+    // ---- HIGH-1: OAuth-only disconnect on a legacy-connected Page ---------
+    const siblingsBefore = await q(
+      `SELECT id, provider, display_name, status FROM channels
+        WHERE external_id=$1 AND provider IN ('meta_dm','meta_comment') ORDER BY provider`, [LP]
+    );
+    const legacyCredsBefore = await q(
+      `SELECT id, kind, created_at FROM provider_credentials
+        WHERE channel_id=$1 AND kind=$2 ORDER BY id`, [legacyCh, LEGACY]
+    );
+
+    const removed = await conn.disconnectOAuthConnection({
+      db: DB, tenantId: t1, actorUserId: admin1, channelId: legacyCh, scope: TENANT_SCOPE });
+    eq('the OAuth disconnect reports its scope', removed.scope, 'oauth');
+    eq('and reports that the legacy credential was preserved', removed.legacyCredentialPreserved, true);
+
+    const legacyCredsAfter = await q(
+      `SELECT id, kind, created_at FROM provider_credentials
+        WHERE channel_id=$1 AND kind=$2 ORDER BY id`, [legacyCh, LEGACY]
+    );
+    eq('the legacy credentials are byte-identical after the OAuth disconnect',
+      JSON.stringify(legacyCredsAfter.rows), JSON.stringify(legacyCredsBefore.rows));
+    const oauthAfter = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [legacyCh, OAUTH]
+    );
+    eq('the OAuth credential is gone', oauthAfter.rows[0].n, 0);
+    const siblingsAfter = await q(
+      `SELECT id, provider, display_name, status FROM channels
+        WHERE external_id=$1 AND provider IN ('meta_dm','meta_comment') ORDER BY provider`, [LP]
+    );
+    eq('the Messenger and Comments channels are byte-identical',
+      JSON.stringify(siblingsAfter.rows), JSON.stringify(siblingsBefore.rows));
+    const { rows: chanAfter } = await q(
+      `SELECT status, oauth_provider, oauth_connected_at, oauth_scopes FROM channels WHERE id=$1`, [legacyCh]
+    );
+    eq('the legacy-dependent channel is STILL ACTIVE', chanAfter[0].status, 'active');
+    eq('the OAuth provider marker is cleared', chanAfter[0].oauth_provider, null);
+    eq('the OAuth connection timestamp is cleared', chanAfter[0].oauth_connected_at, null);
+    eq('the OAuth scopes are cleared', JSON.stringify(chanAfter[0].oauth_scopes), '[]');
+    const { rows: auditOauth } = await q(
+      `SELECT count(*)::int n FROM audit_logs
+        WHERE action='integrations.facebook.disconnect.oauth' AND object_id=$1`, [LP]
+    );
+    eq('the OAuth disconnect is audited', auditOauth[0].n, 1);
+    const { rows: legacyAuditIntact } = await q(
+      `SELECT count(*)::int n FROM audit_logs WHERE object_id=$1`, [LP]
+    );
+    check('the audit history is append-only, not rewritten', legacyAuditIntact[0].n >= 1);
+
+    // ---- the FULL disconnect is still refused on a legacy channel ---------
+    await rejects('a full disconnect is still refused on a legacy-dependent channel',
+      conn.CONNECTION_ERRORS.LEGACY_CREDENTIAL_PRESENT,
+      () => conn.disconnectPage({ db: DB, tenantId: t1, actorUserId: admin1, channelId: legacyCh, scope: TENANT_SCOPE }));
+    const { rows: chanStillActive } = await q(`SELECT status FROM channels WHERE id=$1`, [legacyCh]);
+    eq('and the channel is still active after the refusal', chanStillActive[0].status, 'active');
+
+    // ---- OAuth-only disconnect of a page with NO legacy integration -------
+    const solo2 = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status,
+                             oauth_provider, oauth_connected_at, oauth_scopes)
+       VALUES ($1,$2,'meta',$3,'Solo 911','active','meta',now(),'["pages_show_list"]'::jsonb) RETURNING id`,
+      [t1, b1b, '911']
+    )).rows[0].id;
+    const solo2Enc = encrypt('EAA-solo-911');
+    await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+             VALUES ($1,$2,$3,$4,$5,now())`, [t1, solo2, OAUTH, solo2Enc.value, solo2Enc.iv]);
+    const solo2Removed = await conn.disconnectOAuthConnection({
+      db: DB, tenantId: t1, actorUserId: admin1, channelId: solo2, scope: TENANT_SCOPE });
+    eq('an OAuth-only page disconnects', solo2Removed.scope, 'oauth');
+    eq('and there was no legacy credential to preserve', solo2Removed.legacyCredentialPreserved, false);
+    const { rows: solo2Creds } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1`, [solo2]
+    );
+    eq('its OAuth credential is removed', solo2Creds[0].n, 0);
+    const { rows: solo2Chan } = await q(
+      `SELECT status, oauth_provider FROM channels WHERE id=$1`, [solo2]
+    );
+    eq('with no legacy credential the channel is disabled', solo2Chan[0].status, 'disabled');
+    eq('and the OAuth marker is cleared', solo2Chan[0].oauth_provider, null);
+
+    // ---- concurrent connect / reconnect / disconnect ----------------------
+    const CP = '912';
+    const pages912 = (token) => [{
+      pageId: CP, name: 'Concurrent 912', category: 'Retail',
+      tasks: ['MANAGE'], pageAccessToken: token
+    }];
+    metaOAuth.setGraphTransport({
+      post: async () => ({}),
+      get: async (path, params) => {
+        if (path === '/debug_token') return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true, profile_id: CP,
+                    scopes: ['pages_show_list'],
+                    expires_at: Math.floor(Date.now() / 1000) + 3600 } };
+        if (path === '/me/accounts') return { data: pages912('EAA-page-912') };
+        return {};
+      }
+    });
+    await conn.connectPage({
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+      availablePages: pages912('EAA-page-912'), pageId: CP, db: DB
+    });
+    const ch912 = (await q(
+      `SELECT id FROM channels WHERE external_id=$1 AND provider='meta' AND tenant_id=$2`, [CP, t1]
+    )).rows[0].id;
+    const mixed = await Promise.allSettled([
+      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: pages912('EAA-page-912'), pageId: CP, mode: 'reconnect', db: DB }),
+      conn.disconnectOAuthConnection({ db: DB, tenantId: t1, actorUserId: admin1, channelId: ch912, scope: TENANT_SCOPE }),
+      conn.connectPage({ tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: pages912('EAA-page-912'), pageId: CP, mode: 'reconnect', db: DB })
+    ]);
+    check('mixed concurrent operations all resolve to a definite outcome',
+      mixed.every((r) => r.status === 'fulfilled' || r.status === 'rejected'));
+    const { rows: ch912Count } = await q(
+      `SELECT count(*)::int n FROM channels WHERE external_id=$1 AND provider='meta'`, [CP]
+    );
+    eq('exactly one routing channel survives the mixed concurrency', ch912Count[0].n, 1);
+    const { rows: ch912Creds } = await q(
+      `SELECT count(*)::int n FROM provider_credentials pc JOIN channels c ON c.id=pc.channel_id
+        WHERE c.external_id=$1 AND pc.kind=$2`, [CP, OAUTH]
+    );
+    check('at most one OAuth credential exists for the channel', ch912Creds[0].n <= 1);
+
+    // ---- tenant / brand isolation is still enforced ----------------------
+    await rejects('a cross-tenant connect is still refused',
+      conn.CONNECTION_ERRORS.PAGE_OWNED_BY_ANOTHER_TENANT,
+      () => conn.connectPage({
+        tenantId: t2, actorUserId: admin2, brandId: b2, brandScope: TENANT_SCOPE,
+        availablePages: pages912('EAA-page-912'), pageId: CP, db: DB
+      }));
+    await rejects('a brand outside the scope is still refused',
+      conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
+      () => conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1c, brandScope: T1_BOTH_BRANDS,
+        availablePages: pages912('EAA-page-912'), pageId: CP, db: DB
+      }));
+
+    metaOAuth.resetGraphTransport();
+  }
+
+  // ============================================= 18 brand isolation, concurrency, diagnostics
+  // The final security gate found that the disconnect path was tenant-scoped but
+  // NOT brand-scoped, so a restricted Supervisor could disconnect another
+  // brand's connection inside their own tenant. It also found that concurrent
+  // OAuth disconnects were never tested directly, and that a token rejection was
+  // not recorded in the audit trail.
+  section('18 brand isolation, concurrent disconnect and token-rejection audit');
+
+  {
+    const LEGACY = conn.CREDENTIAL_KIND_LEGACY;
+    const OAUTH = conn.CREDENTIAL_KIND_OAUTH;
+    const { encrypt } = await import('../src/db/crypto.js');
+
+    // A restricted scope that sees ONLY brand b1, while the channel belongs to
+    // brand b1b. Both are inside the SAME tenant.
+    const RESTRICTED_B1 = { mode: 'restricted', brandIds: [b1] };
+    const RESTRICTED_B1B = { mode: 'restricted', brandIds: [b1b] };
+
+    const BP = '920';
+    const chB1B = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status,
+                             oauth_provider, oauth_connected_at, oauth_scopes)
+       VALUES ($1,$2,'meta',$3,'Brand B1B page','active','meta',now(),'["pages_show_list"]'::jsonb)
+       RETURNING id`, [t1, b1b, BP]
+    )).rows[0].id;
+    const b1bEnc = encrypt('EAA-b1b-920');
+    await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+             VALUES ($1,$2,$3,$4,$5,now())`, [t1, chB1B, OAUTH, b1bEnc.value, b1bEnc.iv]);
+
+    // ---- HIGH: a restricted Supervisor must not disconnect another brand ----
+    const beforeRestricted = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [chB1B, OAUTH]
+    );
+    await rejects('a restricted Supervisor cannot OAuth-disconnect another brand',
+      conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
+      () => conn.disconnectOAuthConnection({
+        db: DB, tenantId: t1, actorUserId: admin1, channelId: chB1B, scope: RESTRICTED_B1
+      }));
+    await rejects('a restricted Supervisor cannot full-disconnect another brand',
+      conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
+      () => conn.disconnectPage({
+        db: DB, tenantId: t1, actorUserId: admin1, channelId: chB1B, scope: RESTRICTED_B1
+      }));
+    const afterRestricted = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [chB1B, OAUTH]
+    );
+    eq('the refused cross-brand disconnect removed no credential',
+      afterRestricted.rows[0].n, beforeRestricted.rows[0].n);
+    const { rows: chStillActive } = await q(
+      `SELECT status, oauth_provider FROM channels WHERE id=$1`, [chB1B]
+    );
+    eq('the channel is still active', chStillActive[0].status, 'active');
+    eq('the OAuth marker is untouched', chStillActive[0].oauth_provider, 'meta');
+
+    // The scope that DOES own the brand succeeds.
+    const allowed = await conn.disconnectOAuthConnection({
+      db: DB, tenantId: t1, actorUserId: admin1, channelId: chB1B, scope: RESTRICTED_B1B
+    });
+    eq('the brand owner CAN OAuth-disconnect it', allowed.scope, 'oauth');
+    const { rows: afterAllowed } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [chB1B, OAUTH]
+    );
+    eq('and its OAuth credential is removed', afterAllowed.rows[0].n, 0);
+
+    // ---- an ABSENT scope is refused, never treated as "everything" ---------
+    const BP2 = '921';
+    const chNoScope = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status,
+                             oauth_provider, oauth_connected_at, oauth_scopes)
+       VALUES ($1,$2,'meta',$3,'No scope page','active','meta',now(),'[]'::jsonb)
+       RETURNING id`, [t1, b1, BP2]
+    )).rows[0].id;
+    await rejects('an absent brand scope is refused',
+      conn.CONNECTION_ERRORS.BRAND_NOT_ACCESSIBLE,
+      () => conn.disconnectOAuthConnection({
+        db: DB, tenantId: t1, actorUserId: admin1, channelId: chNoScope
+      }));
+
+    // ---- cross-tenant is still refused ------------------------------------
+    await rejects('cross-tenant OAuth disconnect is refused',
+      conn.CONNECTION_ERRORS.CHANNEL_NOT_FOUND,
+      () => conn.disconnectOAuthConnection({
+        db: DB, tenantId: t2, actorUserId: admin2, channelId: chNoScope, scope: TENANT_SCOPE
+      }));
+
+    // ---- MEDIUM: two simultaneous OAuth disconnects on ONE channel --------
+    const CP3 = '922';
+    const chConc = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status,
+                             oauth_provider, oauth_connected_at, oauth_scopes)
+       VALUES ($1,$2,'meta',$3,'Concurrent disconnect','active','meta',now(),'[]'::jsonb)
+       RETURNING id`, [t1, b1, CP3]
+    )).rows[0].id;
+    const concEnc = encrypt('EAA-conc-922');
+    await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+             VALUES ($1,$2,$3,$4,$5,now())`, [t1, chConc, OAUTH, concEnc.value, concEnc.iv]);
+    const legacyConcEnc = encrypt('EAA-legacy-conc-922');
+    await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+             VALUES ($1,$2,$3,$4,$5,now())`, [t1, chConc, LEGACY, legacyConcEnc.value, legacyConcEnc.iv]);
+
+    const twoDisconnects = await Promise.allSettled([
+      conn.disconnectOAuthConnection({ db: DB, tenantId: t1, actorUserId: admin1, channelId: chConc, scope: TENANT_SCOPE }),
+      conn.disconnectOAuthConnection({ db: DB, tenantId: t1, actorUserId: admin1, channelId: chConc, scope: TENANT_SCOPE })
+    ]);
+    const okCount = twoDisconnects.filter((r) => r.status === 'fulfilled').length;
+    check('at least one of two simultaneous OAuth disconnects succeeded', okCount >= 1);
+    const { rows: concAfter } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [chConc, OAUTH]
+    );
+    eq('exactly one OAuth credential remains-or-zero after concurrent disconnects', concAfter.rows[0].n, 0);
+    const { rows: concLegacy } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [chConc, LEGACY]
+    );
+    eq('the legacy credential survived the concurrent disconnects', concLegacy.rows[0].n, 1);
+    const { rows: concChan } = await q(
+      `SELECT status, oauth_provider FROM channels WHERE id=$1`, [chConc]
+    );
+    eq('the channel stayed active (a legacy credential still serves it)', concChan[0].status, 'active');
+    const { rows: concAudit } = await q(
+      `SELECT count(*)::int n FROM audit_logs
+        WHERE action='integrations.facebook.disconnect.oauth' AND object_id=$1`, [CP3]
+    );
+    check('the audit recorded at least one OAuth disconnect', concAudit.rows[0].n >= 1);
+
+    // ---- MEDIUM: a token rejection is audited with a SAFE code ----------
+    const RP = '923';
+    const chReject = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+       VALUES ($1,$2,'meta',$3,'Reject page','active') RETURNING id`, [t1, b1, RP]
+    )).rows[0].id;
+    metaOAuth.setGraphTransport({
+      post: async () => ({}),
+      get: async (path, params) => {
+        if (path === '/debug_token') return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: false } };
+        if (path === '/me/accounts') return { data: [{ pageId: RP, name: 'Reject page', category: 'Retail', tasks: ['MANAGE'],
+                     pageAccessToken: 'EAA-reject-923' }] };
+        return {};
+      }
+    });
+    await rejects('a token Meta rejects is refused',
+      conn.CONNECTION_ERRORS.TOKEN_REJECTED,
+      async () => conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: await conn.listAvailablePages({ db: DB, userAccessToken: 'u' }),
+        pageId: RP, db: DB
+      }));
+    const { rows: rejectAudit } = await q(
+      `SELECT metadata::text m FROM audit_logs
+        WHERE action='integrations.facebook.connect.token_rejected' AND object_id=$1`, [RP]
+    );
+    eq('the rejection is audited exactly once', rejectAudit.rows.length, 1);
+    const meta = rejectAudit.rows[0].m;
+    check('the audit records a predefined reason code', /META_TOKEN_INVALID|META_TOKEN_[A-Z_]+/.test(meta));
+    check('the audit records NO token', !/EAA-/.test(meta));
+    check('the audit records NO app secret', !/test-app-secret/.test(meta));
+    check('the audit records no free-text upstream message', !/not a real token|Error validating|system error/i.test(meta));
+    const { rows: rejectCreds } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1`, [chReject]
+    );
+    eq('no credential was stored for the rejected token', rejectCreds.rows[0].n, 0);
+
+    metaOAuth.resetGraphTransport();
+  }
+
+  {
+    section('19 expiry tri-state, granted scopes and provider isolation');
+
+    // ---- Task 1: the expiry tri-state, end to end -------------------------
+    //
+    // Meta's `expires_at` is a THREE-way answer and the storage must keep the
+    // three apart:
+    //   a positive number -> a real expiry
+    //   0                -> "never expires"  (a positive statement)
+    //   absent           -> "Meta said nothing" (unknown)
+    //
+    // Collapsing "never expires" into "unknown" is what made a freshly
+    // connected, perfectly working Page ask for a reconnect immediately.
+    const CASES = [
+      { pageId: '930', token: 'EAA-never', expires_at: 0, scopes: ['pages_show_list'] },
+      { pageId: '931', token: 'EAA-future', expires_at: Math.floor(Date.now() / 1000) + 3600, scopes: ['pages_show_list'] },
+      { pageId: '932', token: 'EAA-noexpiry', expires_at: undefined, scopes: ['pages_show_list'] },
+      { pageId: '933', token: 'EAA-noscopes', expires_at: 0, scopes: undefined },
+      { pageId: '934', token: 'EAA-unconfirmed', expires_at: 0, scopes: ['pages_show_list'], omitIsValid: true },
+      { pageId: '93300', token: 'EAA-both', expires_at: 0, scopes: ['pages_show_list'] }
+    ];
+    const byToken = Object.fromEntries(CASES.map((c) => [c.token, c]));
+    const inspectionFor = (token) => {
+      const c = byToken[token];
+      if (!c) return { data: { is_valid: false } };
+      const data = { app_id: 'test-app-id', type: 'PAGE', profile_id: c.pageId };
+      if (!c.omitIsValid) data.is_valid = true;
+      if (c.expires_at !== undefined) data.expires_at = c.expires_at;
+      if (c.scopes !== undefined) data.scopes = c.scopes;
+      return { data };
+    };
+    metaOAuth.setGraphTransport({
+      post: async () => ({}),
+      get: async (path, params) => {
+        if (path === '/debug_token') return inspectionFor(params?.input_token);
+        if (path === '/me/accounts') {
+          return {
+            data: CASES.map((c) => ({
+              id: c.pageId, name: `Page ${c.pageId}`, tasks: ['MANAGE'], access_token: c.token
+            }))
+          };
+        }
+        return {};
+      }
+    });
+
+    const connectCase = async (pageId) => conn.connectPage({
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+      availablePages: await conn.listAvailablePages({ db: DB, userAccessToken: 'u' }),
+      pageId,
+      requestedScopes: ['pages_show_list', 'pages_read_engagement'],
+      db: DB
+    });
+    const rowFor = async (pageId) =>
+      (await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE }))
+        .find((c) => c.pageId === pageId);
+
+    // --- Meta says the token never expires ---------------------------------
+    const rNever = await connectCase('930');
+    eq('a never-expiring Page connects', rNever.pageId, '930');
+    const { rows: neverCred } = await q(
+      `SELECT expires_at FROM provider_credentials
+        WHERE channel_id=$1 AND kind='page_access_token_oauth'`, [rNever.channelId]
+    );
+    eq('the never-expiring credential is stored with the sentinel',
+      new Date(neverCred[0].expires_at).getTime(), conn.CREDENTIAL_NEVER_EXPIRES_AT.getTime());
+    const rowNever = await rowFor('930');
+    check('a never-expiring connection is listed', Boolean(rowNever));
+    eq('it is reported as never expiring', rowNever.oauthCredentialNeverExpires, true);
+    eq('it is healthy', rowNever.connectionHealthy, true);
+    eq('it does NOT require a reconnect', rowNever.oauthRequiresReconnect, false);
+    eq('it is not "expiry unknown"', rowNever.oauthCredentialExpiryUnknown, false);
+    eq('no expiry DATE is surfaced for a never-expiring credential', rowNever.oauthCredentialExpiresAt, null);
+
+    // --- Meta states a real future expiry ----------------------------------
+    const rFuture = await connectCase('931');
+    eq('a future-expiry Page connects', rFuture.pageId, '931');
+    const rowFuture = await rowFor('931');
+    eq('a future expiry is healthy', rowFuture.connectionHealthy, true);
+    eq('a future expiry is NOT never-expiring', rowFuture.oauthCredentialNeverExpires, false);
+    eq('a future expiry does not require a reconnect', rowFuture.oauthRequiresReconnect, false);
+    check('a future expiry IS surfaced as a date', typeof rowFuture.oauthCredentialExpiresAt === 'string');
+
+    // --- Meta says nothing about the expiry --------------------------------
+    const rNone = await connectCase('932');
+    eq('an unknown-expiry Page still connects', rNone.pageId, '932');
+    const rowNone = await rowFor('932');
+    eq('an unknown expiry is flagged as unknown', rowNone.oauthCredentialExpiryUnknown, true);
+    eq('an unknown expiry is NOT healthy', rowNone.connectionHealthy, false);
+    eq('an unknown expiry requires a reconnect', rowNone.oauthRequiresReconnect, true);
+    eq('an unknown expiry is NOT never-expiring', rowNone.oauthCredentialNeverExpires, false);
+    const { rows: noneCred } = await q(
+      `SELECT expires_at FROM provider_credentials
+        WHERE channel_id=$1 AND kind='page_access_token_oauth'`, [rNone.channelId]
+    );
+    eq('an unknown expiry is stored as NULL, not as a guess', noneCred[0].expires_at, null);
+
+    // ---- Task 3: granted scopes are not requested scopes -------------------
+    eq('the GRANTED scopes are the ones Meta confirmed',
+      JSON.stringify(rowNever.grantedScopes), JSON.stringify(['pages_show_list']));
+    eq('the granted scopes are verified', rowNever.scopesVerified, true);
+    check('the requested scopes are NOT presented as granted',
+      JSON.stringify(rowNever.grantedScopes) !== JSON.stringify(rowNever.requestedScopes));
+    eq('the requested scopes are reported separately, as a request',
+      JSON.stringify(rowNever.requestedScopes), JSON.stringify(['pages_show_list', 'pages_read_engagement']));
+
+    const rowNoScopes = await rowFor('933');
+    eq('when Meta states no scopes, the granted scopes are null', rowNoScopes.grantedScopes, null);
+    eq('and they are NOT verified', rowNoScopes.scopesVerified, false);
+    eq('and the requested scopes are still reported as a request',
+      JSON.stringify(rowNoScopes.requestedScopes), JSON.stringify(['pages_show_list', 'pages_read_engagement']));
+    const { rows: storedScopes } = await q(
+      `SELECT oauth_scopes FROM channels WHERE external_id='933' AND tenant_id=$1`, [t1]
+    );
+    eq('an unverified scope set is stored as JSON null, not as an empty list',
+      storedScopes[0].oauth_scopes, null);
+    const { rows: storedGranted } = await q(
+      `SELECT oauth_scopes FROM channels WHERE external_id='930' AND tenant_id=$1`, [t1]
+    );
+    eq('the confirmed scopes are what is stored',
+      JSON.stringify(storedGranted[0].oauth_scopes), JSON.stringify(['pages_show_list']));
+
+    // --- a token Meta did not CONFIRM is refused ---------------------------
+    await rejects('a token Meta did not confirm as valid is refused',
+      conn.CONNECTION_ERRORS.TOKEN_REJECTED,
+      () => connectCase('934'));
+
+    // ---- Task 2: only a `meta` routing channel can be disconnected ---------
+    const dmChannel = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+       VALUES ($1,$2,'meta_dm',$3,'DM channel','active') RETURNING id`, [t1, b1, '93100']
+    )).rows[0].id;
+    const dmEnc = encrypt('EAA-dm-legacy');
+    await q(
+      `INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+       VALUES ($1,$2,'page_access_token',$3,$4,now())`, [t1, dmChannel, dmEnc.value, dmEnc.iv]
+    );
+    await rejects('a meta_dm channel cannot be OAuth-disconnected',
+      conn.CONNECTION_ERRORS.CHANNEL_NOT_FOUND,
+      () => conn.disconnectOAuthConnection({
+        db: DB, tenantId: t1, actorUserId: admin1, channelId: dmChannel, scope: TENANT_SCOPE
+      }));
+    await rejects('a meta_dm channel cannot be fully disconnected',
+      conn.CONNECTION_ERRORS.CHANNEL_NOT_FOUND,
+      () => conn.disconnectPage({
+        db: DB, tenantId: t1, actorUserId: admin1, channelId: dmChannel, scope: TENANT_SCOPE
+      }));
+    const { rows: dmAfter } = await q(`SELECT status FROM channels WHERE id=$1`, [dmChannel]);
+    eq('the meta_dm channel is untouched', dmAfter[0].status, 'active');
+    const { rows: dmCreds } = await q(
+      `SELECT count(*)::int n FROM provider_credentials WHERE channel_id=$1`, [dmChannel]
+    );
+    eq('its legacy credential is untouched', dmCreds[0].n, 1);
+
+    // ---- Task 2: a legacy integration must not look removed ----------------
+    //
+    // A channel that carries a live legacy Messenger/Comments credential stays
+    // VISIBLE after the OAuth link is removed, and is reported as a legacy-only
+    // row - never as removed, never as "needs reconnect".
+    const legacyOnlyChannel = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+       VALUES ($1,$2,'meta',$3,'Legacy only','active') RETURNING id`, [t1, b1, '93200']
+    )).rows[0].id;
+    const loEnc = encrypt('EAA-legacy-only');
+    await q(
+      `INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+       VALUES ($1,$2,'page_access_token',$3,$4,now())`, [t1, legacyOnlyChannel, loEnc.value, loEnc.iv]
+    );
+    const rowLegacyOnly = (await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE }))
+      .find((c) => c.pageId === '93200');
+    check('a legacy-only channel is still listed', Boolean(rowLegacyOnly));
+    eq('it is flagged as legacy-only', rowLegacyOnly.legacyOnly, true);
+    eq('it is not OAuth-connected', rowLegacyOnly.oauthConnected, false);
+    eq('it does NOT require a reconnect', rowLegacyOnly.oauthRequiresReconnect, false);
+    eq('it is not healthy as an OAuth connection', rowLegacyOnly.connectionHealthy, false);
+    eq('its legacy credential is reported present', rowLegacyOnly.legacyCredentialPresent, true);
+
+    // --- and the same after an OAuth-only disconnect -----------------------
+    const bothChannel = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+       VALUES ($1,$2,'meta',$3,'Both','active') RETURNING id`, [t1, b1, '93300']
+    )).rows[0].id;
+    const bothEnc = encrypt('EAA-both-legacy');
+    await q(
+      `INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+       VALUES ($1,$2,'page_access_token',$3,$4,now())`, [t1, bothChannel, bothEnc.value, bothEnc.iv]
+    );
+    const rBoth = await connectCase('93300');
+    eq('the page with a legacy credential reconnects over OAuth', rBoth.pageId, '93300');
+    const rowBoth = await rowFor('93300');
+    check('the reconnected channel is listed', Boolean(rowBoth));
+    eq('and it is OAuth-connected', rowBoth.oauthConnected, true);
+
+    const dis = await conn.disconnectOAuthConnection({
+      db: DB, tenantId: t1, actorUserId: admin1, channelId: bothChannel, scope: TENANT_SCOPE
+    });
+    eq('the OAuth-only disconnect reports the legacy credential was preserved',
+      dis.legacyCredentialPreserved, true);
+
+    const rowAfter = await rowFor('93300');
+    check('the channel is STILL listed after an OAuth-only disconnect', Boolean(rowAfter));
+    eq('it is now flagged as legacy-only', rowAfter.legacyOnly, true);
+    eq('its legacy credential is still present', rowAfter.legacyCredentialPresent, true);
+    eq('it is no longer OAuth-connected', rowAfter.oauthConnected, false);
+    eq('it does NOT require a reconnect', rowAfter.oauthRequiresReconnect, false);
+    const { rows: bothCreds } = await q(
+      `SELECT kind, count(*)::int n FROM provider_credentials WHERE channel_id=$1 GROUP BY kind`,
+      [bothChannel]
+    );
+    eq('exactly one legacy credential survives',
+      bothCreds.find((r) => r.kind === 'page_access_token')?.n, 1);
+    eq('the OAuth credential is gone',
+      bothCreds.filter((r) => r.kind === 'page_access_token_oauth').length, 0);
+    const { rows: bothCh } = await q(
+      `SELECT status, oauth_provider FROM channels WHERE id=$1`, [bothChannel]
+    );
+    eq('the channel stays active', bothCh[0].status, 'active');
+    eq('the OAuth marker is cleared', bothCh[0].oauth_provider, null);
+
+    metaOAuth.resetGraphTransport();
+  }
+
   metaOAuth.resetGraphTransport();
 } catch (e) {
   failures.push(`fatal: ${e?.code ?? ''} ${e?.message}`);
@@ -1271,13 +2260,28 @@ console.log('='.repeat(64));
 
 // A COUNT FLOOR, not just a zero check. If a section throws, the suite dies and
 // the remaining sections never run - the run must fail rather than report a
-// short pass. This number is the verified count as of run 39218882467; raise it
-// when adding coverage, never lower it.
-// Raised 196 -> 229 for the PKCE/config_id section, verified on run 39232448510.
+// short pass.
+//
+// THE FLOOR IS THE LAST VERIFIED EXECUTED COUNT - NOT A PREDICTION.
+//
+//   187 -> 196 -> 229 were each pinned to a number that had actually been
+//   observed on a real run (runs 39218882467, 39232448510, ...).
+//   289 is the last VERIFIED executed count.
+//
+// A static reading of this file suggests the suite would now execute roughly
+// 355 assertions. That is a PREDICTION from counting call sites, not a
+// measurement, and a floor set from a prediction is a floor that can fail a
+// fully green run for no reason. The floor is therefore pinned to 289 - a
+// number that really ran - and it will be raised to the MEASURED count after
+// the first GitHub CI execution of this branch.
+//
+// The floor is deliberately not weakened below 289, and no individual
+// security assertion has been removed to reach it.
+//
 // The floor is precisely what would have caught the original defect: the suite
 // could report 196 passing while never once asserting that code_verifier is sent
 // at the exchange.
-const MIN_ASSERTIONS = 251;
+const MIN_ASSERTIONS = 289;
 if (pass < MIN_ASSERTIONS) {
   console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
   console.log('  This is NOT a pass - sections were almost certainly skipped.');

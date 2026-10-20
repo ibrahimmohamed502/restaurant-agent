@@ -38,13 +38,33 @@
  * Authorization header, never as a query parameter, so they cannot leak through
  * proxy or access logs.
  *
- * DELIBERATE DEVIATION FROM META'S DOCUMENTED EXAMPLE
- * --------------------------------------------------
- * Meta's guide shows the code exchange as a GET with client_secret in the query
- * string. That is not used. A GET puts the app secret - the core of the app's
- * security, in Meta's own words - into every proxy log, CDN log and access log
- * between here and Graph. Graph accepts the same parameters over POST, and that
- * is what this adapter uses. The behaviour and the response are identical.
+ * THE CODE EXCHANGE — AN OPEN DECISION, NOT A SETTLED ONE
+ * -------------------------------------------------------
+ * Meta's guide shows the code exchange as a GET with `client_secret` in the query
+ * string. THAT IS WHAT THIS ADAPTER DOES BY DEFAULT (`exchangeMethod()` below).
+ *
+ * The consequence is real and is NOT waived: `client_secret` - the core of the
+ * app's security, in Meta's own words - travels in a query string, so it can
+ * appear in any proxy log, CDN log or access log between here and Graph. The
+ * call is server-to-server, this module never logs the URL, and no error path
+ * echoes it, which BOUNDS the exposure. Bounding it is not the same as
+ * removing it, and the risk has not been accepted: it is an open decision.
+ *
+ * Graph also accepts the same parameters over POST, which would keep the secret
+ * out of the URL entirely. POST is therefore available as an opt-in
+ * (`META_OAUTH_EXCHANGE_METHOD=POST`) but it is UNVERIFIED against the live
+ * API, and it is NOT the default.
+ *
+ * The default was deliberately NOT changed in this batch. Whether to move to
+ * POST, or to keep GET and formally accept the residual risk, needs a separate
+ * live check against Meta's real endpoint with explicit owner approval.
+ *
+ * An earlier version of this header claimed POST was what the adapter used. That
+ * was wrong. The behaviour described here is the behaviour in the code.
+ *
+ * (For contrast: `GET /debug_token` DOES reject POST - "Unsupported post
+ * request", code 100 / subcode 33. That is a DIFFERENT endpoint and says
+ * nothing about `/oauth/access_token`.)
  */
 
 export const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v26.0';
@@ -70,7 +90,12 @@ export const META_OAUTH_ERRORS = {
   NO_MANAGED_PAGES: 'META_NO_MANAGED_PAGES',
   INVALID_REDIRECT_URI: 'META_INVALID_REDIRECT_URI',
   UPSTREAM_UNAVAILABLE: 'META_UPSTREAM_UNAVAILABLE',
-  UPSTREAM_ERROR: 'META_UPSTREAM_ERROR'
+  UPSTREAM_ERROR: 'META_UPSTREAM_ERROR',
+  TOKEN_INVALID: 'META_TOKEN_INVALID',
+  TOKEN_EXPIRED: 'META_TOKEN_EXPIRED',
+  TOKEN_WRONG_APP: 'META_TOKEN_WRONG_APP',
+  TOKEN_WRONG_TYPE: 'META_TOKEN_WRONG_TYPE',
+  TOKEN_WRONG_PAGE: 'META_TOKEN_WRONG_PAGE'
 };
 
 export class MetaOAuthError extends Error {
@@ -330,10 +355,17 @@ async function graphGet(path, params, accessToken) {
  * is bounded here because the call is server-to-server, the URL is never logged
  * by this module, and no error path can echo it - all asserted in the suite.
  *
- *   GET  (default)  - the documented form.
+ *   GET  (default)  - the documented form. client_secret IS in the query string.
  *   POST (opt-in)   - undocumented; keeps client_secret out of the URL. Set
  *                     META_OAUTH_EXCHANGE_METHOD=POST only after confirming it
  *                     works against the live API.
+ *
+ * NOT A WAIVER. The default was left at GET because switching it is a security
+ * decision that has not been taken, not because the GET risk was evaluated and
+ * accepted. The open question is recorded in the file header: does Graph accept
+ * POST on /oauth/access_token? Answering it needs a live Meta call, which
+ * needs its own explicit owner approval. Until that happens the code keeps the
+ * documented form and the risk stays visible and unresolved.
  */
 export function exchangeMethod() {
   const m = String(process.env.META_OAUTH_EXCHANGE_METHOD || 'GET').toUpperCase();
@@ -472,6 +504,176 @@ export function assessPagePermissions(tasks = []) {
     // Reported so the UI can explain the ACTUAL tasks held, not just the
     // requirement, when the threshold is configured.
     requiredTasks: required
+  };
+}
+
+/**
+ * Inspect an access token WITHOUT using it to do anything.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * Meta's own documented way to learn what a token can do is `GET /debug_token`,
+ * which returns the token's type, the scopes it carries, the Page it is bound to,
+ * and when it expires. It is a READ. It never posts, never comments, never
+ * messages. A capability check that sent a real message would be a write to a
+ * customer's Page, which is not a diagnostic and is not acceptable here.
+ *
+ * It needs an app access token to inspect a token. The app secret never leaves
+ * the server, and the inspecting request is a server-to-server GET.
+ *
+ * The RESULT is deliberately a small, sanitised object: type, scopes, Page id,
+ * expiry. No token value is returned, stored in it, or loggable from it.
+ *
+ * @param {object}  args
+ * @param {string}  args.token            the token to inspect (never returned)
+ * @param {string?} args.expectedPageId   the Page this token must be bound to
+ * @returns {Promise<{valid:boolean,type:?string,scopes:?string[],pageId:?string,expiresAt:?number,appId:?string}>}
+ *
+ * THREE STATES PER FIELD, NOT TWO
+ * -------------------------------
+ * Meta's answer is allowed to be partial, and a partial answer is not the same
+ * as an empty one. Every field below therefore distinguishes three cases:
+ *
+ *   scopes     a list  -> Meta CONFIRMED these scopes
+ *             absent   -> UNKNOWN. Not an empty list, and never reported as one.
+ *   expiresAt  > 0     -> a real expiry, in seconds since the epoch
+ *             0       -> Meta states the token NEVER expires (a positive fact)
+ *             absent   -> UNKNOWN. Not "never expires", and never reported so.
+ *
+ * Collapsing any of those unknowns into a definite value is how a connection
+ * ends up displaying a state nobody verified.
+ */
+export async function inspectToken({ token, expectedPageId = null } = {}) {
+  if (!token) {
+    throw new MetaOAuthError(META_OAUTH_ERRORS.TOKEN_INVALID, 'no token to inspect');
+  }
+
+  // The app access token is `app_id|app_secret`. It is used server-side only,
+  // never leaves this function, and is sent in the Authorization HEADER - never
+  // in a query string and never in the request body. The app secret is the most
+  // sensitive value in this codebase; it has no business in a URL.
+  const appAccessToken = `${appId()}|${appSecret()}`;
+
+  // The DOCUMENTED form. Meta's reference shows GET, and every SDK example
+  // (PHP, JS, Java, iOS) uses HttpMethod.GET. An earlier version tried POST,
+  // which is cleaner for the secret, but a live probe against Meta's actual
+  // endpoint proved POST is NOT supported for this edge:
+  //
+  //   POST with params    -> HTTP 400 "Unsupported post request"
+  //                          (code 100, subcode 33)
+  //   GET  with params    -> HTTP 200, a well-formed inspection result
+  //
+  // So POST is a dead end here. The app secret travels in the
+  // Authorization header (never the URL), and the token under inspection is in
+  // the query string, because the documented form requires it. The token is
+  // short-lived and page-scoped; the app secret is the value that must never
+  // leave the server, and it does not.
+  //
+  // The inspected token therefore appears in one server-to-server URL to Meta's
+  // own API. That is the same posture the documented code exchange already has
+  // for client_secret, and it is the only supported shape for this endpoint.
+  let data;
+  try {
+    data = await transport.get('/debug_token', { input_token: token }, appAccessToken);
+  } catch (e) {
+    // FAIL CLOSED. A network error or an auth failure is a real rejection:
+    // the token is not stored.
+    throw e;
+  }
+
+  const d = data?.data;
+  if (!d) {
+    throw new MetaOAuthError(META_OAUTH_ERRORS.TOKEN_INVALID, 'Meta returned no token metadata');
+  }
+
+  // SCOPES: confirmed list, or UNKNOWN.
+  //
+  // An absent `scopes` array is not an empty one. "Meta confirmed this token
+  // carries no scopes" is a fact; "Meta did not say" is unknown. Only the first
+  // may ever be presented as a confirmed list, so the absent case is carried as
+  // `null` and NEVER as `[]`.
+  const scopes = Array.isArray(d.scopes) ? d.scopes.map(String) : null;
+
+  const pageId = d.profile_id ? String(d.profile_id) : null;
+
+  // EXPIRY: the same three-way distinction.
+  //   > 0    a real expiry, in seconds since the epoch
+  //   0      Meta states the token NEVER expires - a positive statement
+  //   absent Meta said nothing - unknown
+  const expiresAt = typeof d.expires_at === 'number' ? d.expires_at : null;
+
+  // The checks below are REJECTIONS, not capability gates. A token that is
+  // invalid, expired, issued for a different app, of the wrong type, or bound to
+  // a different Page is not a usable credential for this connection and must not
+  // be stored.
+  //
+  // A token that is merely MISSING Messenger or Comments scopes is NOT rejected.
+  // Basic Page connection must not depend on services activated later.
+  //
+  // FAIL CLOSED ON VALIDITY. `is_valid` must be EXPLICITLY true.
+  //
+  // A response that omits `is_valid` is not a pass. Treating "Meta did not say
+  // the token is valid" as "the token is valid" is precisely the assumption
+  // this inspection exists to remove, so an absent flag is a REJECTION.
+  if (d.is_valid !== true) {
+    throw new MetaOAuthError(
+      META_OAUTH_ERRORS.TOKEN_INVALID,
+      d.is_valid === false
+        ? 'Meta reports the token is not valid'
+        : 'Meta did not confirm the token is valid'
+    );
+  }
+  if (expiresAt !== null && expiresAt > 0 && expiresAt * 1000 <= Date.now()) {
+    // A POSITIVE expiry that has already passed. `expires_at === 0` is not an
+    // expiry in the past - it is Meta saying the token never expires - so it is
+    // deliberately not matched here.
+    throw new MetaOAuthError(META_OAUTH_ERRORS.TOKEN_EXPIRED, 'the token has already expired');
+  }
+  if (d.app_id && String(d.app_id) !== String(appId())) {
+    throw new MetaOAuthError(META_OAUTH_ERRORS.TOKEN_WRONG_APP, 'the token was issued for a different app');
+  }
+
+  // `type` is USER for a user token and PAGE for a Page token. A Page token
+  // carries `profile_id` - the Page it is bound to. Either signal identifies it;
+  // if neither is present the token cannot be confirmed as a Page token.
+  const type = d.type ? String(d.type) : null;
+  if (type && type.toUpperCase() !== 'PAGE' && !pageId) {
+    throw new MetaOAuthError(
+      META_OAUTH_ERRORS.TOKEN_WRONG_TYPE,
+      'the token is not a Page access token'
+    );
+  }
+  if (!type && !pageId) {
+    throw new MetaOAuthError(
+      META_OAUTH_ERRORS.TOKEN_WRONG_TYPE,
+      'the token could not be confirmed as a Page access token'
+    );
+  }
+  if (expectedPageId && pageId && pageId !== String(expectedPageId)) {
+    throw new MetaOAuthError(
+      META_OAUTH_ERRORS.TOKEN_WRONG_PAGE,
+      'the token is bound to a different Page'
+    );
+  }
+  if (expectedPageId && !pageId) {
+    throw new MetaOAuthError(
+      META_OAUTH_ERRORS.TOKEN_WRONG_PAGE,
+      'the token does not identify a Page'
+    );
+  }
+
+  // Sanitised result. No token value, no error text, nothing free-form.
+  return {
+    // True because the code above only reaches here when Meta EXPLICITLY said
+    // so. There is no "assumed valid" path.
+    valid: true,
+    type,
+    // null means Meta did not state the scopes. It is NOT an empty list.
+    scopes,
+    pageId,
+    // 0 means "never expires"; null means "Meta said nothing".
+    expiresAt,
+    appId: d.app_id ? String(d.app_id) : null
   };
 }
 

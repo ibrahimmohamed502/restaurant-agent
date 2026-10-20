@@ -66,8 +66,9 @@ describe('facebook connect i18n (EN/AR)', () => {
       'states.picking.confirming', 'states.picking.connectable', 'states.picking.notConnectable',
       'states.picking.missingTasks',
       'states.connected.title', 'states.connected.description',
-      'status.connected', 'status.needsReconnect',
-      'connections.title', 'connections.count', 'connections.disconnect', 'connections.reconnectHint'
+      'status.connected', 'status.needsReconnect', 'status.legacyOnly',
+      'connections.title', 'connections.count', 'connections.disconnect', 'connections.reconnectHint',
+      'connections.scopesConfirmed', 'connections.scopesUnconfirmed'
     ]) {
       expect(keys).toContain(required);
     }
@@ -219,5 +220,108 @@ describe('facebook API client', () => {
   it('documents that a null expiry is unknown, not eternal', () => {
     expect(apiSrc).toContain('credentialExpiresAt');
     expect(apiSrc).toContain('NOT the same as "never expires"');
+  });
+});
+describe('facebook connect page: unified connection status', () => {
+  it('renders health from the API rule, not from a local re-derivation', () => {
+    // The page must consume the API's single rule. If it re-derives health from
+    // credentialPresent it will show an EXPIRED OAuth token as connected
+    // whenever a legacy credential happens to exist.
+    expect(src).toContain('c.connectionHealthy');
+    expect(src).not.toMatch(/const live = c\.credentialPresent/);
+    expect(src).not.toMatch(/filter\(\(c\) => c\.credentialPresent && c\.status/);
+  });
+
+  it('uses the rule for the connected count, the row badge and the page phase', () => {
+    // Three consumers, all from the API's rule:
+    //   connected count + row badge -> connectionHealthy (is it healthy?)
+    //   page phase                -> oauthRequiresReconnect (does it need work?)
+    const healthyUses = (src.match(/connectionHealthy/g) || []).length;
+    expect(healthyUses).toBeGreaterThanOrEqual(2);
+    expect(src).toContain('c.oauthRequiresReconnect');
+    expect((src.match(/oauthRequiresReconnect/g) || []).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('never treats credential presence as validity', () => {
+    // credentialPresent stays a back-compatible PRESENCE flag. It must not be
+    // used to decide health anywhere on this page.
+    const healthLines = src
+      .split('\n')
+      .filter((l) => /live\s*=|connectedCount\s*=/.test(l));
+    for (const l of healthLines) {
+      expect(l).not.toContain('credentialPresent');
+    }
+  });
+});
+
+describe('facebook API client: safe OAuth-only disconnect', () => {
+  it('can request an oauth-scoped disconnect', () => {
+    expect(apiSrc).toContain("scope?: 'full' | 'oauth'");
+    expect(apiSrc).toContain('?scope=');
+  });
+
+  it('exposes the unified status fields the page renders', () => {
+    for (const f of [
+      'oauthConnected: boolean;',
+      'oauthHealthy: boolean;',
+      'oauthRequiresReconnect: boolean;',
+      'connectionHealthy: boolean;'
+    ]) {
+      expect(apiSrc).toContain(f);
+    }
+  });
+});
+
+describe('facebook connect page: a live legacy integration is never shown as removed', () => {
+  it('reads the legacy-only state from the API, not from a local guess', () => {
+    expect(src).toContain('c.legacyOnly');
+    expect(apiSrc).toContain('legacyOnly: boolean;');
+  });
+
+  it('never asks a legacy-only Page to be disconnected', () => {
+    // B1 must not be able to remove the live Messenger/Comments integration.
+    // Offering a button whose only possible answer is a refusal is a lie, so
+    // the button is not rendered for a legacy-only row.
+    expect(src).toMatch(/legacyOnly \? null : \(/);
+  });
+
+  it('labels a legacy-only Page as a live integration, not as needing a reconnect', () => {
+    expect(src).toContain('status.legacyOnly');
+    expect(src).toContain('status.needsReconnect');
+  });
+
+  it('does not let a legacy-only row ask for a reconnect on the page itself', () => {
+    // The page-level "needs work" state must be driven by the OAuth rule only.
+    // A legacy-only row is an ACTIVE integration, not a broken one.
+    expect(src).toContain('c.oauthRequiresReconnect || (c.oauthConnected && c.status !==');
+  });
+});
+
+describe('facebook connect page: requested scopes are never presented as granted', () => {
+  it('shows the CONFIRMED scopes when Meta stated them', () => {
+    expect(src).toContain('c.scopesVerified');
+    expect(src).toContain('c.grantedScopes');
+    expect(src).toContain('connections.scopesConfirmed');
+  });
+
+  it('says "not confirmed" and names only the REQUEST when Meta did not say', () => {
+    expect(src).toContain('connections.scopesUnconfirmed');
+    expect(src).toContain('c.requestedScopes');
+  });
+
+  it('never renders the requested scopes as if they were granted', () => {
+    // The CONFIRMED branch must read the granted scopes and nothing else.
+    // The requested scopes may appear ONLY in the "not confirmed" branch, where
+    // they are labelled as a request.
+    const confirmed = src.slice(
+      src.indexOf('connections.scopesConfirmed'),
+      src.indexOf('connections.scopesUnconfirmed')
+    );
+    expect(confirmed).toContain('c.grantedScopes');
+    expect(confirmed).not.toContain('c.requestedScopes');
+
+    const unconfirmed = src.slice(src.indexOf('connections.scopesUnconfirmed'));
+    expect(unconfirmed).toContain('c.requestedScopes');
+    expect(unconfirmed).not.toContain('c.grantedScopes');
   });
 });

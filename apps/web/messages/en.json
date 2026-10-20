@@ -1026,6 +1026,7 @@
     "noBrand": "No brand",
     "errorTitle": "Could not complete the connection",
     "tokenNotice": "Facebook access tokens are stored encrypted and are never shown here. Token renewal is handled separately and a Page may need reconnecting.",
+    "oauthRemoved": "The Facebook connection was removed. The existing Messenger and Comments setup was left running.",
     "connect": {
       "title": "Connect a Facebook Page",
       "description": "You will be sent to Facebook to approve access, then choose which of your Pages to connect. Facebook decides which Pages you may manage; this app can only connect the ones Facebook reports.",
@@ -1058,13 +1059,16 @@
     },
     "status": {
       "connected": "Connected",
-      "needsReconnect": "Needs reconnecting"
+      "needsReconnect": "Needs reconnecting",
+      "legacyOnly": "Live legacy integration"
     },
     "connections": {
       "title": "Connected Pages",
       "count": "{count} connected",
       "disconnect": "Disconnect this Page",
-      "reconnectHint": "The brand is fixed when you start connecting. To move a Page to another brand, start the connection again and choose that brand - the Page is updated in place, not duplicated."
+      "reconnectHint": "The brand is fixed when you start connecting. To move a Page to another brand, start the connection again and choose that brand - the Page is updated in place, not duplicated.",
+      "scopesConfirmed": "Facebook confirmed these permissions: {scopes}",
+      "scopesUnconfirmed": "Facebook has not confirmed which permissions were granted. Requested: {requested}"
     },
     "errors": {
       "META_ACCESS_DENIED": "You declined the Facebook permission request, so nothing was connected.",
@@ -1081,6 +1085,8 @@
       "META_UPSTREAM_UNAVAILABLE": "Facebook is temporarily unavailable. Please try again in a few minutes.",
       "META_CODE_EXCHANGE_FAILED": "Facebook did not accept the authorization. Please start again.",
       "CONNECTION_UPSTREAM_ERROR": "The Facebook Pages could not be read. Please try again.",
+      "CONNECTION_TOKEN_REJECTED": "Facebook issued a token that cannot be used for this Page. Please start the connection again.",
+      "CONNECTION_LEGACY_CREDENTIAL_PRESENT": "This Facebook Page is still connected through an older setup. Disconnecting it here would stop that working connection.",
       "NETWORK_ERROR": "The request could not be completed. Check your connection and try again.",
       "BRAND_DOES_NOT_MATCH_GRANT": "This authorization was started for a different brand. Start again and choose this brand before connecting to Facebook."
     }

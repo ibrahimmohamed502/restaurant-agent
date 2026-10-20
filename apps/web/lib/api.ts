@@ -825,12 +825,61 @@ export type FacebookConnection = {
   connectedAt: string | null;
   scopes: string[];
   /**
-   * `credentialExpiresAt` is null when Meta stated no expiry. That is reported
-   * as-is: it is NOT the same as "never expires", and B1 deliberately does not
-   * make that claim. Token refresh is a separate batch.
+   * `credentialExpiresAt` is null when Meta stated no expiry, and also null
+   * when Meta confirmed the token NEVER expires - `oauthCredentialNeverExpires`
+   * tells the two apart. It is NOT the same as "never expires" by itself, and
+   * B1 does not make that claim on its own. Token refresh is a separate batch.
    */
   credentialPresent: boolean;
   credentialExpiresAt: string | null;
+  /** The live Messenger/Comments integration is still using a legacy token. */
+  legacyCredentialPresent: boolean;
+  /** B1 stored an OAuth credential for this Page. */
+  oauthCredentialPresent: boolean;
+  /** The OAuth credential is present and not known to be expired. */
+  oauthCredentialHealthy: boolean;
+  /** The OAuth credential has passed its expiry. */
+  oauthCredentialExpired: boolean;
+  /** Meta stated no expiry, so validity cannot be proven. */
+  oauthCredentialExpiryUnknown: boolean;
+  /**
+   * Meta CONFIRMED the token never expires (`expires_at: 0`). This is a
+   * positive statement, not missing information, and it is what keeps a
+   * healthy connection from asking for a reconnect.
+   */
+  oauthCredentialNeverExpires: boolean;
+  /**
+   * The scopes Meta CONFIRMED for the token. `null` means Meta did not state
+   * them - which is NOT the same as an empty list, and is not the same as the
+   * requested scopes.
+   */
+  grantedScopes: string[] | null;
+  /** False means "Meta did not say", NOT "no scopes were granted". */
+  scopesVerified: boolean;
+  /** What B1 asked for. A request, never evidence of a grant. */
+  requestedScopes: string[];
+  /**
+   * Not OAuth-connected, but a live legacy Messenger/Comments credential is
+   * still serving this Page. This is an ACTIVE integration: it must never be
+   * presented as removed, and never as "needs reconnect".
+   */
+  legacyOnly: boolean;
+  /**
+   * The OAuth connection needs a reconnect. True when the channel claims an
+   * OAuth connection and the credential is missing, expired, or of unknown
+   * validity. A working legacy credential NEVER masks this: the two are
+   * independent.
+   */
+  oauthRequiresReconnect: boolean;
+  /** The channel claims an OAuth connection. */
+  oauthConnected: boolean;
+  /** Connected, and the OAuth credential is provably valid. */
+  oauthHealthy: boolean;
+  /**
+   * THE status rule, computed once by the API. This is what the UI renders;
+   * it must not be re-derived client-side.
+   */
+  connectionHealthy: boolean;
 };
 
 export const facebookApi = {
@@ -866,9 +915,16 @@ export const facebookApi = {
       `/integrations/facebook/connections${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ''}`
     ),
 
-  /** Deactivates the channel and deletes its credential. History is kept. */
-  disconnect: (channelId: string) =>
-    api.del<{ channelId: string; pageId: string }>(
-      `/integrations/facebook/connections/${encodeURIComponent(channelId)}`
+  /**
+   * Deactivates the channel and deletes its credential. History is kept.
+   *
+   * scope 'oauth' removes ONLY the OAuth connection, leaving a legacy
+   * credential, the Messenger/Comments channels and an active legacy channel
+   * untouched. Use it for a Page that still has a legacy integration.
+   */
+  disconnect: (channelId: string, scope?: 'full' | 'oauth') =>
+    api.del<{ channelId: string; pageId: string; scope?: string }>(
+      `/integrations/facebook/connections/${encodeURIComponent(channelId)}` +
+        (scope ? `?scope=${encodeURIComponent(scope)}` : '')
     )
 };
