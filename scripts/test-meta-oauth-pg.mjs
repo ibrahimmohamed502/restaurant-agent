@@ -2449,14 +2449,36 @@ try {
     eq('but it yields no token', gEmpty.userToken, null);
 
     // 6. An expired grant is not usable.
-    const expiredState = await state.issueOAuthState({
-      tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1, redirectUri: URI, db: DB, ttlSeconds: -1
-    });
+    //
+    // The fixture is a grant that WAS consumed at the OAuth callback stage -
+    // `consumed_at` set, `confirmed_at` NULL - and then expired BEFORE it could
+    // be confirmed. It is deliberately NOT a confirmed grant: that case is the
+    // one above, and the two must not be confused.
+    //
+    // mkGrant() is used because issueOAuthState() does not return the row id,
+    // and consumeOAuthState() does. The expiry is then set in the database
+    // rather than by a negative TTL, so the fixture passes through exactly the
+    // same lifecycle as a real grant and only its clock is moved.
+    const expiring = await mkGrant();
+    await q(
+      `UPDATE oauth_states SET expires_at = now() - interval '1 hour' WHERE id=$1`, [expiring.id]
+    );
+    const { rows: expiringRow } = await q(
+      `SELECT consumed_at IS NOT NULL AS consumed,
+              confirmed_at IS NULL AS unconfirmed,
+              expires_at <= now() AS expired
+         FROM oauth_states WHERE id=$1`, [expiring.id]
+    );
+    check('the expired fixture has a valid state id', typeof expiring.id === 'string' && expiring.id.length > 0);
+    eq('the expired fixture WAS consumed at the callback stage', expiringRow[0].consumed, true);
+    eq('the expired fixture was never confirmed', expiringRow[0].unconfirmed, true);
+    eq('the expired fixture really is expired', expiringRow[0].expired, true);
     const gExpired = await state.readUnspentState({
-      stateId: expiredState.id, tenantId: t1, actorUserId: admin1, db: DB
+      stateId: expiring.id, tenantId: t1, actorUserId: admin1, db: DB
     });
     eq('an expired grant is refused', gExpired.ok, false);
     check('and the reason is expiry, not spending', gExpired.reason !== 'spent');
+    eq('and the reason is exactly expiry', gExpired.reason, 'expired');
 
     // 7. An unknown state id is refused.
     const gUnknown = await state.readUnspentState({
