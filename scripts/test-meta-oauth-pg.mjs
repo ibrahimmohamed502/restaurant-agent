@@ -2488,6 +2488,277 @@ try {
     eq('and is reported as not found', gUnknown.reason, 'not_found');
   }
 
+  {
+    section('21 the oauth state cleanup: scrub the secret, then delete the row');
+
+    // THE CLEANUP, IN ONE PLACE
+    // ---------------------------
+    // The grant's own use window is ten minutes. After it, the row may still
+    // exist - and it may still hold an encrypted Meta USER token and an
+    // encrypted PKCE verifier. The cleanup scrubs both, then deletes the rows
+    // that are past their retention. It runs in the worker, under a
+    // PostgreSQL advisory lock, so exactly one replica runs a pass.
+    const LOCK = String(state.OAUTH_CLEANUP_LOCK_KEY);
+
+    // A grant with a parked user token AND a parked PKCE verifier.
+    //
+    // It is always created with a VALID ttl and expired afterwards by moving
+    // the row's clock, because a state that was born expired cannot be
+    // consumed - and the consumed state is what carries the parked secrets.
+    const mkSecretGrant = async ({ confirm = false } = {}) => {
+      const s = await state.issueOAuthState({
+        tenantId: t1, actorUserId: admin1, provider: 'meta', brandId: b1, redirectUri: URI, db: DB
+      });
+      const c = await state.consumeOAuthState({ state: s.state, redirectUri: URI, db: DB });
+      await state.stashUserToken({ stateId: c.id, userToken: 'EAA-cleanup-secret', db: DB });
+      // A PKCE verifier is a secret too, and it has the same retention problem.
+      const { encrypt } = await import('../src/db/crypto.js');
+      const v = encrypt('PROBE-VERIFIER-cleanup');
+      await q(
+        `UPDATE oauth_states SET code_verifier_encrypted=$2, code_verifier_iv=$3 WHERE id=$1`,
+        [c.id, v.value, v.iv]
+      );
+      if (confirm) {
+        await state.claimGrantForConfirm({ stateId: c.id, tenantId: t1, actorUserId: admin1, db: DB });
+      }
+      return c;
+    };
+
+    // ---- an expired grant has its secrets scrubbed ------------------------
+    const expiredGrant = await mkSecretGrant();
+    await q(`UPDATE oauth_states SET expires_at = now() - interval '1 hour' WHERE id=$1`, [expiredGrant.id]);
+    const liveGrant = await mkSecretGrant();
+
+    const { rows: beforeScrub } = await q(
+      `SELECT id, (user_token_encrypted IS NOT NULL) AS tok, (code_verifier_encrypted IS NOT NULL) AS pkce
+         FROM oauth_states WHERE id = ANY($1::uuid[])`, [[expiredGrant.id, liveGrant.id]]
+    );
+    const beforeExpired = beforeScrub.find((r) => r.id === expiredGrant.id);
+    eq('the expired grant starts with a parked token', beforeExpired.tok, true);
+    eq('the expired grant starts with a parked PKCE verifier', beforeExpired.pkce, true);
+
+    const scrubbed = await state.scrubOAuthSecrets({ db: DB, secretGraceSeconds: 0 });
+    check('the expired grant was scrubbed', scrubbed >= 1);
+
+    const { rows: afterScrub } = await q(
+      `SELECT id, (user_token_encrypted IS NULL) AS tok_gone, (code_verifier_encrypted IS NULL) AS pkce_gone
+         FROM oauth_states WHERE id = ANY($1::uuid[])`, [[expiredGrant.id, liveGrant.id]]
+    );
+    const expRow = afterScrub.find((r) => r.id === expiredGrant.id);
+    const liveRow = afterScrub.find((r) => r.id === liveGrant.id);
+    eq('the expired grant no longer holds the user token', expRow.tok_gone, true);
+    eq('the expired grant no longer holds the PKCE verifier', expRow.pkce_gone, true);
+    eq('a LIVE grant keeps its token', liveRow.tok_gone, false);
+    eq('a LIVE grant keeps its PKCE verifier', liveRow.pkce_gone, false);
+
+    // ---- CONSUMED is not CONFIRMED ---------------------------------------
+    //
+    // A grant that was consumed at the OAuth CALLBACK (consumed_at set) and
+    // is still AWAITING CONFIRMATION (confirmed_at NULL) is LIVE: the parked
+    // user token and the PKCE verifier are both still needed. The cleanup
+    // must not touch it, and it must not be the thing that decides the
+    // scrub.
+    const awaiting = await mkSecretGrant();
+    const { rows: awaitingRow } = await q(
+      `SELECT consumed_at IS NOT NULL AS consumed,
+              confirmed_at IS NULL AS unconfirmed,
+              (user_token_encrypted IS NOT NULL) AS tok
+         FROM oauth_states WHERE id=$1`, [awaiting.id]
+    );
+    eq('the awaiting grant was consumed at the callback', awaitingRow[0].consumed, true);
+    eq('the awaiting grant is NOT confirmed', awaitingRow[0].unconfirmed, true);
+    eq('and it still holds its token', awaitingRow[0].tok, true);
+    await state.scrubOAuthSecrets({ db: DB });
+    const { rows: awaitingAfter } = await q(
+      `SELECT (user_token_encrypted IS NOT NULL) AS tok,
+              (code_verifier_encrypted IS NOT NULL) AS pkce
+         FROM oauth_states WHERE id=$1`, [awaiting.id]
+    );
+    eq('a grant AWAITING CONFIRMATION keeps its token', awaitingAfter[0].tok, true);
+    eq('a grant AWAITING CONFIRMATION keeps its PKCE verifier', awaitingAfter[0].pkce, true);
+
+    // ---- a SPENT grant is scrubbed too (heals a failed cleanup) ------------
+    const spentGrant = await mkSecretGrant({ confirm: true });
+    const { rows: spentBefore } = await q(
+      `SELECT (user_token_encrypted IS NOT NULL) AS tok FROM oauth_states WHERE id=$1`, [spentGrant.id]
+    );
+    eq('the spent grant still holds its token before the scrub', spentBefore[0].tok, true);
+    await state.scrubOAuthSecrets({ db: DB });
+    const { rows: spentAfter } = await q(
+      `SELECT (user_token_encrypted IS NULL) AS gone FROM oauth_states WHERE id=$1`, [spentGrant.id]
+    );
+    eq('a spent grant is scrubbed even though it has not expired', spentAfter[0].gone, true);
+
+    // ---- row retention: old rows go, recent rows stay --------------------
+    const oldRow = await mkSecretGrant();
+    await q(`UPDATE oauth_states SET expires_at = now() - interval '2 days' WHERE id=$1`, [oldRow.id]);
+    const removed = await state.purgeExpiredOAuthStates({ db: DB, olderThanSeconds: 86400 });
+    check('the old row is deleted', removed >= 1);
+    const { rows: oldGone } = await q(
+      `SELECT count(*)::int n FROM oauth_states WHERE id=$1`, [oldRow.id]
+    );
+    eq('and it is really gone', oldGone[0].n, 0);
+    const { rows: liveStill } = await q(
+      `SELECT count(*)::int n FROM oauth_states WHERE id=$1`, [liveGrant.id]
+    );
+    eq('a recent row is NOT deleted', liveStill[0].n, 1);
+
+    // ---- one runner only: the advisory lock -------------------------------
+    const holder = await pool.connect();
+    await holder.query('SELECT pg_advisory_lock($1::bigint)', [LOCK]);
+    const skipped = await state.runOAuthStateCleanup({ db: DB });
+    eq('a second runner SKIPS while the lock is held', skipped.ran, false);
+    eq('and it says why', skipped.reason, 'another_runner_holds_the_lock');
+    await holder.query('SELECT pg_advisory_unlock($1::bigint)', [LOCK]);
+    holder.release();
+
+    const afterLock = await state.runOAuthStateCleanup({ db: DB });
+    eq('the lock is released after the holder lets go', afterLock.ran, true);
+
+    // ---- a failed pass releases the lock ----------------------------------
+    const SIMULATED = 'SIMULATED_CLEANUP_FAILURE';
+    const realClient = await pool.connect();
+    const failingClient = {
+      query: async (sql, params) => {
+        if (String(sql).includes('UPDATE oauth_states')) {
+          throw Object.assign(new Error('simulated cleanup failure'), { code: SIMULATED });
+        }
+        return realClient.query(sql, params);
+      },
+      release: () => realClient.release()
+    };
+    const failingDb = { connect: async () => failingClient, query: (...a) => pool.query(...a) };
+    await rejects('a failed cleanup pass is reported', SIMULATED, async () => {
+      await state.runOAuthStateCleanup({ db: failingDb });
+    });
+    const afterFailure = await state.runOAuthStateCleanup({ db: DB });
+    eq('and the lock was released, so the next pass can run', afterFailure.ran, true);
+
+    // ---- a CRASHED holder releases the lock (restart recovery) -----------
+    // A worker that dies mid-pass must not wedge the cleanup. The advisory
+    // lock is session scoped, so the lock dies with the session.
+    const crasher = await pool.connect();
+    await crasher.query('SELECT pg_advisory_lock($1::bigint)', [LOCK]);
+    await crasher.end();
+    const afterCrash = await state.runOAuthStateCleanup({ db: DB });
+    eq('a crashed holder releases the lock, so a restarted worker can run', afterCrash.ran, true);
+
+    // ---- idempotency ------------------------------------------------------
+    const again = await state.runOAuthStateCleanup({ db: DB });
+    eq('a second pass runs', again.ran, true);
+    eq('and has nothing left to scrub', again.secretsCleared, 0);
+
+    // ---- tenant isolation: a live grant of ANY tenant is untouched ------
+    const otherState = await state.issueOAuthState({
+      tenantId: t2, actorUserId: admin2, provider: 'meta', brandId: b2, redirectUri: URI, db: DB
+    });
+    const otherConsumed = await state.consumeOAuthState({
+      state: otherState.state, redirectUri: URI, db: DB
+    });
+    await state.stashUserToken({
+      stateId: otherConsumed.id, userToken: 'EAA-other-tenant-secret', db: DB
+    });
+    await state.runOAuthStateCleanup({ db: DB });
+    const { rows: t2Live } = await q(
+      `SELECT (user_token_encrypted IS NOT NULL) AS tok FROM oauth_states WHERE id=$1`,
+      [otherConsumed.id]
+    );
+    eq('the cleanup did not touch another tenant\'s live grant', t2Live[0].tok, true);
+    const { rows: t2Live2 } = await q(
+      `SELECT count(*)::int n FROM oauth_states WHERE id=$1`, [otherConsumed.id]
+    );
+    eq('and that row still exists', t2Live2[0].n, 1);
+
+    // ---- the audit record: counts only, no ids, no tokens -----------------
+    const { rows: auditRows } = await q(
+      `SELECT tenant_id, actor_user_id, object_id, metadata::text m
+         FROM audit_logs WHERE action=$1 ORDER BY created_at DESC LIMIT 1`,
+      [state.OAUTH_CLEANUP_AUDIT_ACTION]
+    );
+    check('the cleanup is audited', auditRows.length >= 1);
+    eq('the audit row is a system event, not a user action', auditRows[0].tenant_id, null);
+    eq('with no actor', auditRows[0].actor_user_id, null);
+    eq('and no object id', auditRows[0].object_id, null);
+    check('the audit metadata carries counts', /secretsCleared/.test(auditRows[0].m) && /rowsDeleted/.test(auditRows[0].m));
+    check('and NO state id', !/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.test(auditRows[0].m));
+    check('and NO token', !/EAA-/.test(auditRows[0].m));
+
+    // ---- the customer-facing purge endpoint is GONE -----------------------
+    const routeSrc = readFileSync(join(REPO, 'src', 'api', 'v1', 'metaOAuth.js'), 'utf8');
+    check('the purge route no longer exists in the source', !routeSrc.includes("'/purge-states'"));
+    const handoverSrc = readFileSync(join(REPO, 'B1_HANDOVER.md'), 'utf8');
+    check('and the route is not documented as reachable',
+      !handoverSrc.includes('`/api/v1/integrations/facebook/purge-states`'));
+    {
+      const express = (await import('express')).default;
+      const { createApiV1Router } = await import('../src/api/v1/index.js');
+      const app = express();
+      const router = createApiV1Router({
+        pool,
+        validateSessionFn: async () => ({
+          tenantId: t1, user: { id: admin1, email: 'a@b.local', name: 'A' },
+          sessionId: '33333333-3333-3333-3333-3333-333333333333',
+          roles: ['Company Admin'], brandIds: null, allBrandsInCompany: true,
+          customAbilities: [], isPlatformSuperAdmin: false
+        })
+      });
+      app.use(express.json());
+      app.use('/api/v1', router);
+      const srv = await new Promise((r) => {
+        const s = app.listen(0, '127.0.0.1', () => r(s));
+      });
+      servers.push(srv);
+      const base = `http://127.0.0.1:${srv.address().port}/api/v1`;
+      const health = await fetch(`${base}/_health`);
+      const cookie = (health.headers.get('set-cookie') || '').match(/csrf_token=[^;]*/)?.[0];
+      const auth = { cookie: `lwc_session=x; ${cookie}`, csrf: cookie?.split('=')[1] };
+      const purgeResp = await fetch(`${base}/integrations/facebook/purge-states`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: auth.cookie, 'x-csrf-token': auth.csrf },
+        body: JSON.stringify({})
+      });
+      eq('a Company Admin cannot purge globally any more', purgeResp.status, 404);
+      // And an AGENT - the role that only holds the READ ability - must not
+      // reach a global delete either.
+      const agentApp = express();
+      const agentRouter = createApiV1Router({
+        pool,
+        validateSessionFn: async () => ({
+          tenantId: t1, user: { id: admin1, email: 'a@b.local', name: 'A' },
+          sessionId: '33333333-3333-3333-3333-3333-333333333333',
+          roles: ['Agent'], brandIds: null, allBrandsInCompany: true,
+          customAbilities: [], isPlatformSuperAdmin: false
+        })
+      });
+      agentApp.use(express.json());
+      agentApp.use('/api/v1', agentRouter);
+      const agentSrv = await new Promise((r) => {
+        const s = agentApp.listen(0, '127.0.0.1', () => r(s));
+      });
+      servers.push(agentSrv);
+      const aBase = `http://127.0.0.1:${agentSrv.address().port}/api/v1`;
+      const aHealth = await fetch(`${aBase}/_health`);
+      const aCookie = (aHealth.headers.get('set-cookie') || '').match(/csrf_token=[^;]*/)?.[0];
+      const agentResp = await fetch(`${aBase}/integrations/facebook/purge-states`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `lwc_session=x; ${aCookie}`,
+          'x-csrf-token': aCookie?.split('=')[1]
+        },
+        body: JSON.stringify({})
+      });
+      eq('an AGENT cannot purge globally either', agentResp.status, 404);
+    }
+
+    // ---- the worker arms the cleanup --------------------------------------
+    const workerSrc = readFileSync(join(REPO, 'src', 'workers', 'metaEventWorker.js'), 'utf8');
+    check('the worker arms the oauth state cleanup', /startOAuthStateCleanupSweeper\(\)/.test(workerSrc));
+    check('and the cleanup takes an advisory lock',
+      /pg_try_advisory_lock/.test(readFileSync(join(REPO, 'src', 'services', 'oauthState.js'), 'utf8')));
+    check('the cleanup reports only a code on failure', /safeErrorCode\(err\)/.test(workerSrc));
+  }
+
   metaOAuth.resetGraphTransport();
 } catch (e) {
   failures.push(`fatal: ${e?.code ?? ''} ${e?.message}`);

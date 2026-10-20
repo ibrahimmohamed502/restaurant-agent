@@ -2,13 +2,25 @@
 
 **Branch:** `b1-facebook-oauth`
 **Base:** `05d0c0c` (A1, owner-accepted)
-**Head at time of writing:** see git log; CI run `39212007748`
-**CI run:** `39200973618`
-**Status:** code complete, CI green, **NOT deployed, NOT merged, NOT verified against real Meta**
+**Head at time of writing:** see git log
+**CI run:** read the latest green run for this branch from GitHub Actions. The
+number changes with every commit, so it is deliberately not pinned here.
+**Status:** code complete and CI green on the feature branch. **NOT merged to
+`main`**, and the corrections in this branch are **NOT deployed**.
 
-Everything below is development-only. Nothing was deployed, no migration was
-executed on production, no Meta setting was changed, no Traefik/DNS/Cloudflare
-change was made, and nothing was merged to `main`.
+> **Deployment history - read this before planning any deploy.**
+>
+> An **earlier revision** of B1 was deployed to Production on **2026-10-19**,
+> and `migrations/023_facebook_oauth.sql` **was applied** to the Production
+> database on that date (owner-approved, applied exactly once).
+>
+> The corrections that are in this branch - the F1-F7 hardening, the expiry
+> tri-state, the disconnect isolation, the OAuth grant gate and the cleanup job
+> - are **not deployed**, and they need **no migration**, so the Production
+> schema is unaffected by them.
+>
+> The rest of this document describes the branch as it stands. Where it says
+> "not deployed", read it as "this branch is not deployed".
 
 ---
 
@@ -107,7 +119,9 @@ same branch. Two of them (§4) were functional or security bugs, not test gaps.
 | POST | `/api/v1/integrations/facebook/confirm` | session + connect/reconnect + state owned + brand in scope |
 | GET | `/api/v1/integrations/facebook/connections` | session + status ability + brand scope |
 | DELETE | `/api/v1/integrations/facebook/connections/:id` | session + disconnect ability + tenant match |
-| POST | `/api/v1/integrations/facebook/purge-states` | session + status ability |
+
+There is deliberately **no** customer-facing purge endpoint. The cleanup of
+expired OAuth grants is an internal job in the worker — see §14.
 
 ---
 
@@ -359,8 +373,10 @@ spot, and the count floor could not detect an assertion that did not exist.
 
 **The fix.**
 
-1. `code_verifier_encrypted` / `code_verifier_iv` added to the **unapplied**
-   migration 023 - free, since it has never run.
+1. `code_verifier_encrypted` / `code_verifier_iv` added to migration 023 - at
+   the time it was a free change, because the migration had not run yet. (It
+   has since been applied to Production, on 2026-10-19, and the columns are
+   part of the schema that is live.)
 2. The raw verifier is encrypted with the same AES-256-GCM key as
    `user_token_encrypted`. The digest is *kept* as an integrity check.
 3. `takePkceVerifier()` releases it and **destroys it in the same statement**.
@@ -604,7 +620,7 @@ Read-only. **Report values and statuses only — never paste a secret.**
 
 ---
 
-## 11. Deployment and rollback proposal — **NOT EXECUTED**
+## 11. Deployment and rollback proposal - **earlier revision EXECUTED 2026-10-19; this branch NOT EXECUTED**
 
 ### Environment variables to add
 
@@ -630,8 +646,22 @@ Read-only. **Report values and statuses only — never paste a secret.**
 ### Migration
 
 `migrations/023_facebook_oauth.sql` — additive only: one new table, three
-nullable columns, three indexes, one check constraint. Every statement is
-guarded, so it is re-runnable. It modifies **no existing row**.
+nullable columns on `channels`, six indexes, one check constraint. It modifies
+**no existing row**. **It was applied to Production on 2026-10-19**, exactly
+once.
+
+Re-running it against a database that already has the full shape is safe: the
+`CREATE TABLE` and `CREATE INDEX` statements are all `IF NOT EXISTS`, and the
+three `channels` columns are added with `ADD COLUMN IF NOT EXISTS`.
+
+It is **not** self-healing for a partially applied EARLIER revision. The
+`oauth_states` PKCE columns live inside the `CREATE TABLE IF NOT EXISTS`, so
+against a table that already exists without them the statement is a no-op and
+the columns are never added. The migration would then fail LOUDLY on
+`CREATE UNIQUE INDEX ... WHERE confirmed_at IS NOT NULL`, which is the
+acceptable failure mode - a stopped migration, not a silent one. Production has
+the full shape, but that is a claim to verify against the live schema, not
+something this document can assert.
 
 Risk: `CREATE INDEX` takes a share lock on `channels`. At current row counts
 this is negligible. Run it in a transaction during a low-traffic window.
@@ -710,8 +740,13 @@ webhooks, AI behaviour, token refresh. Those are later batches.
 2. Verify the required Meta task set against the real dashboard (§10 D10).
 3. If PKCE is unsupported, set `META_OAUTH_PKCE=false` and re-test.
 4. Token lifecycle (long-lived exchange, refresh, rotation) — separate batch.
-5. `purge-expired` states currently has an HTTP endpoint but no scheduler. Harmless
-   (states are unusable once expired) but it grows the table.
+5. `purge-expired` states: **now an internal job** (see §14). The HTTP endpoint
+   that used to expose it to any user holding `brand.integration.status` - a
+   READ ability held by the AGENT role - was removed.
+   - **UNRESOLVED PRE-DEPLOYMENT CHECK:** no caller of that endpoint exists in
+     this repository, but a host-side cron on the VPS cannot be ruled out from
+     here. If one exists it must be pointed at the worker instead, or removed.
+     This needs a read of the VPS and has **not** been done yet.
 
 **A1 — owner decisions**
 6. §7: the A1 PostgreSQL suite never ran. Decide how to proceed on the 5 failures.
@@ -723,6 +758,69 @@ webhooks, AI behaviour, token refresh. Those are later batches.
    would rather not risk corrupting them.
 
 **Security note raised by §7:** `docker compose config` prints every secret in
-plaintext. Not changed — noted so it is a deliberate decision rather than an
+plaintext. Not changed - noted so it is a deliberate decision rather than an
 oversight.
+
+---
+
+## 14. OAuth state cleanup - the retention policy
+
+### The problem it solves
+
+A grant is usable for ten minutes (`STATE_TTL_SECONDS`). After that it is
+unusable - `readUnspentState()` requires `expires_at > now()`. But the ROW
+stayed in the database, and the row holds an encrypted Meta **user access
+token** and an encrypted **PKCE verifier**. There was no scheduler: the only
+way to remove those rows was an HTTP endpoint that any user holding
+`brand.integration.status` could call, and that ability is held by the AGENT
+role. So a read permission could trigger a global, cross-tenant delete, and
+nothing recorded that it had happened.
+
+### The policy - two clocks, deliberately separate
+
+| Clock | Value | Meaning |
+|---|---|---|
+| **USE** | 10 minutes | how long a grant may be used. unchanged |
+| **SECRET** | scrubbed at the grant's own expiry, swept every **5 minutes** | the encrypted token and the encrypted PKCE verifier do not outlive their usefulness. The 15-minute figure is a target **while the worker is running**, not an absolute guarantee |
+| **ROW** | deleted **24 hours** after expiry | a forensic window that holds **no secret** once the scrub has run |
+| **AUDIT** | untouched | `audit_logs` is a different table and is never deleted by this job |
+
+### What runs, and where
+
+`runOAuthStateCleanup()` in `src/services/oauthState.js`, called by
+`startOAuthStateCleanupSweeper()` in `src/workers/metaEventWorker.js` - the
+existing worker, on the existing timer pattern, with no new service and no new
+dependency.
+
+1. `pg_try_advisory_lock()` on **one dedicated client** held for the whole
+   pass. A second worker replica loses the race and skips the tick; it does
+   not queue. The lock is released in a `finally`, and because it is session
+   scoped, a worker that dies mid-pass releases it when its connection dies.
+2. `scrubOAuthSecrets()` - one `UPDATE` clearing `user_token_encrypted`,
+   `user_token_iv`, `code_verifier_encrypted` and `code_verifier_iv` on every
+   row that is expired **or already spent**. The "or spent" half is what heals
+   a grant whose confirm-time cleanup failed.
+3. `purgeExpiredOAuthStates()` - the `DELETE` of rows past the 24-hour
+   retention.
+4. One `audit_logs` row per pass, written **inside the same transaction**:
+   counts only, `tenant_id` and `actor_user_id` NULL (this is a system event),
+   no state id, no token.
+
+A live grant is never touched: both statements require a row that can no
+longer be used, so a connect in flight cannot be broken by a sweep. The
+scrub, the delete and the audit record commit or roll back together, and both
+operations are idempotent, so a failed pass is simply retried on the next
+tick.
+
+### Why the endpoint was removed
+
+`POST /integrations/facebook/purge-states` was a global, cross-tenant delete
+behind a read ability that the Agent role holds. It is gone: the cleanup is
+internal, it runs under the lock, and it is audited. There is no
+customer-reachable way to trigger a global delete.
+
+**Operational dependency to check before deployment:** no caller of that
+endpoint exists in this repository, but a host-side cron outside it cannot be
+ruled out from here. If one exists it must be pointed at the worker instead,
+or removed.
 

@@ -35,7 +35,6 @@ import {
   readConsumedState,
   readUnspentState,
   claimGrantForConfirm,
-  purgeExpiredOAuthStates,
   generatePkce,
   takePkceVerifier,
   OAuthStateError,
@@ -616,15 +615,18 @@ export function createMetaOAuthRouter({ pool }) {
     }
   });
 
-  /**
-   * POST /integrations/facebook/purge-states
-   *
-   * Housekeeping. Touches only expired rows and is safe to call on a timer.
-   */
-  router.post('/purge-states', requireV1Auth, requireAbility('brand.integration.status'), async (req, res) => {
-    const removed = await purgeExpiredOAuthStates({ db: req.db });
-    return res.json({ data: { removed } });
-  });
+  // NOTE: there is deliberately NO customer-facing "purge" endpoint.
+  //
+  // The cleanup used to be reachable as POST /integrations/facebook/purge-states
+  // behind `brand.integration.status` - an ability that the AGENT role holds.
+  // That put a GLOBAL, cross-tenant delete behind a READ permission, and it
+  // was not audited. The endpoint is gone.
+  //
+  // The cleanup is now an internal job in the worker
+  // (src/workers/metaEventWorker.js -> startOAuthStateCleanupSweeper), which
+  // scrubs the secret material from grants that can no longer be used and then
+  // deletes the rows past their retention, under a PostgreSQL advisory lock so
+  // exactly one worker replica runs a pass at a time.
 
   return router;
 }

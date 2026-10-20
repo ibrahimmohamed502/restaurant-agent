@@ -18,10 +18,16 @@ import {
 } from '../services/webhookEvents.js';
 import { summarizeUnresolvedOutboundAllTenants } from '../services/conversations.js';
 import { redispatchStaleIntakes } from './metaEventPipeline.js';
+import { runOAuthStateCleanup, OAUTH_STATE_RETENTION } from '../services/oauthState.js';
 import { enabled as pgEnabled } from '../db/pg.js';
 
 /** How often stranded intake rows are looked for. */
 export const STALE_SWEEP_INTERVAL_MS = Number(process.env.STALE_SWEEP_INTERVAL_MS || 60_000);
+
+/** How often expired OAuth grants are scrubbed. */
+export const OAUTH_CLEANUP_INTERVAL_MS = Number(
+  process.env.OAUTH_CLEANUP_INTERVAL_MS || OAUTH_STATE_RETENTION.sweepIntervalSeconds * 1000
+);
 
 /**
  * Recover intake rows that were recorded but never started processing.
@@ -71,6 +77,53 @@ export function startStaleIntakeSweeper({ intervalMs = STALE_SWEEP_INTERVAL_MS }
   console.log(`♻️  stale intake sweeper armed (every ${Math.max(15_000, Number(intervalMs) || 60_000)}ms)`);
   return timer;
 }
+/**
+ * Scrub the secret material from OAuth grants that can no longer be used, and
+ * delete the rows that are past their retention.
+ *
+ * WHY IT LIVES HERE
+ * -----------------
+ * The worker is already the process that owns periodic maintenance, it already
+ * runs a timer of this exact shape (the stale intake sweeper above), and it has
+ * no request context - so it never has to invent a tenant or an actor. That is
+ * the property that makes a global cleanup safe here.
+ *
+ * WHY IT IS SAFE WITH SEVERAL COPIES
+ * ----------------------------------
+ * The pass takes a PostgreSQL advisory lock on ONE dedicated client for its
+ * whole duration, so only one copy of this worker runs a pass at a time. A
+ * replica that loses the race skips the tick and says so; it does not queue.
+ *
+ * WHAT IT REPORTS
+ * ---------------
+ * Counts only. Never a state id, never a token, never an error message - the
+ * error path reports the error CODE, exactly like the sweeper above.
+ */
+export function startOAuthStateCleanupSweeper({ intervalMs = OAUTH_CLEANUP_INTERVAL_MS } = {}) {
+  if (!pgEnabled) {
+    console.log('⏭️  oauth state cleanup disabled (no database)');
+    return null;
+  }
+  const every = Math.max(60_000, Number(intervalMs) || OAUTH_CLEANUP_INTERVAL_MS);
+  const timer = setInterval(async () => {
+    try {
+      const result = await runOAuthStateCleanup();
+      if (!result.ran) return; // another replica holds the lock
+      if (!result.secretsCleared && !result.rowsDeleted) return; // nothing to report
+      console.warn(
+        `♻️  oauth state cleanup: ${result.secretsCleared} secret(s) scrubbed, ` +
+        `${result.rowsDeleted} expired row(s) removed`
+      );
+    } catch (err) {
+      // Counts and codes only - never a message, never a token.
+      console.error('❌ oauth state cleanup failed:', safeErrorCode(err));
+    }
+  }, every);
+  timer.unref?.(); // never hold the process open
+  console.log(`♻️  oauth state cleanup armed (every ${every}ms)`);
+  return timer;
+}
+
 /**
  * Surface the three silent failure modes.
  *
@@ -185,6 +238,7 @@ async function main() {
   // Stage 6: the knowledge-index worker shares the process but uses its OWN
   // queue + concurrency — embedding/index jobs never mix with Meta events.
   startStaleIntakeSweeper();
+  startOAuthStateCleanupSweeper();
   const indexWorker = createKnowledgeIndexWorker();
   indexWorker.on('completed', (job) => console.log(`✅ index job done: ${job.id}`));
   indexWorker.on('failed', (job, err) => {

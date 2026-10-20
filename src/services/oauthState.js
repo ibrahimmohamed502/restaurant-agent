@@ -396,6 +396,205 @@ export async function purgeExpiredOAuthStates({ db = pool, olderThanSeconds = 86
 }
 
 /**
+ * THE RETENTION POLICY - two clocks, deliberately separate.
+ *
+ *   USE     the grant is usable for STATE_TTL_SECONDS (ten minutes) after it
+ *          is issued. Nothing here extends that.
+ *   SECRET  the secret material inside the row is scrubbed once the grant can
+ *          no longer be used, so a real Meta credential does not outlive its
+ *          usefulness by hours or by forever.
+ *   ROW     the row itself is kept a little longer for forensics, and once the
+ *          scrub has run it holds NO secret.
+ *
+ * The scrub is the security-relevant half. The row deletion is housekeeping.
+ * They are separate because they have separate deadlines.
+ */
+export const OAUTH_STATE_RETENTION = Object.freeze({
+  /** How long a grant may be used. Unchanged. */
+  useTtlSeconds: STATE_TTL_SECONDS,
+  /** How often the worker looks for work. */
+  sweepIntervalSeconds: 300,
+  /**
+   * Extra grace before the secret is scrubbed, on top of the grant's own
+   * expiry. Zero means "as soon as the grant can no longer be used".
+   */
+  secretGraceSeconds: 0,
+  /** How long the row survives after expiry, for forensics. */
+  rowRetentionSeconds: 86400
+});
+
+/**
+ * The advisory lock key for the cleanup.
+ *
+ * A fixed, documented constant. Any process that wants to run the cleanup
+ * against this database uses this key, so exactly one of them runs at a time.
+ */
+export const OAUTH_CLEANUP_LOCK_KEY = 8741200331;
+
+/** The audit action recorded for a cleanup pass. Counts only, never secrets. */
+export const OAUTH_CLEANUP_AUDIT_ACTION = 'integrations.facebook.oauth_state.cleanup';
+
+/**
+ * Scrub the SECRET material from every row that can no longer be used.
+ *
+ * TWO KINDS OF ROW, ONE OPERATION
+ * -------------------------------
+ *   expired - the grant's use window closed (`expires_at` in the past)
+ *   spent   - the grant was claimed and used (`confirmed_at` is set)
+ *
+ * The second kind is the important one. The confirm route destroys the parked
+ * token in a `finally` whose failure is SWALLOWED, so a grant that was spent
+ * can keep its token parked for as long as its row survives. Scrubbing spent
+ * rows here heals that case instead of waiting for the row to be deleted.
+ *
+ * A LIVE grant is never touched. The predicate is a disjunction of "can no
+ * longer be used" and "has already been used", so a connect in flight cannot
+ * be broken by a sweep.
+ *
+ * WHAT IT CLEARS
+ * --------------
+ *   user_token_encrypted / user_token_iv   - the parked Meta USER access token
+ *   code_verifier_encrypted / code_verifier_iv - the parked PKCE verifier
+ *
+ * The PKCE verifier is a secret too, and it has exactly the same retention
+ * problem: a grant that was never exchanged keeps its verifier encrypted until
+ * the row is deleted. It is cleared in the same statement.
+ *
+ * `code_verifier_hash` is a digest, not a secret, and stays for diagnostics.
+ *
+ * @returns {Promise<number>} how many rows were scrubbed
+ */
+export async function scrubOAuthSecrets({
+  db = pool,
+  secretGraceSeconds = 0,
+  includeSpent = true
+} = {}) {
+  const { rows } = await db.query(
+    `UPDATE oauth_states
+        SET user_token_encrypted   = NULL,
+            user_token_iv          = NULL,
+            code_verifier_encrypted = NULL,
+            code_verifier_iv        = NULL
+      WHERE (
+              expires_at < now() - ($1 || ' seconds')::interval
+              OR ($2::boolean AND confirmed_at IS NOT NULL)
+            )
+        AND (user_token_encrypted IS NOT NULL
+             OR user_token_iv IS NOT NULL
+             OR code_verifier_encrypted IS NOT NULL
+             OR code_verifier_iv IS NOT NULL)
+      RETURNING 1`,
+    [String(secretGraceSeconds), Boolean(includeSpent)]
+  );
+  // RETURNING 1, never the ids: a state id must not reach a log or a metric.
+  return rows.length;
+}
+
+/**
+ * Run ONE cleanup pass: scrub the secrets, then delete the rows that are past
+ * their retention, then record what happened.
+ *
+ * ONE DEDICATED CLIENT FOR THE WHOLE PASS
+ * ---------------------------------------
+ * A PostgreSQL advisory lock is SESSION scoped: it is released when the
+ * connection holding it is returned to the pool. Taking the lock on one
+ * connection and then running the work on another would release the lock
+ * before the work was done, and would silently defeat the whole guarantee.
+ * So this function takes ONE client, holds it for the entire pass, and
+ * releases it at the end - on the error path too.
+ *
+ * WHY AN ADVISORY LOCK AND NOT A "LAST RUN" MARKER
+ * -------------------------------------------------
+ * The lock needs no table, no schema change and no migration, and it works
+ * across every replica of the worker without any of them knowing about the
+ * others. A marker row would need a table that does not exist.
+ *
+ * ONE TRANSACTION
+ * ---------------
+ * The scrub, the delete and the audit record commit or roll back together. If
+ * the audit write fails, nothing is deleted and the pass is simply retried on
+ * the next tick - which is safe, because both operations are idempotent.
+ *
+ * @returns {Promise<{ran: boolean, reason?: string, secretsCleared: number, rowsDeleted: number}>}
+ */
+export async function runOAuthStateCleanup({
+  db = pool,
+  secretGraceSeconds = OAUTH_STATE_RETENTION.secretGraceSeconds,
+  rowRetentionSeconds = OAUTH_STATE_RETENTION.rowRetentionSeconds,
+  lockKey = OAUTH_CLEANUP_LOCK_KEY,
+  writeAudit = true
+} = {}) {
+  const client = await db.connect();
+  let locked = false;
+  let inTx = false;
+  try {
+    // pg_try_advisory_lock never waits: if another replica holds it, this
+    // process skips the pass instead of queueing behind it.
+    const lock = await client.query(
+      'SELECT pg_try_advisory_lock($1::bigint) AS locked',
+      [String(lockKey)]
+    );
+    locked = Boolean(lock.rows[0]?.locked);
+    if (!locked) {
+      return { ran: false, reason: 'another_runner_holds_the_lock', secretsCleared: 0, rowsDeleted: 0 };
+    }
+
+    await client.query('BEGIN');
+    inTx = true;
+    try {
+      const secretsCleared = await scrubOAuthSecrets({ db: client, secretGraceSeconds });
+      const rowsDeleted = await purgeExpiredOAuthStates({ db: client, olderThanSeconds: rowRetentionSeconds });
+
+      if (writeAudit) {
+        // Written INSIDE the transaction, not through the fire-and-forget
+        // audit() helper: this record is the operator's evidence that the
+        // cleanup ran, and a fire-and-forget write could be lost if the
+        // process exits right after the pass.
+        //
+        // tenant_id and actor_user_id are NULL on purpose: this is a system
+        // event, not an action by a user, and both columns are nullable
+        // (migrations/001_init.sql).
+        //
+        // The metadata carries COUNTS ONLY. No state id, no token, no tenant
+        // name, no free text.
+        await client.query(
+          `INSERT INTO audit_logs (tenant_id, actor_user_id, action, object_type, object_id, ip, metadata)
+           VALUES (NULL, NULL, $1, 'oauth_state', NULL, NULL, $2::jsonb)`,
+          [
+            OAUTH_CLEANUP_AUDIT_ACTION,
+            JSON.stringify({
+              secretsCleared,
+              rowsDeleted,
+              secretGraceSeconds,
+              rowRetentionSeconds
+            })
+          ]
+        );
+      }
+
+      await client.query('COMMIT');
+      inTx = false;
+      return { ran: true, secretsCleared, rowsDeleted };
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      inTx = false;
+      throw e;
+    }
+  } finally {
+    // A client must NEVER go back to the pool with an open transaction: the
+    // next borrower would inherit it. The rollback below is a no-op when the
+    // transaction is already closed, which is the normal case.
+    if (inTx) {
+      await client.query('ROLLBACK').catch(() => {});
+    }
+    if (locked) {
+      await client.query('SELECT pg_advisory_unlock($1::bigint)', [String(lockKey)]).catch(() => {});
+    }
+    client.release();
+  }
+}
+
+/**
  * Spend a grant exactly once.
  *
  * The one-shot guarantee used to be INFERRED from the parked token being cleared
