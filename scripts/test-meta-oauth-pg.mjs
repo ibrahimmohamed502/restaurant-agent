@@ -1046,8 +1046,10 @@ try {
         { brandId: b2, pageId: '222', stateId: sid })).status, 400);
 
     // Owner confirms.
+    // Page '111' already exists from section 8 (same-brand reconnect kept it at b1),
+    // so mode must be 'reconnect' to authorize first-brand / same-brand assignment.
     const confirmed = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
-      { brandId: b1, pageId: '111', stateId: sid });
+      { brandId: b1, pageId: '111', stateId: sid, mode: 'reconnect' });
     eq('the owner can confirm', confirmed.status, 201);
     check('and the response carries no token', !JSON.stringify(confirmed.body).includes('EAA-'));
 
@@ -1906,7 +1908,7 @@ try {
     // ---- HIGH-2: expiry-aware status ------------------------------------
     const connected910 = await conn.connectPage({
       tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
-      availablePages: pages910('EAA-page-910'), pageId: LP, db: DB
+      availablePages: pages910('EAA-page-910'), pageId: LP, mode: 'reconnect', db: DB
     });
     eq('the page connects', connected910.pageId, LP);
     const listed910 = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
