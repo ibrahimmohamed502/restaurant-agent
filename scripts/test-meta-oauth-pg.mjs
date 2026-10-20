@@ -1022,8 +1022,17 @@ try {
 
       // The grant survives, so the user can simply confirm correctly.
       // Page '111' already exists from section 8, so mode must be 'reconnect'.
+      // Create a fresh grant bound to brand b1 so the owner confirmation uses
+      // the same brand as the grant (BRAND_DOES_NOT_MATCH_GRANT is checked).
+      const startedRight = await send(ca.base, caAuth, 'POST', '/integrations/facebook/connect', { brandId: b1 });
+      eq('connect start for owner confirm is 200', startedRight.status, 200);
+      const rightCb = await fetch(
+        `${ca.base}/integrations/facebook/callback?code=MOCK&state=${encodeURIComponent(startedRight.body.data.state)}`,
+        { redirect: 'manual' });
+      eq('owner confirm callback redirects', rightCb.status, 303);
+      const rightSid = new URL(rightCb.headers.get('location')).searchParams.get('stateId');
       const right = await send(ca.base, caAuth, 'POST', '/integrations/facebook/confirm',
-        { brandId: b1, pageId: '111', stateId: moveSid, mode: 'reconnect' });
+        { brandId: b1, pageId: '111', stateId: rightSid, mode: 'reconnect' });
       eq('confirming the brand the grant was issued for still works', right.status, 201);
     }
 
@@ -1153,7 +1162,7 @@ try {
           WHERE action='integrations.facebook.connect.conflict'
             AND object_id='111'
             AND metadata::text LIKE '%cross_brand_transfer_forbidden%'`);
-      eq('cross-brand refusal is audited', crossAudit.length >= 1);
+      eq('cross-brand refusal is audited', crossAudit.length >= 1, true);
       check('audit records no token', !/EAA-/.test(JSON.stringify(crossAudit)));
     }
 
@@ -1728,6 +1737,7 @@ try {
   section('16b cross-brand transfer prohibition');
 
   {
+    const { encrypt } = await import('../src/db/crypto.js');
     const LEGACY = conn.CREDENTIAL_KIND_LEGACY;
     const OAUTH = conn.CREDENTIAL_KIND_OAUTH;
 
