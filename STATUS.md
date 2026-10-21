@@ -14,7 +14,7 @@
 - **المنيو:** `knowledge.json` = المنيو الحقيقي الكامل — 133 صنف (Breakfast / Lunch & Dinner / Drinks & Dessert) + 11 مصدر لحوم للشفافية + كل الأكل حلال. ⭐ ناقص: المواعيد/العنوان/التوصيل/التليفون (TBD — المستخدم هيبعتهم)
 - **التوكين:** Page Token **بلا انتهاء** لصفحة كاكاو (مشتق من Long-Lived token لأكونت المطعم "Elite-it AI-Bot" — الأكونت Admin في التطبيق وفي الصفحة). محفوظ في `.env` و Portainer env.
 - **الاستضافة:** Docker على VPS الشركة عبر Portainer — stack `restaurant-agent` (كونتينران: `restaurant-page-agent` + `restaurant-tunnel`) — يشتغل 24/7 بدون اللابتوب ✅
-- **الوصول العام (مؤقت):** `https://power-apply-cite-succeed.trycloudflare.com` — ⚠️ **بيتغيّر مع أي redeploy! ممنوع "Pull and redeploy" إلا وإحنا مستعدين نحدّث اللينك في فيسبوك بعدها**
+- **الوصول العام (مؤقت):** `https://prophet-implementation-bull-begun.trycloudflare.com` — ⚠️ **بيتغيّر مع أي redeploy! ممنوع "Pull and redeploy" إلا وإحنا مستعدين نحدّث اللينك في فيسبوك بعدها**
 - **تطبيق Meta:** "Restaurant Bot" — App ID `1673966207646736` — **Live** (متقفلوش أبداً). الأدمنز: الأكونت التجريبي (ابراهيم) + أكونت المطعم (Elite-it AI-Bot, ID `61595034693541`)
 - **Verify token:** `my_restaurant_bot_secret_2026` — ⚠️ فيسبوك بتطلب إعادة كتابته يدوياً عند أي تعديل لينك
 - **LLM:** Gemini — `gemini-3.8-flash` + fallback `gemini-3.7-flash` (فيه retry ضد 503)
@@ -25,7 +25,21 @@
 - **تنسيق الردود ✅:** تحية باسم العميل الأول + سطور منفصلة + أصناف بإيموجي بوليتس + أسعار ("4.750 د.ك" / "KD 4.750") + ممنوع هاشتاجات/لينكات
 - **لينك المنيو في آخر كل رد ✅:** https://link.lifewithcacao.com/ بجملة دعوة متنوعة
 - **9 فروع ✅:** مضافين في knowledge.json بالأرقام والمواعيد — البوت بيرد على "أقرب فرع/رقم الفرع/المواعيد" (بيسأل العميل عن منطقته)
-- **التونل الحالي:** `https://declare-emperor-roulette-voters.trycloudflare.com` (اتحدّث في فيسبوك ✅)
+- **التونل الحالي:** `https://prophet-implementation-bull-begun.trycloudflare.com` (اتحدّث في فيسبوك ✅)
+
+## 📱 PWA للآيفون — منشورة على الإنتاج (21 أكتوبر 2026 ✅)
+اللوحة (Dashboard) بقت **تطبيق قابل للتثبيت على الآيفون** — أيقونة على الشاشة الرئيسية، بيشتغل من غير شريط سفاري.
+- **الكود:** commit `7783997` (web) + `d725177` (إصلاح البروكسى) على فرع `b1-facebook-oauth`
+- **اللي اتعمل:**
+  - `apple-touch-icon` 180×180 + أيقونات PNG للـ manifest (192/512 + maskable) — `apps/web/public/icons/`
+  - **Service Worker** (`apps/web/public/sw.js`): cache للأصول الثابتة + صفحة offline — ⚠️ **مش بيعمل cache للـ `/api/*` ولا للـ `/webhook`** (البيانات Live)
+  - `viewport-fit=cover` + safe-area insets (الـ notch/home indicator) + مدخلات 16px (عشان iOS ما يعملش zoom)
+  - بانر "ثبّت على آيفونك" (إرشادات iOS + زر تثبيت لـ Chrome)
+  - `src/uiProxy.js`: يمرّر `/sw.js` و `/offline.html` و `/icons` للواجهة (من غيرها الـ SW مش هيتسجّل)
+  - `apps/web/middleware.ts`: الملفات دي بره الـ session redirect
+- **طريقة التثبيت على الآيفون:** افتح اللينك في **سفاري** → زر المشاركة → **Add to Home Screen**
+- **ملاحظة:** الأيقونة/التطبيق شغال على اللينك الحالي بس — لو الـ tunnel اتغيّر (redeploy) لازم تاني تعمل Add to Home Screen. الحل النهائي = دومين ثابت (مهمة رقم 2).
+- **إعادة توليد الأيقونات:** `node apps/web/scripts/generate-pwa-icons.mjs` (محتاج `sharp` — dev only)
 
 ## 🚧 Stage 4 (in progress) — Provider Abstraction + Multi-Page Routing
 
