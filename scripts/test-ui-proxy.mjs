@@ -104,6 +104,29 @@ for (const sub of ['/teams/anything', '/teams/deep/nested']) {
 check('/teams is proxied, and /team is still proxied',
   (await get('/teams')).t === 'NEXTJS_UI' && (await get('/team')).t === 'NEXTJS_UI');
 
+/* ------------------------------------------------------------------------
+   The PWA assets.
+
+   The service worker, the offline page and the icons live in the Next.js
+   public/ folder. They are only reachable if the proxy forwards them - and
+   the service worker in particular MUST come back as JavaScript from the same
+   origin, otherwise the browser refuses to register it and the app can never
+   be installed on an iPhone.
+   ---------------------------------------------------------------------- */
+console.log('\n== the PWA assets must reach the Next.js frontend ==\n');
+
+for (const p of ['/sw.js', '/offline.html', '/icons/icon-180.png', '/icons/maskable-512.png', '/manifest.webmanifest']) {
+  const r = await get(p);
+  check(`PWA asset is proxied: ${p}`, r.s === 200 && r.t === 'NEXTJS_UI', `status ${r.s}`);
+}
+
+// The backend paths must keep their own answers even with the PWA routes in
+// the allowlist.
+for (const p of ['/webhook', '/api/v1/_health']) {
+  const r = await get(p);
+  check(`backend path still stays on Express: ${p}`, r.t !== 'NEXTJS_UI');
+}
+
 console.log(`\n${failed === 0 ? '🎉' : '💥'} ${passed} passed, ${failed} failed\n`);
 upstream.close(); srv.close(); srv2.close();
 process.exit(failed === 0 ? 0 : 1);

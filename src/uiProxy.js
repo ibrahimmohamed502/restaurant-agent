@@ -36,7 +36,13 @@ const UI_ROUTES = [
   '/favicon.svg',
   '/manifest.webmanifest',
   '/favicon.ico',
-  '/robots.txt'
+  '/robots.txt',
+  // PWA assets. The service worker script MUST be served from the same origin
+  // (and with a JavaScript content type) or the browser refuses to register it
+  // ("unsupported MIME type") and the app cannot be installed on iPhone.
+  '/sw.js',
+  '/offline.html',
+  '/icons'
 ];
 
 function isUiRoute(pathname) {
