@@ -106,6 +106,9 @@
 
   html {
     -webkit-text-size-adjust: 100%;
+    /* Installed PWA (standalone): stop the rubber-band from revealing a white canvas. */
+    overscroll-behavior-y: none;
+    height: 100%;
   }
 
   body {
@@ -113,6 +116,12 @@
     font-family: var(--font-sans);
     text-rendering: optimizeLegibility;
     font-feature-settings: 'kern' 1;
+    /* dynamic viewport height (mobile browser chrome) with a vh fallback */
+    min-height: 100vh;
+    min-height: 100dvh;
+    /* home-indicator clearance for the installed iPhone app */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    -webkit-tap-highlight-color: transparent;
   }
 
   :focus-visible {
@@ -138,6 +147,15 @@
   /* page container rhythm */
   .page-shell {
     @apply mx-auto w-full max-w-[76rem] px-4 py-6 lg:px-8 lg:py-8;
+  }
+
+  /* notch / home-indicator clearance for the installed (standalone) iPhone app */
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .safe-inline {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
   }
 
   /* refined focus ring for interactive surfaces */

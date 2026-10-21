@@ -1091,5 +1091,15 @@
       "BRAND_DOES_NOT_MATCH_GRANT": "This authorization was started for a different brand. Start again and choose this brand before connecting to Facebook.",
       "CROSS_BRAND_TRANSFER_FORBIDDEN": "This Facebook Page is already connected to a different brand. Reconnecting is only allowed to the same brand."
     }
+  },
+  "pwa": {
+    "installTitle": "Install the platform on your iPhone",
+    "installBody": "Tap install to open it from your home screen, without a browser.",
+    "installBodyIos": "In Safari on iPhone: tap the Share button, then “Add to Home Screen”.",
+    "installAction": "Install",
+    "installActionIos": "Share → Add to Home Screen",
+    "installDismiss": "Not now",
+    "updateTitle": "Update available",
+    "updateBody": "Close and reopen the app to get the latest version."
   }
 }

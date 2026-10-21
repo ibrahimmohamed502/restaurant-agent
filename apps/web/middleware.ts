@@ -25,5 +25,11 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!api|_next/static|_next/image|favicon.ico|favicon.svg|manifest.webmanifest|images).*)']
+  // Static/PWA assets must never be redirected to /login:
+  // the service worker script has to be served as JS (a redirect breaks the
+  // "unsupported MIME type" registration error) and the icons/offline page
+  // are needed before a session exists.
+  matcher: [
+    '/((?!api|_next/static|_next/image|favicon.ico|favicon.svg|manifest.webmanifest|icons|sw.js|offline.html).*)'
+  ]
 };

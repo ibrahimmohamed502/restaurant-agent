@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#4a2c1a" />
+    <title>منصة LWC — غير متصل</title>
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: #faf6f1;
+        color: #1f1710;
+        font-family: 'Segoe UI', system-ui, -apple-system, 'Noto Sans Arabic', Tahoma, sans-serif;
+        -webkit-text-size-adjust: 100%;
+      }
+      .card {
+        width: 100%;
+        max-width: 26rem;
+        text-align: center;
+        background: #fff;
+        border: 1px solid #e7ddd0;
+        border-radius: 16px;
+        padding: 32px 24px;
+        box-shadow: 0 12px 32px -18px rgba(38, 32, 22, 0.35);
+      }
+      .mark {
+        width: 64px; height: 64px; margin: 0 auto 16px;
+        border-radius: 14px; background: #4a2c1a;
+        display: flex; align-items: center; justify-content: center;
+      }
+      h1 { margin: 0 0 8px; font-size: 1.15rem; font-weight: 650; }
+      p { margin: 0 0 20px; font-size: 0.9rem; line-height: 1.7; color: #6b5c4c; }
+      button {
+        width: 100%; height: 44px; border: 0; border-radius: 10px;
+        background: #4a2c1a; color: #f7f1e9; font-size: 0.95rem; font-weight: 600;
+        cursor: pointer;
+      }
+      button:active { background: #3a2214; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #120d09; color: #f0e7db; }
+        .card { background: #1a1410; border-color: #2c231b; box-shadow: none; }
+        p { color: #a99785; }
+        button { background: #f7f1e9; color: #2a1a0f; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="mark" aria-hidden="true">
+        <svg width="34" height="34" viewBox="0 0 32 32" fill="none">
+          <g stroke="#f5ece1" stroke-width="1.6" stroke-linecap="round">
+            <path d="M12.4 6.6c0-1.2 1.2-1.6 1.2-2.8" opacity="0.9" />
+            <path d="M16 5.6c0-1.2 1.2-1.6 1.2-2.8" opacity="0.7" />
+            <path d="M19.6 6.6c0-1.2 1.2-1.6 1.2-2.8" opacity="0.5" />
+          </g>
+          <path d="M8.5 13.5h13.5v4.8a6.75 6.75 0 0 1-6.75 6.75 6.75 6.75 0 0 1-6.75-6.75v-4.8Z" fill="#f5ece1" fill-opacity="0.16" stroke="#f5ece1" stroke-width="1.8" />
+          <path d="M22 15h1.8a3.4 3.4 0 0 1 0 6.8H22" stroke="#f5ece1" stroke-width="1.8" stroke-linecap="round" />
+          <path d="M6.5 26.5h17" stroke="#f5ece1" stroke-width="1.8" stroke-linecap="round" />
+          <ellipse cx="15.25" cy="18.2" rx="2.1" ry="3.1" fill="#f5ece1" transform="rotate(-18 15.25 18.2)" />
+        </svg>
+      </div>
+      <h1>أنت غير متصل بالإنترنت</h1>
+      <p>مفيش اتصال دلوقتي. الكلام اللي في الشاشة دي محفوظ، وبتفتح تاني أول ما الشبكة ترجع.</p>
+      <button type="button" onclick="location.reload()">إعادة المحاولة</button>
+    </main>
+    <script>
+      // Restore the page automatically as soon as connectivity is back.
+      window.addEventListener('online', function () { location.reload(); });
+    </script>
+  </body>
+</html>

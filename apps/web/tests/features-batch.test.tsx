@@ -101,8 +101,10 @@ describe('brand assets (favicon + PWA manifest)', () => {
 
   it('layout links the manifest and theme colors', () => {
     const src = readFileSync(new URL('../app/layout.tsx', import.meta.url), 'utf8');
-    expect(src).toContain('rel="manifest"');
-    expect(src).toContain('theme-color');
+    // Next turns metadata.manifest into <link rel="manifest"> and
+    // viewport.themeColor into <meta name="theme-color"> tags.
+    expect(src).toContain("manifest: '/manifest.webmanifest'");
+    expect(src).toContain('themeColor');
   });
 });
 

@@ -61,7 +61,7 @@ export function Topbar({
   const [passwordOpen, setPasswordOpen] = React.useState(false);
 
   return (
-    <header className="sticky top-0 z-30 flex h-topbar items-center gap-2 border-b border-border bg-surface/85 px-3 backdrop-blur lg:px-5">
+    <header className="safe-inline sticky top-0 z-30 flex h-topbar items-center gap-2 border-b border-border bg-surface/85 px-3 backdrop-blur lg:px-5">
       {/* global nav toggle — visible and functional at EVERY width */}
       <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onOpenMobile} aria-label={t('shell.menu')}>
         <MenuIcon className="h-4 w-4" />
