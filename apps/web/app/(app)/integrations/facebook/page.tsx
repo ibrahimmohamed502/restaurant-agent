@@ -288,6 +288,12 @@ export default function FacebookConnectPage() {
   const connectedCount = connections.filter(
     (c) => c.connectionHealthy && c.status === 'active'
   ).length;
+  // A live LEGACY integration is not an OAuth connection, so it is not counted
+  // above - but it IS a working integration. An amber "0 connected" badge above
+  // five live legacy Pages would be a lie, so the badge stays neutral while
+  // legacy integrations are present and only turns amber when there is
+  // nothing at all to show.
+  const hasLegacyConnections = connections.some((c) => c.legacyOnly);
   // Rendered as its own card so a confirm-in-flight keeps its button label stable
   // while still telling the user something is happening.
   const confirmLabel = phase === 'confirming' ? 'states.picking.confirming' : 'states.picking.confirm';
@@ -437,7 +443,7 @@ export default function FacebookConnectPage() {
           <CardHeader className="pb-3">
             <div className="flex items-start justify-between gap-3">
               <CardTitle className="text-sm">{t('connections.title')}</CardTitle>
-              <Badge variant={connectedCount > 0 ? 'success' : 'warning'}>
+              <Badge variant={connectedCount > 0 ? 'success' : hasLegacyConnections ? 'neutral' : 'warning'}>
                 {t('connections.count', { count: connectedCount })}
               </Badge>
             </div>

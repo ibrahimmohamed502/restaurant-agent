@@ -1064,9 +1064,9 @@
     },
     "connections": {
       "title": "Connected Pages",
-      "count": "{count} connected",
+      "count": "{count} connected via Facebook Login",
       "disconnect": "Disconnect this Page",
-      "reconnectHint": "The brand is fixed when you start connecting. To move a Page to another brand, start the connection again and choose that brand - the Page is updated in place, not duplicated.",
+      "reconnectHint": "The brand is fixed when a Page is first connected. Reconnecting is only allowed for the same brand - a Page cannot be moved to another brand.",
       "scopesConfirmed": "Facebook confirmed these permissions: {scopes}",
       "scopesUnconfirmed": "Facebook has not confirmed which permissions were granted. Requested: {requested}"
     },

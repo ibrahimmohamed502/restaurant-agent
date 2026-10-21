@@ -11,10 +11,20 @@
  *     outside the scope is treated as not existing, so this service cannot be
  *     used to probe for other companies' brands.
  *
- *  2. ONE PAGE, ONE OWNER. `channels_meta_tenant_owner_uidx` (migration 023)
- *     plus the pre-existing global index mean a Page cannot be attached to two
- *     tenants. A conflict is reported as a conflict, never resolved by silently
- *     taking the page away from its existing owner.
+ *  2. ONE PAGE, ONE OWNER, ONE BRAND. A Page cannot be attached to two
+ *     tenants, and - inside one tenant - it cannot be attached to two brands.
+ *
+ *     The TENANT rule is enforced by the database: `channels_meta_external_uidx`
+ *     (one routing row per Page id, across all tenants) plus
+ *     `channels_meta_tenant_owner_uidx`. The BRAND rule is enforced HERE, over
+ *     EVERY channel row that describes the Page (`meta`, `meta_dm`,
+ *     `meta_comment`), because the database cannot express it: a legitimate
+ *     legacy Page owns one row per provider, so a UNIQUE index over the Page
+ *     id would reject valid data. See the ownership check in
+ *     runConnectTransaction().
+ *
+ *     A conflict is reported as a conflict, never resolved by silently taking
+ *     the page away from its existing owner.
  *
  *  3. TOKENS ARE STORED ENCRYPTED, ONCE, AND NEVER RETURNED. The existing
  *     AES-256-GCM helper is reused. Reads report presence and expiry only.
@@ -404,20 +414,6 @@ async function assertBrandUsable({ db, tenantId, brandId, scope }) {
 }
 
 /**
- * EVERY channel row that describes this Page, across all providers.
- *
- * WHY NOT `LIMIT 1`
- * -----------------
- * A single Page can have several channel rows: a `meta` routing channel plus
- * `meta_dm` and `meta_comment` channels. Returning only ONE of them cannot
- * establish that no other row belongs to a different tenant - the row returned
- * would be whichever the planner happened to yield. A cross-tenant conflict
- * could therefore be missed, or reported, by luck.
- *
- * So this returns ALL of them and the caller examines every one. The ordering
- * is deterministic so the result is stable, but the completeness is the point.
- */
-/**
  * The channel's brand must be inside the caller's brand scope.
  *
  * WHY THIS EXISTS
@@ -448,16 +444,74 @@ async function assertChannelBrandVisible({ db, tenantId, brandId, scope }) {
   }
 }
 
-async function findAllPageOwners({ db, pageId }) {
+/**
+ * EVERY channel row that describes this Page, across all providers.
+ *
+ * WHY NOT `LIMIT 1`
+ * -----------------
+ * A single Page can have several channel rows: a `meta` routing channel plus
+ * `meta_dm` and `meta_comment` channels. Returning only ONE of them cannot
+ * establish that no other row belongs to a different tenant - or to a different
+ * brand of the same tenant. The row returned would be whichever the planner
+ * happened to yield, so a conflict could be missed, or reported, by luck.
+ *
+ * So this returns ALL of them and the caller examines every one. The ordering
+ * is deterministic so the result is stable, but the completeness is the point.
+ *
+ * `lock: true` adds FOR UPDATE. The rows are then held until the transaction
+ * ends, so nobody can move a Page to another brand between the ownership read
+ * and the write that follows it. FOR UPDATE locks exactly the rows that are
+ * found - and nothing when there are none - so it is necessary but not
+ * sufficient on its own; see lockPageOwnership().
+ */
+async function findAllPageOwners({ db, pageId, lock = false }) {
   const { rows } = await db.query(
     `SELECT tenant_id, brand_id, id, provider
        FROM channels
       WHERE external_id = $1
         AND provider IN ('meta', 'meta_dm', 'meta_comment')
-      ORDER BY provider ASC, created_at ASC, id ASC`,
+      ORDER BY provider ASC, created_at ASC, id ASC${lock ? ' FOR UPDATE' : ''}`,
     [pageId]
   );
   return rows;
+}
+
+/**
+ * Serialise EVERY ownership decision for one Facebook Page.
+ *
+ * WHY A LOCK IS NEEDED AT ALL
+ * ---------------------------
+ * `SELECT ... FOR UPDATE` locks the rows it finds - and NOTHING when it finds
+ * no row. A Page that has no `meta` routing channel yet (a legacy Page whose
+ * rows are `meta_dm` / `meta_comment`, or a Page nobody has connected) has no
+ * row for findMetaRoutingChannel() to lock, so two concurrent connects could
+ * both read "no routing row" and both proceed.
+ *
+ * The old race was caught by `channels_meta_external_uidx` (UNIQUE on the Page
+ * id WHERE provider='meta'), which turned the loser into a unique violation
+ * and therefore into a 409. That index cannot catch the case this lock now
+ * covers: a SECOND BRAND for a Page whose rows are `meta_dm` / `meta_comment`.
+ * The index deliberately does not constrain those providers - it must not,
+ * because a legacy Page legitimately owns one row per provider - so nothing
+ * below the service would stop a second brand from being attached to it.
+ *
+ * So the ownership DECISION itself is serialised, on a key derived from the
+ * Page id. Every connect for the same Page takes the same lock, in the same
+ * order, before it reads ownership.
+ *
+ * The lock is TRANSACTION scoped (`pg_advisory_xact_lock`), so COMMIT or
+ * ROLLBACK releases it and a crashed connection cannot leak it.
+ *
+ * The key is an md5 of a namespaced string truncated to 64 bits. A hash
+ * collision can only make two DIFFERENT Pages serialise against each other -
+ * it can never let two owners through - so the failure mode of a collision is
+ * slightly less concurrency, never a security hole.
+ */
+async function lockPageOwnership({ db, pageId }) {
+  await db.query(
+    `SELECT pg_advisory_xact_lock(('x' || substr(md5($1), 1, 16))::bit(64)::bigint)`,
+    [`lwc:facebook:page-ownership:${pageId}`]
+  );
 }
 
 /**
@@ -701,14 +755,27 @@ async function runConnectTransaction({
       scope: brandScope
     });
 
+    // SERIALISE the ownership decision for this Page.
+    //
+    // Taken BEFORE ownership is read and before any row is locked, so every
+    // connect for one Page reaches the same point in the same order. A row
+    // lock alone is not enough: FOR UPDATE locks nothing when there is no row
+    // to lock, which is exactly the case of a legacy Page that has only
+    // `meta_dm` / `meta_comment` rows. See lockPageOwnership().
+    await lockPageOwnership({ db: client, pageId: chosen.pageId });
+
     // Re-check ownership inside the transaction. Checking before BEGIN leaves a
     // window in which another tenant could claim the same page first.
     //
-    // EVERY matching row is examined. A Page can have several channel rows
-    // (`meta`, `meta_dm`, `meta_comment`), and a cross-tenant conflict in ANY
-    // of them must refuse the connect. Deciding that from a single row would
-    // make the answer depend on which row the database happened to return.
-    const owners = await findAllPageOwners({ db: client, pageId: chosen.pageId });
+    // EVERY matching row is examined, and the rows are LOCKED. A Page can have
+    // several channel rows (`meta`, `meta_dm`, `meta_comment`), and a conflict
+    // in ANY of them must refuse the connect. Deciding that from a single row
+    // would make the answer depend on which row the database happened to
+    // return.
+    const owners = await findAllPageOwners({ db: client, pageId: chosen.pageId, lock: true });
+
+    // (1) A DIFFERENT COMPANY owns the Page. Refused outright. The message
+    // says that it is connected, never WHO holds it.
     const conflicting = owners.find((o) => String(o.tenant_id) !== String(tenantId));
     if (conflicting) {
       await client.query('ROLLBACK');
@@ -728,6 +795,55 @@ async function runConnectTransaction({
       fail(
         CONNECTION_ERRORS.PAGE_OWNED_BY_ANOTHER_TENANT,
         'this Facebook page is already connected to another company'
+      );
+    }
+
+    // (2) A DIFFERENT BRAND of the SAME company owns the Page.
+    //
+    // THIS IS THE RULE THAT WAS MISSING.
+    //
+    // The brand used to be read from the `meta` ROUTING row only. A Page with
+    // no routing row - a legacy Page whose rows are `meta_dm` and
+    // `meta_comment` - therefore had NO brand for the check to read, so a
+    // connect under a second brand of the same company created a second,
+    // differently-branded routing channel for a Page that was already
+    // serving another brand. The Page's inbound events would then be routed
+    // to the new brand while its Messenger and Comments channels stayed on the
+    // old one. The database does not catch that: `channels_meta_external_uidx`
+    // only constrains `provider='meta'` rows, and it must not be widened to
+    // the other providers, because a legacy Page legitimately owns one row
+    // per provider.
+    //
+    // So the brand is now read from EVERY row that describes the Page.
+    //
+    // A row with a NULL brand does NOT conflict: a brandless channel is
+    // company-wide, and the first brand may still be assigned to it. That is
+    // the same rule the routing-row check below has always applied.
+    const foreignBrand = owners.find(
+      (o) => String(o.tenant_id) === String(tenantId)
+        && o.brand_id
+        && String(o.brand_id) !== String(brandId)
+    );
+    if (foreignBrand) {
+      await client.query('ROLLBACK');
+      await recordConnectConflictAudit({
+        client,
+        tenantId,
+        actorUserId,
+        pageId: chosen.pageId,
+        actorIp,
+        reason: 'cross_brand_transfer_forbidden',
+        existingBrand: foreignBrand.brand_id,
+        requestedBrand: brandId,
+        // WHICH channel type held the Page. Inside one company the Page id
+        // and the brands are not secrets, and the provider is what makes the
+        // refusal diagnosable - it is the difference between "a routing channel
+        // is on another brand" and "a legacy DM channel is on another brand".
+        existingProvider: foreignBrand.provider
+      });
+      fail(
+        CONNECTION_ERRORS.CROSS_BRAND_TRANSFER_FORBIDDEN,
+        'this Facebook page is already connected to a different brand'
       );
     }
 
@@ -766,6 +882,11 @@ async function runConnectTransaction({
       }
 
       // mode === 'reconnect'. A different brand is a forbidden transfer.
+      //
+      // The general ownership check above already refuses this case - the
+      // routing row is one of the owner rows - so this is the narrow,
+      // row-level assertion of the same invariant, kept as defence in depth
+      // in case the ownership scan is ever narrowed.
       if (routing.brand_id && String(routing.brand_id) !== String(brandId)) {
         await client.query('ROLLBACK');
         await recordConnectConflictAudit({

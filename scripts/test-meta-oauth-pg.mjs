@@ -648,13 +648,20 @@ try {
     eq('exactly one concurrent connect succeeds',
       settled.filter((r) => r.status === 'fulfilled').length, 1);
     // The loser must surface as a CONFLICT, never as a raw database error.
+    //
+    // The two connects here target DIFFERENT brands of the same company
+    // (b1 and b1b), so the loser is refused as a cross-brand transfer rather
+    // than as a plain "already connected". Both are 409-mappable
+    // (statusForServiceError in src/api/v1/metaOAuth.js), and the
+    // cross-brand code is the more precise one: it names the reason.
     const loser = settled.find((r) => r.status === 'rejected');
     check('the losing concurrent connect is refused with a connection error',
       loser?.reason?.name === 'ConnectionError',
       `name=${loser?.reason?.name} code=${loser?.reason?.code}`);
     check('and with a code the API maps to 409',
       loser?.reason?.code === conn.CONNECTION_ERRORS.PAGE_ALREADY_CONNECTED
-      || loser?.reason?.code === conn.CONNECTION_ERRORS.PAGE_OWNED_BY_ANOTHER_TENANT,
+      || loser?.reason?.code === conn.CONNECTION_ERRORS.PAGE_OWNED_BY_ANOTHER_TENANT
+      || loser?.reason?.code === conn.CONNECTION_ERRORS.CROSS_BRAND_TRANSFER_FORBIDDEN,
       `code=${loser?.reason?.code}`);
   }
 
@@ -1015,8 +1022,17 @@ try {
         moved.body?.error?.code === 'BRAND_DOES_NOT_MATCH_GRANT', `code=${moved.body?.error?.code}`);
 
       // It must not have connected anything.
+      //
+      // SCOPED TO PAGE '111'. The confirm under test is about Page '111', and
+      // the query has to say so: the concurrent connect in section 9 decides
+      // which brand Page '222' wins - b1 or b1b - and that decision is a race,
+      // not a property. An unscoped count would therefore assert on an
+      // unrelated Page's outcome. (The suite already treats the section 9 race
+      // as non-deterministic elsewhere; see section 10.)
       const { rows: [onB1b] } = await q(
-        `SELECT count(*)::int n FROM channels WHERE tenant_id=$1 AND brand_id=$2 AND oauth_provider='meta' AND status='active'`,
+        `SELECT count(*)::int n FROM channels
+          WHERE tenant_id=$1 AND brand_id=$2 AND external_id='111'
+            AND oauth_provider='meta' AND status='active'`,
         [t1, b1b]);
       eq('and nothing was written for the retargeted brand', onB1b.n, 0);
 
@@ -2980,6 +2996,288 @@ try {
     check('the cleanup reports only a code on failure', /safeErrorCode\(err\)/.test(workerSrc));
   }
 
+  // ============================================= 22 cross-brand ownership, every channel type
+  // THE GAP THIS SECTION CLOSES
+  //
+  // The brand check used to read the `meta` ROUTING row only. A Page whose rows
+  // are `meta_dm` and `meta_comment` - the exact shape of a legacy integration,
+  // and the shape the production database actually holds - has NO routing row,
+  // so the check had no brand to read. A connect under a SECOND brand of the
+  // same company therefore created a second, differently-branded routing
+  // channel for a Page that was already serving another brand, and the Page's
+  // inbound events were routed to the new brand while its Messenger and
+  // Comments channels stayed on the old one.
+  //
+  // The database could not catch it either. `channels_meta_external_uidx` is
+  // UNIQUE(external_id) WHERE provider='meta', so it only constrains the
+  // routing row. Widening it to meta_dm / meta_comment would REJECT valid
+  // data - a legacy Page legitimately owns one row per provider for the SAME
+  // Page id - so the brand rule belongs in the service, over every owner row.
+  section('22 cross-brand ownership across every page channel type');
+
+  {
+    const { encrypt } = await import('../src/db/crypto.js');
+    const LEGACY = conn.CREDENTIAL_KIND_LEGACY;
+    const OAUTH = conn.CREDENTIAL_KIND_OAUTH;
+
+    // A deterministic Meta mock per Page. Meta is never contacted.
+    const mockFor = (pageId) => ({
+      post: async () => ({}),
+      get: async (path, params) => {
+        if (path === '/debug_token') {
+          return { data: { app_id: 'test-app-id', type: 'PAGE', is_valid: true, profile_id: pageId,
+                           scopes: ['pages_show_list'], expires_at: 0 } };
+        }
+        if (path === '/me/accounts') {
+          return { data: [{ id: pageId, name: `Page ${pageId}`, category: 'Retail',
+                            tasks: ['MANAGE', 'CREATE_CONTENT'], access_token: `EAA-page-${pageId}` }] };
+        }
+        return {};
+      }
+    });
+    const pagesFor = (pageId) => [{
+      pageId, name: `Page ${pageId}`, category: 'Retail',
+      tasks: ['MANAGE', 'CREATE_CONTENT'], pageAccessToken: `EAA-page-${pageId}`
+    }];
+    // EVERY row that describes a Page, across all page channel types.
+    const pageRows = async (pageId) => (await q(
+      `SELECT id, provider, brand_id, display_name, status FROM channels
+        WHERE external_id=$1 AND provider IN ('meta','meta_dm','meta_comment')
+        ORDER BY provider ASC`, [pageId]
+    )).rows;
+
+    // ---- 22.1 the shape that used to slip through -------------------------
+    // A legacy Page: meta_dm + meta_comment rows, NO meta routing row, and one
+    // live legacy credential on the DM channel.
+    const LP2 = '960';
+    const dmCh = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+       VALUES ($1,$2,'meta_dm',$3,'Legacy DM 960','active') RETURNING id`, [t1, b1, LP2]
+    )).rows[0].id;
+    await q(`INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+             VALUES ($1,$2,'meta_comment',$3,'Legacy Comments 960','active')`, [t1, b1, LP2]);
+    const legacyEnc960 = encrypt('EAA-LEGACY-960');
+    await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+             VALUES ($1,$2,$3,$4,$5,NULL)`, [t1, dmCh, LEGACY, legacyEnc960.value, legacyEnc960.iv]);
+    const legacyCred960 = (await q(
+      `SELECT id, created_at FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [dmCh, LEGACY]
+    )).rows[0];
+
+    const before960 = await pageRows(LP2);
+    eq('the legacy Page has two rows', before960.length, 2);
+    check('and neither of them is a routing channel',
+      before960.every((r) => r.provider !== 'meta'));
+    check('both are on brand b1', before960.every((r) => String(r.brand_id) === String(b1)));
+
+    metaOAuth.setGraphTransport(mockFor(LP2));
+
+    // ---- 22.2 SAME TENANT, DIFFERENT BRAND -> REFUSED --------------------
+    // THIS IS THE DEFECT. Both modes must refuse it.
+    await rejects('a cross-brand CONNECT of a legacy Page with no routing row is refused',
+      conn.CONNECTION_ERRORS.CROSS_BRAND_TRANSFER_FORBIDDEN,
+      () => conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1b, brandScope: T1_BOTH_BRANDS,
+        availablePages: pagesFor(LP2), pageId: LP2, db: DB
+      }));
+    await rejects('a cross-brand RECONNECT of the same Page is refused too',
+      conn.CONNECTION_ERRORS.CROSS_BRAND_TRANSFER_FORBIDDEN,
+      () => conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1b, brandScope: T1_BOTH_BRANDS,
+        availablePages: pagesFor(LP2), pageId: LP2, mode: 'reconnect', db: DB
+      }));
+
+    eq('the refused cross-brand attempts changed NO channel row',
+      JSON.stringify(await pageRows(LP2)), JSON.stringify(before960));
+    const { rows: noRouting960 } = await q(
+      `SELECT count(*)::int n FROM channels WHERE external_id=$1 AND provider='meta'`, [LP2]
+    );
+    eq('no routing channel was created for the other brand', noRouting960[0].n, 0);
+    const { rows: noNewCred960 } = await q(
+      `SELECT count(*)::int n FROM provider_credentials pc JOIN channels c ON c.id=pc.channel_id
+        WHERE c.external_id=$1 AND pc.kind=$2`, [LP2, OAUTH]
+    );
+    eq('no OAuth credential was written for the other brand', noNewCred960[0].n, 0);
+
+    const { rows: audit960 } = await q(
+      `SELECT metadata::text m FROM audit_logs
+        WHERE action='integrations.facebook.connect.conflict' AND object_id=$1
+          AND metadata::text LIKE '%cross_brand_transfer_forbidden%'`, [LP2]
+    );
+    check('the cross-brand refusal is audited', audit960.length >= 1);
+    check('the audit names the channel type that held the Page',
+      /meta_dm|meta_comment/.test(JSON.stringify(audit960)));
+    check('the audit records no token', !/EAA-/.test(JSON.stringify(audit960)));
+
+    // ---- 22.3 the legacy credential is untouched --------------------------
+    const { rows: legacyAfter960 } = await q(
+      `SELECT id, created_at FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [dmCh, LEGACY]
+    );
+    eq('the legacy credential ROW id is unchanged', legacyAfter960[0].id, legacyCred960.id);
+    eq('the legacy credential created_at is unchanged',
+      String(legacyAfter960[0].created_at), String(legacyCred960.created_at));
+
+    // ---- 22.4 a DIFFERENT TENANT is still refused, and takes precedence ---
+    await rejects('a cross-tenant connect of the same Page is refused',
+      conn.CONNECTION_ERRORS.PAGE_OWNED_BY_ANOTHER_TENANT,
+      () => conn.connectPage({
+        tenantId: t2, actorUserId: admin2, brandId: b2, brandScope: T2_BRAND_ONLY,
+        availablePages: pagesFor(LP2), pageId: LP2, db: DB
+      }));
+    eq('and it changed nothing either',
+      JSON.stringify(await pageRows(LP2)), JSON.stringify(before960));
+
+    // ---- 22.5 the SAME brand still upgrades -------------------------------
+    // The fix must not break the legitimate case: a legacy Page connected to
+    // the brand that already owns it gains an OAuth routing channel, and the
+    // legacy rows are left exactly as they were.
+    const upgraded = await conn.connectPage({
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+      availablePages: pagesFor(LP2), pageId: LP2, db: DB
+    });
+    eq('a same-brand connect of the legacy Page succeeds', upgraded.pageId, LP2);
+    const { rows: routing960 } = await q(
+      `SELECT id, brand_id, oauth_provider, oauth_connected_at FROM channels
+        WHERE external_id=$1 AND provider='meta'`, [LP2]
+    );
+    eq('exactly one routing channel now exists', routing960.length, 1);
+    eq('it is on the SAME brand as the legacy channels', String(routing960[0].brand_id), String(b1));
+    eq('and it is OAuth connected', routing960[0].oauth_provider, 'meta');
+    check('with a connection timestamp', routing960[0].oauth_connected_at !== null);
+
+    const after960 = await pageRows(LP2);
+    eq('the Page now has three rows', after960.length, 3);
+    check('the two legacy rows kept their ids',
+      before960.every((b) => after960.some((a) => a.id === b.id && a.provider === b.provider)));
+    const { rows: legacyAfterUpgrade } = await q(
+      `SELECT id, created_at FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [dmCh, LEGACY]
+    );
+    eq('the legacy credential survived the upgrade (same row id)',
+      legacyAfterUpgrade[0].id, legacyCred960.id);
+    eq('and was not re-created (same created_at)',
+      String(legacyAfterUpgrade[0].created_at), String(legacyCred960.created_at));
+
+    // ---- 22.6 concurrent cross-brand attempts -----------------------------
+    // Two connects for the SAME Page at the same time, one for the brand that
+    // owns it and one for a different brand. Exactly one owner may survive,
+    // and it must be the brand that owned the Page all along.
+    const CP2 = '962';
+    await q(`INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+             VALUES ($1,$2,'meta_dm',$3,'DM 962','active')`, [t1, b1, CP2]);
+    await q(`INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+             VALUES ($1,$2,'meta_comment',$3,'Comments 962','active')`, [t1, b1, CP2]);
+    metaOAuth.setGraphTransport(mockFor(CP2));
+
+    const concOut = await Promise.allSettled([
+      conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+        availablePages: pagesFor(CP2), pageId: CP2, db: DB
+      }),
+      conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1b, brandScope: T1_BOTH_BRANDS,
+        availablePages: pagesFor(CP2), pageId: CP2, db: DB
+      })
+    ]);
+    eq('exactly one concurrent connect wins', concOut.filter((o) => o.status === 'fulfilled').length, 1);
+    eq('the other is refused', concOut.filter((o) => o.status === 'rejected').length, 1);
+    const concLoser = concOut.find((o) => o.status === 'rejected');
+    eq('the loser is refused as a cross-brand transfer',
+      concLoser?.reason?.code, conn.CONNECTION_ERRORS.CROSS_BRAND_TRANSFER_FORBIDDEN);
+    const { rows: concRouting962 } = await q(
+      `SELECT brand_id FROM channels WHERE external_id=$1 AND provider='meta'`, [CP2]
+    );
+    eq('exactly one routing channel exists after the race', concRouting962.length, 1);
+    eq('and it belongs to the brand that owned the Page all along',
+      String(concRouting962[0].brand_id), String(b1));
+    const { rows: concCreds962 } = await q(
+      `SELECT count(*)::int n FROM provider_credentials pc JOIN channels c ON c.id=pc.channel_id
+        WHERE c.external_id=$1 AND pc.kind=$2`, [CP2, OAUTH]
+    );
+    eq('exactly one OAuth credential exists after the race', concCreds962[0].n, 1);
+
+    // ---- 22.7 a legitimate MULTI-CHANNEL Page is left intact --------------
+    // The production shape: one routing channel plus a DM and a Comments
+    // channel for the same Page, all on one brand.
+    const MP = '963';
+    const metaCh = (await q(
+      `INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+       VALUES ($1,$2,'meta',$3,'Routing 963','active') RETURNING id`, [t1, b1, MP]
+    )).rows[0].id;
+    await q(`INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+             VALUES ($1,$2,'meta_dm',$3,'DM 963','active')`, [t1, b1, MP]);
+    await q(`INSERT INTO channels (tenant_id, brand_id, provider, external_id, display_name, status)
+             VALUES ($1,$2,'meta_comment',$3,'Comments 963','active')`, [t1, b1, MP]);
+    const multiEnc = encrypt('EAA-LEGACY-963');
+    await q(`INSERT INTO provider_credentials (tenant_id, channel_id, kind, value_encrypted, iv, last_rotated_at)
+             VALUES ($1,$2,$3,$4,$5,NULL)`, [t1, metaCh, LEGACY, multiEnc.value, multiEnc.iv]);
+    const multiCred = (await q(
+      `SELECT id, created_at FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [metaCh, LEGACY]
+    )).rows[0];
+    const before963 = await pageRows(MP);
+    eq('the multi-channel Page has three rows', before963.length, 3);
+    metaOAuth.setGraphTransport(mockFor(MP));
+
+    await rejects('a cross-brand reconnect of a multi-channel Page is refused',
+      conn.CONNECTION_ERRORS.CROSS_BRAND_TRANSFER_FORBIDDEN,
+      () => conn.connectPage({
+        tenantId: t1, actorUserId: admin1, brandId: b1b, brandScope: T1_BOTH_BRANDS,
+        availablePages: pagesFor(MP), pageId: MP, mode: 'reconnect', db: DB
+      }));
+    eq('the multi-channel Page is byte-identical after the refusal',
+      JSON.stringify(await pageRows(MP)), JSON.stringify(before963));
+
+    const ok963 = await conn.connectPage({
+      tenantId: t1, actorUserId: admin1, brandId: b1, brandScope: T1_BOTH_BRANDS,
+      availablePages: pagesFor(MP), pageId: MP, mode: 'reconnect', db: DB
+    });
+    eq('a same-brand reconnect of the multi-channel Page succeeds', ok963.pageId, MP);
+    eq('and it reuses the EXISTING routing channel', ok963.channelId, metaCh);
+    const after963 = await pageRows(MP);
+    eq('the multi-channel Page still has three rows', after963.length, 3);
+    check('and every row kept its id',
+      before963.every((b) => after963.some((a) => a.id === b.id && a.provider === b.provider)));
+    const { rows: multiCredAfter } = await q(
+      `SELECT id, created_at FROM provider_credentials WHERE channel_id=$1 AND kind=$2`, [metaCh, LEGACY]
+    );
+    eq('the legacy credential of a multi-channel Page is unchanged (same row id)',
+      multiCredAfter[0].id, multiCred.id);
+    eq('and was not re-created (same created_at)',
+      String(multiCredAfter[0].created_at), String(multiCred.created_at));
+
+    // ---- 22.8 the legacy integrations are still VISIBLE -------------------
+    // One Page can be several rows, so the listing holds the OAuth row AND
+    // the legacy row. After the upgrade the OAuth row is the healthy one, and
+    // the legacy row must still be visible and must NOT be passed off as a
+    // healthy OAuth connection.
+    const listed960 = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
+    const rows960 = listed960.filter((c) => c.pageId === LP2);
+    check('the legacy Page is still listed', rows960.length >= 1);
+    const oauthRow960 = rows960.find((c) => c.oauthConnected);
+    check('the upgraded Page now also has an OAuth connection row', Boolean(oauthRow960));
+    eq('and that row is healthy', oauthRow960?.connectionHealthy, true);
+    const legacyRow960 = rows960.find((c) => c.legacyCredentialPresent);
+    check('the legacy row is still listed', Boolean(legacyRow960));
+    eq('and its legacy credential is still reported present', legacyRow960?.legacyCredentialPresent, true);
+    eq('but it is not presented as a healthy OAuth connection',
+      legacyRow960?.connectionHealthy, false);
+    const listed963 = await conn.listConnections({ db: DB, tenantId: t1, scope: TENANT_SCOPE });
+    const row963 = listed963.find((c) => c.pageId === MP);
+    check('the multi-channel Page is still listed', Boolean(row963));
+    eq('with its legacy credential present', row963.legacyCredentialPresent, true);
+
+    // ---- 22.9 the guard itself is in the source ---------------------------
+    const connSrc = readFileSync(join(REPO, 'src', 'services', 'facebookConnections.js'), 'utf8');
+    check('the ownership decision is serialised with a transaction-scoped advisory lock',
+      /pg_advisory_xact_lock/.test(connSrc));
+    check('the owner scan covers every page channel type',
+      /provider IN \('meta', 'meta_dm', 'meta_comment'\)/.test(connSrc));
+    check('the brand check is made over the owner rows, not only the routing row',
+      /foreignBrand/.test(connSrc));
+    check('and the narrow routing-row check remains as a backstop',
+      /routing\.brand_id && String\(routing\.brand_id\) !== String\(brandId\)/.test(connSrc));
+
+    metaOAuth.resetGraphTransport();
+  }
+
   metaOAuth.resetGraphTransport();
 } catch (e) {
   failures.push(`fatal: ${e?.code ?? ''} ${e?.message}`);
@@ -3018,6 +3316,12 @@ console.log('='.repeat(64));
 //   496 is the count MEASURED by CI run 39406300943, on commit
 //   ce752eed59fa0c4204d45cf0054afc1ed5cd3fcf, with every section from 1 to 21
 //   executed and zero failures.
+//   570 is the count MEASURED by the B1 cross-brand hotfix run, with every
+//   section from 1 to 22 executed and zero failures. Section 22 is the
+//   cross-brand ownership section: it adds the legacy-Page-without-a-routing
+//   -row case, the same-tenant cross-brand connect and reconnect refusals,
+//   the concurrent cross-brand race, the same-brand legacy upgrade, the
+//   multi-channel Page and the no-regression-to-legacy-credential checks.
 //
 // A static reading of this file once suggested the suite would execute roughly
 // 355 assertions. That was a PREDICTION from counting call sites, not a
@@ -3032,7 +3336,7 @@ console.log('='.repeat(64));
 // The floor is precisely what would have caught the original defect: the suite
 // could report 196 passing while never once asserting that code_verifier is sent
 // at the exchange.
-const MIN_ASSERTIONS = 496;
+const MIN_ASSERTIONS = 570;
 if (pass < MIN_ASSERTIONS) {
   console.log(`  ERROR: ${pass} assertions executed, expected at least ${MIN_ASSERTIONS}.`);
   console.log('  This is NOT a pass - sections were almost certainly skipped.');
